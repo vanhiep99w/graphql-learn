@@ -1,23 +1,1064 @@
 ---
 title: "Variables, arguments và fragments"
-description: "Tách dữ liệu động khỏi query string và tái sử dụng selection bằng fragments."
+description: "Tách dữ liệu động khỏi query document và tái sử dụng selection bằng fragments."
 ---
 
-Trang này sẽ trình bày **Variables, arguments và fragments** trong bối cảnh xây dựng GraphQL API với Spring Boot.
+import { Accordion, Accordions } from 'fumadocs-ui/components/accordion';
+import { Step, Steps } from 'fumadocs-ui/components/steps';
+
+Trong GraphQL, một operation (yêu cầu thực thi) có thể giữ nguyên nhưng chạy với nhiều giá trị đầu vào khác nhau. **Variables** (các giá trị runtime truyền riêng cho operation) tách dữ liệu khỏi **query document** (toàn bộ văn bản GraphQL). **Arguments** (tham số có tên của field) nói field cần dữ liệu nào, còn **fragments** (các đoạn selection set dùng lại) giúp tái sử dụng **selection set** (tập field client muốn nhận) giữa nhiều vị trí. Ba cơ chế này làm query dễ đọc, dễ kiểm tra và không cần tạo một chuỗi query mới cho mỗi lần gọi.
+
+<Callout type="info" title="Phạm vi và giả định">
+  Các SDL, query, variables và response trong bài là ví dụ tĩnh, độc lập để đọc contract. SDL chính cố ý chứa đủ detail lookup, filter, paging, interface và union để các ví dụ nhất quán với nhau. Repository này là docs-only, không có backend Spring Boot để chạy; các response và message lỗi chỉ minh họa shape, không phải kết quả runtime đã được kiểm chứng.
+</Callout>
 
 ## Mục lục
 
-- [Nội dung dự kiến](#nội-dung-dự-kiến)
+- [Bức tranh tổng thể](#bức-tranh-tổng-thể)
+  - [Bốn lớp cần tách](#bốn-lớp-cần-tách)
+  - [Thuật ngữ cốt lõi](#thuật-ngữ-cốt-lõi)
+- [SDL minh họa cho catalog sách](#sdl-minh-họa-cho-catalog-sách)
+  - [Input type và output selection](#input-type-và-output-selection)
+  - [Arguments cho detail filter và paging](#arguments-cho-detail-filter-và-paging)
+- [Variables và variable definitions](#variables-và-variable-definitions)
+  - [Operation với variable](#operation-với-variable)
+  - [Variables JSON và response](#variables-json-và-response)
+  - [Kiểu variable tương thích argument](#kiểu-variable-tương-thích-argument)
+- [Literal coercion và default](#literal-coercion-và-default)
+  - [Literal trong GraphQL document](#literal-trong-graphql-document)
+  - [Coercion kiểm tra ở biên](#coercion-kiểm-tra-ở-biên)
+  - [Default value khi bỏ qua input](#default-value-khi-bỏ-qua-input)
+  - [Không nối chuỗi để tạo query](#không-nối-chuỗi-để-tạo-query)
+- [Fragments dùng lại selection](#fragments-dùng-lại-selection)
+  - [Named fragment và fragment spread](#named-fragment-và-fragment-spread)
+  - [Fragment scope](#fragment-scope)
+  - [Fragment không thay thế schema](#fragment-không-thay-thế-schema)
+- [Inline fragment và type trừu tượng](#inline-fragment-và-type-trừu-tượng)
+  - [Fragment trên interface](#fragment-trên-interface)
+  - [Fragment trên union](#fragment-trên-union)
+  - [Response của abstract type](#response-của-abstract-type)
+- [Directive điều khiển selection](#directive-điều-khiển-selection)
+  - [Include và skip](#include-và-skip)
+  - [Directive và fragment](#directive-và-fragment)
+- [Query document và JSON transport envelope](#query-document-và-json-transport-envelope)
+  - [Một document nhiều operation](#một-document-nhiều-operation)
+  - [Request envelope và response](#request-envelope-và-response)
+- [Binding vào Java và Spring for GraphQL](#binding-vào-java-và-spring-for-graphql)
+  - [Argument đơn và detail lookup](#argument-đơn-và-detail-lookup)
+  - [Input object và filter](#input-object-và-filter)
+  - [Ranh giới với bài binding](#ranh-giới-với-bài-binding)
+- [Lỗi thường gặp và checklist](#lỗi-thường-gặp-và-checklist)
+  - [Thiếu required variable](#thiếu-required-variable)
+  - [Sai type hoặc unknown argument](#sai-type-hoặc-unknown-argument)
+  - [Checklist thực hành](#checklist-thực-hành)
+- [Quy trình thực hành](#quy-trình-thực-hành)
 - [Bước tiếp theo](#bước-tiếp-theo)
 
-## Nội dung dự kiến
+## Bức tranh tổng thể
 
-Nội dung chi tiết sẽ bao gồm khái niệm chính, ví dụ code và các lưu ý thực hành liên quan đến chủ đề này.
+Hãy tách một request thành bốn phần trước khi viết code. **Query document** là toàn bộ văn bản GraphQL. **Variable definition** (khai báo variable) cho biết operation chờ những giá trị runtime nào. **Argument** là tham số có tên gắn với một field. **Selection set** (tập field output mà client muốn nhận) là phần mô tả shape của response.
 
-<Callout type="info" title="Trang placeholder">
-Đây là trang khung. Hãy dùng skill `fumadocs-technical-writer` để viết đầy đủ trang này trong bước tiếp theo.
+### Bốn lớp cần tách
+
+Ví dụ ngắn sau có đủ các điểm nối quan trọng:
+
+```graphql
+query BookDetail($bookId: ID!, $includeSummary: Boolean!) {
+  book(id: $bookId) {
+    id
+    title
+    summary @include(if: $includeSummary)
+  }
+}
+```
+
+Đọc từ trên xuống:
+
+1. `query BookDetail` là một operation có tên.
+2. `$bookId: ID!` và `$includeSummary: Boolean!` là variable definitions. Chúng khai báo tên và kiểu mà operation cần.
+3. `book(id: $bookId)` gọi field `book` với argument tên `id`. Giá trị của argument đến từ variable `$bookId`.
+4. `id`, `title` và `summary` là selection output. Chúng quyết định response có field nào.
+5. `@include` là directive (chỉ thị) điều khiển việc có đưa `summary` vào selection hay không.
+
+Một cách hình dung khác là:
+
+```text
+JSON variables ──► variable definition ──► argument của field ──► resolver
+                                                               │
+Selection set ◄──────────── execution output ◄─────────────────┘
+```
+
+Variables không trở thành field của `Book`. Arguments cũng không xuất hiện trong response chỉ vì chúng được truyền vào. Ngược lại, `id`, `title` và `summary` là field output vì chúng nằm trong selection set.
+
+### Thuật ngữ cốt lõi
+
+| Thuật ngữ | Nghĩa thực hành | Ví dụ |
+| --- | --- | --- |
+| **Variable** | Giá trị runtime được truyền riêng cho operation; trong GraphQL document có tiền tố `$`. | `$bookId`, `variables.bookId` |
+| **Variable definition** | Khai báo variable ở đầu operation, gồm tên, kiểu và có thể có giá trị mặc định. | `$pageSize: Int = 10` |
+| **Argument** | Tham số có tên mà một field nhận theo schema. | `book(id: $bookId)` |
+| **Literal** | Giá trị viết trực tiếp trong GraphQL document thay vì lấy từ variables. | `first: 2`, `genre: PROGRAMMING` |
+| **Coercion** | Quá trình GraphQL chuẩn hóa và kiểm tra literal hoặc JSON variable theo kiểu đã khai báo. | `"2"` không phải `Int` literal |
+| **Default value** | Giá trị được dùng khi một variable hoặc argument bị bỏ qua và contract có khai báo mặc định. | `first: Int = 20` |
+| **Named fragment** | Fragment có tên, chứa một selection set có thể được dùng ở nhiều vị trí tương thích. | `fragment BookFields on Book` |
+| **Fragment spread** | Cú pháp gọi named fragment trong một selection set. | `...BookFields` |
+| **Inline fragment** | Fragment viết trực tiếp tại vị trí selection, thường có type condition cho một concrete type. | `... on BookResult { ... }` |
+| **Directive** | Chỉ thị bắt đầu bằng `@`, bổ sung quy tắc cho schema hoặc operation. | `@include(if: $show)` |
+
+## SDL minh họa cho catalog sách
+
+Các ví dụ bên dưới dùng chung một SDL tối thiểu. **SDL** (*Schema Definition Language*, ngôn ngữ định nghĩa schema) mô tả contract; nó không tạo database, resolver hoặc dữ liệu. Các type `BookResult` và `AuthorResult` vừa triển khai interface `SearchResult`, vừa là member của union `DiscoveryItem` để minh họa hai cách dùng inline fragment.
+
+```graphql title="schema.graphqls"
+schema {
+  query: Query
+}
+
+type Query {
+  book(id: ID!): Book
+  books(
+    filter: BookFilter
+    first: Int = 20
+    after: String
+  ): BookPage!
+  search(text: String!, first: Int = 10): [SearchResult!]!
+  discover(first: Int = 10): [DiscoveryItem!]!
+}
+
+type BookPage {
+  nodes: [Book!]!
+  pageInfo: PageInfo!
+}
+
+type PageInfo {
+  hasNextPage: Boolean!
+  endCursor: String
+}
+
+type Book {
+  id: ID!
+  title: String!
+  author: Author!
+  publishedYear: Int
+  genre: BookGenre!
+  summary: String
+}
+
+type Author {
+  id: ID!
+  name: String!
+}
+
+input BookFilter {
+  text: String
+  genre: BookGenre
+  publishedFrom: Int
+}
+
+enum BookGenre {
+  PROGRAMMING
+  DATABASE
+  SOFTWARE_DESIGN
+}
+
+interface SearchResult {
+  id: ID!
+  label: String!
+}
+
+type BookResult implements SearchResult {
+  id: ID!
+  label: String!
+  book: Book!
+}
+
+type AuthorResult implements SearchResult {
+  id: ID!
+  label: String!
+  author: Author!
+}
+
+union DiscoveryItem = BookResult | AuthorResult
+```
+
+### Input type và output selection
+
+**Input type** (kiểu dữ liệu nhận vào) mô tả giá trị đi từ client vào server. `BookFilter` là input object: nó chỉ được dùng ở vị trí argument như `filter: $filter`. Client không thể mở selection set trên `BookFilter` để đọc `text` hoặc `genre`.
+
+**Output type** (kiểu dữ liệu trả về) mô tả những gì server có thể trả ra. `Book`, `BookPage`, `Author`, interface và union trong SDL trên đều là output type. Khi một field trả về `Book` hoặc `BookPage`, client phải chọn field con. Selection set của output nằm trong operation, không nằm trong variables JSON.
+
+| Hướng dữ liệu | Ví dụ | Cách dùng |
+| --- | --- | --- |
+| Input | `BookFilter`, `BookGenre` ở argument | `books(filter: $filter)` |
+| Output object | `Book`, `BookPage`, `Author` | `book { id title }` |
+| Output abstract type | `SearchResult`, `DiscoveryItem` | Chọn field chung hoặc inline fragment |
+| Variable runtime | JSON `filter`, `pageSize` | Điền vào variable definition |
+
+Không dùng `Book` output làm input chỉ vì `Book` và `BookFilter` cùng có field `genre`. Input thường có validation và quyền ghi/đọc khác output. Bài [Enum, input object và arguments](/docs/schema-va-type-system/enum-input-arguments) phân tích riêng cách chọn enum, input object và argument.
+
+### Arguments cho detail filter và paging
+
+`Argument` là tham số có tên gắn với một field. Trong SDL trên:
+
+- `book(id: ID!): Book` dùng `id` cho detail lookup (tìm một bản ghi theo định danh). `id` là bắt buộc và có kiểu `ID!`.
+- `books(filter: BookFilter, first: Int = 20, after: String)` nhận filter, kích thước trang và cursor tùy chọn. `first` cùng `after` là ví dụ paging.
+- `search(text: String!, first: Int = 10)` nhận từ khóa bắt buộc và giới hạn kết quả.
+
+Tên argument là một phần contract. `first` không thể tự đổi thành `limit`, và `book` không thể nhận thêm `filter` nếu SDL không khai báo. Argument cũng không phải field output: `id` trong `book(id: $bookId)` giúp resolver tìm sách, còn `id` bên trong `{ id title }` là field được trả về.
+
+Với filter có nhiều điều kiện, input object có tên như `BookFilter` giữ operation dễ đọc và có thể mở rộng bằng field nullable. Với một giá trị đơn giản như `id`, argument trực tiếp thường rõ hơn việc tạo một input object chỉ chứa `id`.
+
+## Variables và variable definitions
+
+### Operation với variable
+
+Một **variable definition** có dạng `$name: Type`, đặt sau tên operation. Dấu `$` chỉ xuất hiện trong GraphQL document. Giá trị thật được đặt trong object `variables` của request envelope.
+
+Operation đầy đủ dưới đây dùng detail lookup, filtering, paging, một directive và hai loại abstract result cùng lúc:
+
+```graphql title="Query Catalog"
+query Catalog(
+  $bookId: ID!
+  $filter: BookFilter
+  $pageSize: Int = 10
+  $after: String
+  $includeSummary: Boolean!
+  $searchText: String!
+) {
+  bookDetail: book(id: $bookId) {
+    ...BookFields
+  }
+  books(filter: $filter, first: $pageSize, after: $after) {
+    nodes {
+      ...BookFields
+    }
+    pageInfo {
+      hasNextPage
+      endCursor
+    }
+  }
+  search(text: $searchText, first: $pageSize) {
+    __typename
+    id
+    label
+    ... on BookResult {
+      book {
+        ...BookFields
+      }
+    }
+    ... on AuthorResult {
+      author {
+        id
+        name
+      }
+    }
+  }
+}
+
+fragment BookFields on Book {
+  id
+  title
+  author {
+    id
+    name
+  }
+  publishedYear
+  genre
+  summary @include(if: $includeSummary)
+}
+```
+
+Có thể đọc các cặp tên như sau:
+
+- `$bookId` là variable của operation; `id` là argument của field `book`.
+- `$filter` là variable có kiểu `BookFilter`; `filter` là argument của field `books`.
+- `$pageSize` được dùng cho argument `first` ở cả `books` và `search`. Tên variable không cần giống tên argument.
+- `$includeSummary` là variable được dùng bên trong fragment. Fragment không tự khai báo variable riêng; operation cung cấp scope cho nó.
+- `bookDetail` là alias (tên thay thế trong response) của field `book`. Alias đổi key response, không đổi tên field hay argument trong schema.
+
+`$pageSize: Int = 10` có **default value** (giá trị mặc định) ở cấp operation. Nếu `pageSize` bị bỏ qua trong variables JSON, operation dùng `10`. Default ở cấp schema của `first` là một lớp khác; phần [Default value khi bỏ qua input](#default-value-khi-bỏ-qua-input) sẽ tách hai trường hợp này.
+
+### Variables JSON và response
+
+Variables gửi kèm operation là một JSON object. Key JSON không có dấu `$`, và enum trong JSON thường là string đúng tên enum:
+
+```json title="Variables của Catalog"
+{
+  "bookId": "book-1",
+  "filter": {
+    "genre": "PROGRAMMING",
+    "publishedFrom": 2018
+  },
+  "pageSize": 2,
+  "after": null,
+  "includeSummary": true,
+  "searchText": "graphql"
+}
+```
+
+Với dữ liệu giả định, response có thể là:
+
+```json title="Response minh họa"
+{
+  "data": {
+    "bookDetail": {
+      "id": "book-1",
+      "title": "Effective Java",
+      "author": {
+        "id": "author-1",
+        "name": "Joshua Bloch"
+      },
+      "publishedYear": 2018,
+      "genre": "PROGRAMMING",
+      "summary": "Thực hành Java hiệu quả."
+    },
+    "books": {
+      "nodes": [
+        {
+          "id": "book-1",
+          "title": "Effective Java",
+          "author": {
+            "id": "author-1",
+            "name": "Joshua Bloch"
+          },
+          "publishedYear": 2018,
+          "genre": "PROGRAMMING",
+          "summary": "Thực hành Java hiệu quả."
+        },
+        {
+          "id": "book-3",
+          "title": "GraphQL in Action",
+          "author": {
+            "id": "author-2",
+            "name": "Samer Buna"
+          },
+          "publishedYear": 2022,
+          "genre": "PROGRAMMING",
+          "summary": "Xây dựng API GraphQL có kiểu."
+        }
+      ],
+      "pageInfo": {
+        "hasNextPage": true,
+        "endCursor": "cursor-2"
+      }
+    },
+    "search": [
+      {
+        "__typename": "BookResult",
+        "id": "book-3",
+        "label": "GraphQL in Action",
+        "book": {
+          "id": "book-3",
+          "title": "GraphQL in Action",
+          "author": {
+            "id": "author-2",
+            "name": "Samer Buna"
+          },
+          "publishedYear": 2022,
+          "genre": "PROGRAMMING",
+          "summary": "Xây dựng API GraphQL có kiểu."
+        }
+      },
+      {
+        "__typename": "AuthorResult",
+        "id": "author-2",
+        "label": "Samer Buna",
+        "author": {
+          "id": "author-2",
+          "name": "Samer Buna"
+        }
+      }
+    ]
+  }
+}
+```
+
+Response phản ánh selection set chứ không phản ánh toàn bộ SDL. `bookDetail` xuất hiện vì alias được chọn. `summary` xuất hiện vì `includeSummary` là `true`. `discover` không xuất hiện vì operation không chọn field đó. Nếu `includeSummary` là `false`, `summary` bị bỏ khỏi response; nó không xuất hiện với giá trị `null`.
+
+Đây là response minh họa, không phải output runtime. Với `Book.author: Author!`, query phải chọn field con của `Author`. Với `Book.publishedYear: Int` và `PageInfo.endCursor: String`, giá trị `null` vẫn có thể hợp lệ theo SDL. Xem [List và nullable](/docs/schema-va-type-system/list-va-nullable) khi cần phân tích sâu hơn `[Book!]!`, list rỗng và lỗi lan truyền.
+
+### Kiểu variable tương thích argument
+
+Kiểu của variable phải tương thích với vị trí argument mà nó được truyền vào. So sánh trực tiếp từ SDL:
+
+| Variable definition | Cách dùng | Argument trong SDL | Kết quả |
+| --- | --- | --- | --- |
+| `$bookId: ID!` | `book(id: $bookId)` | `id: ID!` | Hợp lệ |
+| `$filter: BookFilter` | `books(filter: $filter)` | `filter: BookFilter` | Hợp lệ |
+| `$pageSize: Int = 10` | `books(first: $pageSize)` | `first: Int` | Hợp lệ |
+| `$after: String` | `books(after: $after)` | `after: String` | Hợp lệ |
+| `$bookId: ID` | `book(id: $bookId)` | `id: ID!` | Không tương thích vì variable có thể là `null` |
+| `$bookId: String!` | `book(id: $bookId)` | `id: ID!` | Không tương thích vì là named type khác |
+
+Đặc biệt, `$bookId: ID` không đủ để truyền vào `id: ID!`: một variable nullable có thể đưa `null` vào argument bắt buộc. Hãy khai báo `$bookId: ID!` hoặc thiết kế argument có thể nullable nếu domain thực sự cho phép.
+
+GraphQL kiểm tra compatibility của variable definition với argument trước khi resolver xử lý. JSON cũng phải đúng kiểu của variable: `pageSize` nhận số như `2`, không nhận string như `"2"`; `includeSummary` nhận Boolean `true`, không nhận `"true"`. `ID` và enum có quy tắc serialize riêng, vì vậy hãy đối chiếu schema thay vì đoán từ kiểu Java.
+
+## Literal coercion và default
+
+### Literal trong GraphQL document
+
+**Literal** là giá trị viết trực tiếp trong GraphQL document. Literal phù hợp khi giá trị cố định, chẳng hạn một smoke test hoặc ví dụ tài liệu:
+
+```graphql
+query ProgrammingBooks {
+  books(
+    filter: {
+      genre: PROGRAMMING
+      publishedFrom: 2018
+    }
+    first: 2
+  ) {
+    nodes {
+      id
+      title
+      author {
+        id
+        name
+      }
+      publishedYear
+      genre
+    }
+    pageInfo {
+      hasNextPage
+      endCursor
+    }
+  }
+}
+```
+
+Trong document này:
+
+- `PROGRAMMING` là enum literal nên không đặt trong dấu ngoặc kép.
+- `2018` và `2` là integer literal.
+- Nếu truyền `text`, chuỗi phải viết như `text: "graphql"`.
+- `null` chỉ hợp lệ ở vị trí nullable, chẳng hạn `after: null`.
+- Input object dùng `{ ... }` với field đã được khai báo trong `BookFilter`.
+
+Variables JSON có cách biểu diễn khác với GraphQL document. Trong document, enum là `PROGRAMMING`; trong JSON variables, enum thường là `"PROGRAMMING"`. Trong document, Boolean là `true`; trong JSON, Boolean cũng là `true`, không phải chuỗi `"true"`.
+
+### Coercion kiểm tra ở biên
+
+**Coercion** là bước GraphQL đọc, chuẩn hóa và kiểm tra literal hoặc giá trị JSON theo kiểu của schema. Nó xảy ra trước khi resolver nhận input. Có thể kiểm tra theo ba lớp:
+
+1. GraphQL parse document và nhận diện cấu trúc input.
+2. GraphQL đối chiếu literal hoặc variables với kiểu `Int`, `ID`, enum, input object và nullability.
+3. Chỉ khi input qua contract, resolver mới nhận giá trị để service áp dụng validation nghiệp vụ.
+
+Một số ví dụ:
+
+| Giá trị gửi | Kiểu mong đợi | Kết quả |
+| --- | --- | --- |
+| `first: 2` | `Int` | Hợp lệ |
+| `first: "2"` | `Int` | Sai vì đây là String literal |
+| JSON `"pageSize": 2` | `$pageSize: Int` | Hợp lệ |
+| JSON `"pageSize": "2"` | `$pageSize: Int` | Bị từ chối khi coerce variable |
+| `genre: PROGRAMMING` | `BookGenre` | Hợp lệ |
+| JSON `"genre": "PROGRAMMING"` | `BookGenre` | Hợp lệ nếu enum tồn tại |
+| `genre: FICTION` | `BookGenre` | Bị từ chối vì enum không có value này |
+| `filter: "PROGRAMMING"` | `BookFilter` | Bị từ chối vì cần input object |
+
+Coercion không kiểm tra mọi quy tắc domain. `publishedFrom: 9999` vẫn có thể đúng kiểu `Int` nhưng service có thể từ chối vì năm không hợp lệ. `genre: PROGRAMMING` đúng enum nhưng user vẫn có thể không có quyền tạo hoặc đọc genre đó.
+
+### Default value khi bỏ qua input
+
+Có hai nơi có thể khai báo default value, và chúng không nên bị trộn lẫn.
+
+**Default ở variable definition** thuộc operation:
+
+```graphql
+query FirstPage($pageSize: Int = 10) {
+  books(first: $pageSize) {
+    nodes {
+      id
+      title
+    }
+  }
+}
+```
+
+Với variables `{}`, operation dùng `pageSize = 10`. Nếu gửi `{"pageSize": 5}`, giá trị `5` thay thế default. Nếu khai báo `$pageSize: Int` không có default rồi truyền `null`, argument `first` nhận `null`; default ở operation không tự xuất hiện.
+
+**Default ở schema argument** thuộc field:
+
+```graphql
+type Query {
+  books(first: Int = 20): BookPage!
+}
+```
+
+Khi operation viết `books { ... }` và bỏ hẳn argument `first`, schema có thể dùng `20`. Nếu operation viết `books(first: null)`, client đã truyền `null` tường minh vào argument nullable; không nên coi đó là “bị bỏ qua”. Nếu operation truyền `books(first: $pageSize)`, hãy xử lý việc variable bị bỏ qua hoặc nhận `null` theo variable definition và contract của field.
+
+<Callout type="idea" title="Chốt ý về default">
+  Bỏ key trong variables JSON, truyền `null`, và bỏ hẳn argument khỏi field call là ba tình huống có thể khác nhau. Hãy đọc cả variable definition lẫn SDL của argument trước khi đoán giá trị resolver nhận được.
 </Callout>
+
+### Không nối chuỗi để tạo query
+
+Không lấy input của người dùng rồi nối vào query string để tạo literal động:
+
+```js
+// Không nên: trộn dữ liệu runtime vào GraphQL document.
+const query = `query BookDetail { book(id: "${bookId}") { id title } }`;
+```
+
+Cách này dễ sai dấu ngoặc kép, khó kiểm soát input, làm document thay đổi liên tục và phá lợi ích của validation, cache hoặc logging theo operation. Cách đúng là giữ document ổn định và truyền variables riêng:
+
+```js
+const query = `
+  query BookDetail($bookId: ID!) {
+    book(id: $bookId) {
+      id
+      title
+    }
+  }
+`;
+
+const variables = { bookId };
+```
+
+Client library hoặc HTTP client sẽ đưa `query` và `variables` vào request envelope. Variables vẫn phải được server kiểm tra theo schema; tách chúng khỏi document không thay thế authentication, authorization hay validation nghiệp vụ.
+
+## Fragments dùng lại selection
+
+### Named fragment và fragment spread
+
+**Named fragment** (fragment có tên) là một đoạn selection set được đặt tên và gắn với một type condition. Ví dụ `BookFields` mô tả nhóm field dùng chung cho `Book`:
+
+```graphql
+fragment BookFields on Book {
+  id
+  title
+  author {
+    id
+    name
+  }
+  publishedYear
+  genre
+  summary @include(if: $includeSummary)
+}
+```
+
+**Fragment spread** (cú pháp gọi named fragment trong selection set) là `...BookFields` dùng fragment đó tại một vị trí tương thích:
+
+```graphql
+query BookCards($bookId: ID!, $includeSummary: Boolean!) {
+  detail: book(id: $bookId) {
+    ...BookFields
+  }
+  books(first: 10) {
+    nodes {
+      ...BookFields
+    }
+  }
+}
+
+fragment BookFields on Book {
+  id
+  title
+  author {
+    id
+    name
+  }
+  publishedYear
+  genre
+  summary @include(if: $includeSummary)
+}
+```
+
+Fragment không phải macro text đơn giản, nhưng có thể hình dung `...BookFields` mở rộng thành nhóm field tương ứng khi đọc selection. Nó giúp hai vị trí giữ cùng shape và tránh copy `id`, `title`, `author` bằng tay. `fragment BookFields on Book` chỉ hợp lệ khi spread trên `Book` hoặc một vị trí mà `Book` có thể xuất hiện.
+
+Fragment definition có thể đặt sau operation, như trong ví dụ. Tên fragment phải duy nhất trong document. Một fragment không tự chạy được; nó chỉ được thực thi khi một operation spread nó. Fragment cũng không tạo endpoint hay cache dùng chung ở server.
+
+### Fragment scope
+
+**Fragment scope** là phạm vi mà fragment và variable của nó có hiệu lực. Hãy nhớ bốn quy tắc:
+
+1. Fragment thuộc query document hiện tại. Fragment ở một file khác không tự có hiệu lực nếu client không ghép nó vào document hoặc tooling không thực hiện bước đó.
+2. Fragment có thể được spread ở nhiều operation trong cùng document, miễn type condition tương thích.
+3. Fragment không có variable scope riêng. `$includeSummary` trong `BookFields` thuộc operation đang spread fragment.
+4. Mọi operation sử dụng `BookFields` phải khai báo `$includeSummary: Boolean!`; nếu không, document fail validation dù fragment definition nằm trong document.
+
+Ví dụ sau thiếu variable mà fragment yêu cầu:
+
+```graphql
+query WithoutSummaryFlag {
+  book(id: "book-1") {
+    ...BookFields
+  }
+}
+
+fragment BookFields on Book {
+  id
+  summary @include(if: $includeSummary)
+}
+```
+
+Operation `WithoutSummaryFlag` không khai báo `$includeSummary`, nên không được coi là hợp lệ. Cách sửa là khai báo variable trong operation, hoặc bỏ directive và selection phụ thuộc variable khỏi fragment. Một fragment cũng không thể spread vòng tròn qua fragment khác; hãy giữ dependency của fragment một chiều và dễ đọc.
+
+### Fragment không thay thế schema
+
+Fragment chỉ tổ chức selection set. Nó không:
+
+- thêm field mới vào `Book`;
+- biến `BookFilter` thành output object;
+- bỏ qua yêu cầu selection set của `BookPage`, `Book` hoặc `Author`;
+- cho phép spread `BookFields` trên `Author`;
+- chuyển một output type thành input type.
+
+Nếu fragment báo field không tồn tại, hãy kiểm tra SDL và schema đang được client dùng. Nếu cần đổi response key, dùng alias như `bookDetail: book(...)`; nếu cần hiểu sâu hơn selection set và alias, đọc [Query, selection set và alias](/docs/query-mutation-subscription/query-selection-set-alias).
+
+## Inline fragment và type trừu tượng
+
+**Inline fragment** (fragment nội tuyến) là một khối `... on Type { ... }` viết trực tiếp trong selection set, không có tên riêng. Nó phù hợp khi field trả về **abstract type** (type trừu tượng) như interface hoặc union và client cần chọn field theo type cụ thể.
+
+### Fragment trên interface
+
+`SearchResult` là interface có field chung `id` và `label`. Vì `search` trả `[SearchResult!]!`, client có thể chọn hai field chung trực tiếp, rồi dùng inline fragment cho field riêng:
+
+```graphql
+query SearchCatalog($searchText: String!, $pageSize: Int = 5) {
+  search(text: $searchText, first: $pageSize) {
+    __typename
+    id
+    label
+    ... on BookResult {
+      book {
+        id
+        title
+      }
+    }
+    ... on AuthorResult {
+      author {
+        id
+        name
+      }
+    }
+  }
+}
+```
+
+`__typename` là meta-field tích hợp, trả tên concrete type tại runtime như `BookResult` hoặc `AuthorResult`. `id` và `label` hợp lệ ngoài fragment vì chúng thuộc interface. `book` chỉ hợp lệ trong `... on BookResult`, còn `author` chỉ hợp lệ trong `... on AuthorResult`.
+
+Server cần xác định concrete type cho từng giá trị trả về của `search` để áp dụng fragment tương ứng. Đây là bước type resolution của execution, không phải lý do để client bỏ qua validation schema. Nếu resolver trả một giá trị không thuộc possible type, execution có thể tạo lỗi; response và nullability phụ thuộc implementation.
+
+### Fragment trên union
+
+`DiscoveryItem` là union:
+
+```graphql
+union DiscoveryItem = BookResult | AuthorResult
+```
+
+Union chỉ công khai tập object type có thể xuất hiện, không khai báo field chung. Vì vậy, client không thể viết `discover { id }` chỉ vì cả `BookResult` và `AuthorResult` tình cờ có `id`. Cách đúng là dùng `__typename` và inline fragments:
+
+```graphql
+query Discover($pageSize: Int = 5) {
+  discover(first: $pageSize) {
+    __typename
+    ... on BookResult {
+      book {
+        id
+        title
+      }
+    }
+    ... on AuthorResult {
+      author {
+        id
+        name
+      }
+    }
+  }
+}
+```
+
+Interface và union đều là output type trong ví dụ. Không dùng chúng làm input variable. Nếu input có nhiều hình dạng, thiết kế input object, enum hoặc mutation riêng theo contract; xem [Enum, input object và arguments](/docs/schema-va-type-system/enum-input-arguments).
+
+### Response của abstract type
+
+Với `SearchCatalog`, response có thể là:
+
+```json
+{
+  "data": {
+    "search": [
+      {
+        "__typename": "BookResult",
+        "id": "book-3",
+        "label": "GraphQL in Action",
+        "book": {
+          "id": "book-3",
+          "title": "GraphQL in Action"
+        }
+      },
+      {
+        "__typename": "AuthorResult",
+        "id": "author-2",
+        "label": "Samer Buna",
+        "author": {
+          "id": "author-2",
+          "name": "Samer Buna"
+        }
+      }
+    ]
+  }
+}
+```
+
+Field không thuộc nhánh type tương ứng không tự xuất hiện với `null`. Client nên dùng `__typename` hoặc cơ chế type generated để chọn cách hiển thị. Khi thêm member mới vào union hoặc interface, client cần có nhánh fallback; schema hợp lệ không đồng nghĩa UI cũ đã biết cách hiển thị member mới. Bài [Interface và union](/docs/schema-va-type-system/interface-va-union) đi sâu hơn vào type resolution và compatibility.
+
+## Directive điều khiển selection
+
+### Include và skip
+
+`@include` và `@skip` là các executable directive (directive dùng trong operation) tích hợp. Cả hai nhận argument `if: Boolean!`:
+
+- `@include(if: $condition)` chỉ chọn field khi condition là `true`.
+- `@skip(if: $condition)` bỏ field khi condition là `true`.
+
+Ví dụ dùng cả hai directive:
+
+```graphql
+query OptionalBookFields(
+  $bookId: ID!
+  $includeSummary: Boolean!
+  $skipAuthor: Boolean!
+) {
+  book(id: $bookId) {
+    id
+    title
+    author @skip(if: $skipAuthor) {
+      id
+      name
+    }
+    summary @include(if: $includeSummary)
+  }
+}
+```
+
+Variables tương ứng:
+
+```json
+{
+  "bookId": "book-1",
+  "includeSummary": true,
+  "skipAuthor": false
+}
+```
+
+Với giá trị trên, cả `author` và `summary` được chọn. Nếu `skipAuthor` là `true`, key `author` bị loại khỏi response. Nếu `includeSummary` là `false`, key `summary` bị loại khỏi response. “Không được chọn” khác với “được chọn nhưng server trả `null`”.
+
+Directive `@include` và `@skip` điều khiển selection ở operation; chúng không thay đổi SDL và không làm argument trở thành tùy chọn. Variable cho `if` vẫn phải là Boolean tương thích, thường khai báo `Boolean!`. Server cũng có thể có custom directive khác, nhưng directive custom chỉ có tác dụng khi implementation đăng ký và thực thi nó.
+
+### Directive và fragment
+
+Directive có thể đặt trên field bên trong named fragment, như `summary @include(if: $includeSummary)` trong `BookFields`. Khi đó, operation spread fragment phải cung cấp variable cần thiết. Directive không tạo ra scope mới và không thể dùng để che một field không tồn tại trong schema.
+
+Nếu selection có nhiều điều kiện, hãy đặt tên variable theo ý nghĩa UI hoặc use case như `$includeSummary`, `$skipAuthor`, thay vì truyền một cờ chung không rõ phạm vi. Nếu điều kiện ảnh hưởng authorization hoặc dữ liệu nhạy cảm, directive ở client không thay thế policy server; resolver/service vẫn phải kiểm tra quyền.
+
+## Query document và JSON transport envelope
+
+### Một document nhiều operation
+
+Một **query document** là toàn bộ văn bản GraphQL trong trường `query` của request. Document có thể có nhiều operation và fragment definition. Từ khóa `query` ở đầu operation không có nghĩa envelope chỉ chứa operation đọc; document cũng có thể chứa `mutation` hoặc `subscription`.
+
+Ví dụ document có hai operation:
+
+```graphql
+query BookCards($bookId: ID!) {
+  bookDetail: book(id: $bookId) {
+    id
+    title
+  }
+}
+
+query SearchOnly($searchText: String!, $pageSize: Int = 5) {
+  search(text: $searchText, first: $pageSize) {
+    __typename
+    id
+    label
+  }
+}
+```
+
+Nếu document có nhiều operation, client phải gửi `operationName` để server biết chạy operation nào. Khi chọn `SearchOnly`, variables cần cung cấp `searchText`; variable `$bookId` thuộc operation không được chọn không cần xuất hiện trong envelope của lần gọi đó.
+
+Envelope minh họa khi chọn `SearchOnly` là:
+
+```json
+{
+  "query": "query BookCards($bookId: ID!) { bookDetail: book(id: $bookId) { id title } } query SearchOnly($searchText: String!, $pageSize: Int = 5) { search(text: $searchText, first: $pageSize) { __typename id label } }",
+  "operationName": "SearchOnly",
+  "variables": {
+    "searchText": "graphql"
+  }
+}
+```
+
+Operation name là định danh của operation, không phải tên field và không phải tên fragment. Đặt tên rõ giúp log, trace, cache key và dashboard phân biệt `BookCards` với `SearchOnly`. Tên operation phải duy nhất trong một document; operation không tên không thể được chọn bằng `operationName` khi có nhiều operation.
+
+### Request envelope và response
+
+**JSON transport envelope** (vỏ JSON của transport) là object mà HTTP client gửi tới endpoint. Envelope khác query document: trường `query` là một **string** chứa toàn bộ document GraphQL, còn `variables` và `operationName` nằm bên ngoài string đó.
+
+```json title="HTTP request body"
+{
+  "query": "query BookCards($bookId: ID!) { bookDetail: book(id: $bookId) { id title } }",
+  "operationName": "BookCards",
+  "variables": {
+    "bookId": "book-1"
+  }
+}
+```
+
+HTTP headers như `Content-Type` hoặc `Authorization` cũng nằm ngoài JSON body. Chúng thuộc transport, không phải field của query document hay key trong `variables`.
+
+Ba trường cần phân biệt:
+
+| Trường envelope | Vai trò | Điều cần nhớ |
+| --- | --- | --- |
+| `query` | Chuỗi chứa query document | Key này vẫn tên là `query` dù document bên trong là `mutation` hoặc `subscription`. |
+| `operationName` | Chọn operation khi document có nhiều operation | Phải khớp chính xác tên operation; một document một operation có thể bỏ. |
+| `variables` | Map tên variable với giá trị JSON | Key là `bookId`, không phải `$bookId`; kiểu phải khớp variable definition. Có thể bỏ trường này nếu operation không cần variable. |
+
+Response GraphQL thường đặt kết quả dưới `data` và có thể có `errors`:
+
+```json
+{
+  "data": {
+    "bookDetail": {
+      "id": "book-1",
+      "title": "Effective Java"
+    }
+  }
+}
+```
+
+`data.bookDetail` dùng alias `bookDetail`, trong khi schema vẫn chỉ có field `book`. Envelope là chi tiết transport; endpoint có thể là `POST /graphql` trong một ứng dụng Spring Boot, nhưng path thực tế phụ thuộc cấu hình. Xem [Mô hình request/response](/docs/nen-tang/mo-hinh-request-response) để phân biệt envelope, HTTP status, `data`, `errors` và `extensions`, hoặc [Kiểm thử request bằng curl/Postman](/docs/bat-dau/kiem-thu-request-curl-postman) để gửi cùng body qua HTTP client.
+
+## Binding vào Java và Spring for GraphQL
+
+### Argument đơn và detail lookup
+
+Trong Spring for GraphQL, `@Argument` lấy argument có tên từ field GraphQL. Đoạn Java sau chỉ là fragment minh họa, không phải source code có sẵn trong repository:
+
+```java
+import org.springframework.graphql.data.method.annotation.Argument;
+import org.springframework.graphql.data.method.annotation.QueryMapping;
+import org.springframework.stereotype.Controller;
+
+@Controller
+public class CatalogController {
+
+    @QueryMapping
+    public Book book(@Argument("id") String id) {
+        return catalogService.findById(id).orElse(null);
+    }
+}
+```
+
+`@Argument("id")` khớp với `book(id: ID!)`. `ID` thường có thể bind vào `String`, nhưng kiểu Java và cách xử lý not-found cần được thống nhất với version Spring for GraphQL cùng service thật. `Book` là output object nên query của client vẫn phải chọn `id`, `title` hoặc field con khác.
+
+GraphQL đã kiểm tra variable và argument theo SDL trước khi method được gọi. `@Argument` không tạo thêm argument, không đổi nullability và không biến một field output thành input. Nếu tên parameter Java trùng tên GraphQL, có thể có dạng viết ngắn tùy cấu hình; ghi rõ tên trong ví dụ giúp tránh phụ thuộc metadata compiler.
+
+### Input object và filter
+
+Với `books(filter: BookFilter, first: Int, after: String)`, controller có thể nhận input object đã được bind:
+
+```java
+public record BookFilter(
+        String text,
+        BookGenre genre,
+        Integer publishedFrom
+) {}
+
+@QueryMapping
+public BookPage books(
+        @Argument("filter") BookFilter filter,
+        @Argument("first") Integer first,
+        @Argument("after") String after
+) {
+    return catalogService.search(filter, first, after);
+}
+```
+
+`filter` ở đây là một argument duy nhất có kiểu `BookFilter`; các field `text`, `genre` và `publishedFrom` nằm bên trong input object. Enum `BookGenre` thường được map theo tên value như `PROGRAMMING`, nhưng mapping thực tế phụ thuộc cấu hình và version. `first` có default ở schema nên method có thể nhận giá trị đã được GraphQL áp dụng khi argument bị bỏ qua.
+
+Cùng nguyên tắc áp dụng cho mutation: một input object như `CreateBookInput` có thể được truyền qua `$input` rồi lấy bằng `@Argument("input")`. Thiết kế payload và selection của mutation nằm ở [Mutation và input/payload](/docs/query-mutation-subscription/mutation-input-payload); trang này chỉ tập trung vào đường đi của variables và arguments.
+
+### Ranh giới với bài binding
+
+Hãy giữ ba lớp trách nhiệm riêng:
+
+| Lớp | Trách nhiệm | Ví dụ |
+| --- | --- | --- |
+| GraphQL schema và coercion | Kiểm tra field, tên argument, kiểu, enum, input field, nullability và default | `pageSize: "2"` bị từ chối vì cần `Int` |
+| Spring binding | Chuyển giá trị đã qua GraphQL thành tham số Java | `BookFilter`, `BookGenre`, `@Argument("id")` |
+| Service/domain | Kiểm tra invariant, quyền, tenant và giới hạn nghiệp vụ | `first` không vượt quá giới hạn vận hành |
+
+Bài [Binding arguments và input](/docs/tich-hop-spring-for-graphql/binding-arguments-input) đi sâu vào annotation, input object và các kiểu Java. Ở đây chỉ cần nhớ: variables không đi thẳng vào database; GraphQL coerce trước, Spring bind tiếp, rồi service mới áp dụng quy tắc domain. Nếu cần phân biệt field bị bỏ qua với field được gửi `null`, đối chiếu API `ArgumentValue` của version Spring for GraphQL đang dùng thay vì đoán hành vi binder.
+
+## Lỗi thường gặp và checklist
+
+### Thiếu required variable
+
+**Required variable** (variable bắt buộc) là variable có kiểu non-null như `ID!`, hoặc variable không có default nhưng được dùng ở vị trí bắt buộc. Với operation sau:
+
+```graphql
+query BookCards($bookId: ID!) {
+  book(id: $bookId) {
+    id
+    title
+  }
+}
+```
+
+Object variables có giá trị như sau là hợp lệ:
+
+```json
+{
+  "bookId": "book-1"
+}
+```
+
+Envelope gây lỗi vì không cung cấp object variables là:
+
+```json
+{
+  "query": "query BookCards($bookId: ID!) { book(id: $bookId) { id title } }",
+  "operationName": "BookCards",
+  "variables": {}
+}
+```
+
+Response minh họa có thể là:
+
+```json
+{
+  "errors": [
+    {
+      "message": "Variable \"$bookId\" of required type \"ID!\" was not provided."
+    }
+  ]
+}
+```
+
+Gửi `"bookId": null` cũng bị từ chối vì `ID!`. Tên message, vị trí lỗi, HTTP status và việc response có `data` hay không phụ thuộc GraphQL implementation và error handler. Điểm cần giữ là resolver `book` không nên nhận một giá trị bắt buộc bị thiếu.
+
+### Sai type hoặc unknown argument
+
+Các lỗi dưới đây thường được phát hiện ở validation hoặc input coercion trước khi resolver field xử lý:
+
+| Tình huống | Ví dụ | Ý nghĩa |
+| --- | --- | --- |
+| JSON sai kiểu | `"pageSize": "2"` cho `$pageSize: Int` | String JSON không phải số nguyên |
+| Variable definition sai | `$bookId: String!` truyền vào `id: ID!` | Named type của variable không tương thích argument |
+| Unknown argument | `book(id: "book-1", limit: 10)` | `book` không khai báo argument `limit` |
+| Unknown input field | `filter: { unknown: "x" }` | `unknown` không có trong `BookFilter` |
+| Unknown enum | `genre: FICTION` | `FICTION` không có trong `BookGenre` của SDL |
+
+Ví dụ variable sai kiểu:
+
+```graphql
+query Paged($pageSize: Int) {
+  books(first: $pageSize) {
+    nodes {
+      id
+      title
+    }
+  }
+}
+```
+
+```json
+{
+  "pageSize": "2"
+}
+```
+
+Ví dụ unknown argument:
+
+```graphql
+query InvalidArgument {
+  book(id: "book-1", limit: 10) {
+    id
+    title
+  }
+}
+```
+
+Một implementation có thể trả message như `Unknown argument "limit" on field "Query.book"` hoặc message tương đương. Không dựa vào đúng câu chữ này trong client; hãy dựa vào mã lỗi/shape mà server của project đã quy ước. Khi debug, đối chiếu SDL, operation document và variables trước khi kiểm tra repository hoặc database.
+
+<Callout type="error" title="Đừng sửa lỗi contract bằng cách nối chuỗi">
+  Nếu biến sai kiểu hoặc argument không tồn tại, sửa variable definition, variables JSON hoặc SDL theo use case. Không đổi mọi thứ thành `String`, không cho phép JSON tùy ý chỉ để request qua validation, và không nối input người dùng vào query document.
+</Callout>
+
+### Checklist thực hành
+
+Trước khi đưa một operation vào client hoặc test, kiểm tra:
+
+- [ ] Đã đọc đúng field và argument trong schema hiện tại chưa? Không tự thêm `limit`, `filter` hay `sort` nếu SDL không có.
+- [ ] Mỗi variable definition có tên, kiểu và default value cần thiết chưa?
+- [ ] Kiểu variable có tương thích vị trí argument không? Đặc biệt, nullable variable không tự dùng được cho argument non-null.
+- [ ] Variables JSON dùng key không có `$`, số là number, Boolean là Boolean và enum là string đúng tên enum chưa?
+- [ ] Input object có đúng field đã khai báo, không có unknown field và không trộn với output object không?
+- [ ] Object/list object đã có selection set; scalar không bị mở selection set con chưa?
+- [ ] Named fragment có type condition phù hợp và fragment spread chỉ nằm ở vị trí tương thích chưa?
+- [ ] Mọi operation dùng fragment có khai báo các variable mà fragment tham chiếu chưa?
+- [ ] Inline fragment có dùng đúng concrete type của interface/union và có `__typename` khi client cần phân nhánh chưa?
+- [ ] `@include`/`@skip` dùng variable `Boolean!` và hiểu rõ field bị bỏ qua sẽ không xuất hiện trong response chưa?
+- [ ] Nếu document có nhiều operation, `operationName` có khớp chính xác operation được chọn chưa?
+- [ ] Client có đọc cả `data` và `errors`, thay vì coi HTTP `200` là thành công tuyệt đối chưa?
+- [ ] Query document có được giữ ổn định, không tạo bằng cách nối chuỗi dữ liệu runtime chưa?
+
+Khi list hoặc field con có thể `null`, đối chiếu thêm [List và nullable](/docs/schema-va-type-system/list-va-nullable). Khi cần alias và selection set, đọc [Query, selection set và alias](/docs/query-mutation-subscription/query-selection-set-alias).
+
+## Quy trình thực hành
+
+Dùng quy trình sau để chuyển một use case từ schema sang request có variables:
+
+<Steps>
+  <Step>
+    **Đọc SDL trước.** Xác định root field, kiểu trả về, argument, input type, nullability và field nào là object cần selection set.
+  </Step>
+  <Step>
+    **Viết query document ổn định.** Đặt tên operation, khai báo variable definition, truyền variable vào argument đúng tên và dùng named/inline fragment khi selection được lặp hoặc phụ thuộc type.
+  </Step>
+  <Step>
+    **Tạo variables JSON riêng.** Dùng key không có `$`, giữ đúng kiểu JSON, phân biệt key bị bỏ qua với giá trị `null`, rồi kiểm tra enum/input object theo SDL.
+  </Step>
+  <Step>
+    **Đóng gói transport envelope.** Đưa document vào string `query`, thêm `operationName` khi cần và đặt variables vào trường `variables`. Không đặt variables hoặc HTTP headers vào selection set.
+  </Step>
+  <Step>
+    **Đọc execution result.** So sánh `data` với selection set và alias, đọc `errors` cùng `path` nếu có, rồi phân biệt lỗi validation/coercion với lỗi resolver hoặc service.
+  </Step>
+</Steps>
+
+Quy trình trên là cách kiểm tra tĩnh và cách đọc request. Khi áp dụng vào backend thật, có thể dùng GraphiQL để khám phá schema rồi dùng `curl` hoặc Postman để lặp request; xem [GraphiQL và công cụ khám phá API](/docs/bat-dau/graphiql-va-kham-pha-api) và [Kiểm thử request bằng curl/Postman](/docs/bat-dau/kiem-thu-request-curl-postman). Repository này không có backend để tuyên bố các bước đó đã chạy thành công.
+
+<Accordions type="single">
+  <Accordion title="Fragment có phải là một request riêng không?">
+    Không. Fragment chỉ là một definition trong cùng query document. Client phải spread fragment từ một operation; server không nhận fragment như một endpoint riêng. Nếu fragment tham chiếu variable, operation sử dụng nó phải khai báo variable đó.
+  </Accordion>
+  <Accordion title="Có nên tạo fragment cho mọi field không?">
+    Không nhất thiết. Tạo fragment khi một nhóm selection có ngữ nghĩa dùng lại, chẳng hạn `BookFields` cho card và detail. Fragment quá nhỏ hoặc lồng quá nhiều lớp có thể làm khó theo dõi scope và khiến document kém rõ; hãy giữ type condition và dependency variable dễ đọc.
+  </Accordion>
+</Accordions>
 
 ## Bước tiếp theo
 
-Sau khi trang được điền nội dung, đọc bài kế tiếp trong nhóm để tiếp tục lộ trình.
+- Đọc [Query, selection set và alias](/docs/query-mutation-subscription/query-selection-set-alias) để hiểu sâu hơn shape response và alias `bookDetail`.
+- Xem [Enum, input object và arguments](/docs/schema-va-type-system/enum-input-arguments) để thiết kế input typed thay vì String hoặc JSON tùy ý.
+- Học [Mutation và input/payload](/docs/query-mutation-subscription/mutation-input-payload) khi áp dụng variables và input object cho thao tác ghi.
+- Đối chiếu [List và nullable](/docs/schema-va-type-system/list-va-nullable) khi response có list rỗng, phần tử nullable hoặc null bubbling.
+- Đi sâu vào [Binding arguments và input](/docs/tich-hop-spring-for-graphql/binding-arguments-input) để map argument/input vào Java trong Spring for GraphQL.
+- Ôn [Mô hình request/response](/docs/nen-tang/mo-hinh-request-response) để tách query document, JSON envelope, `data` và `errors`.
+
+<Cards>
+  <Card title="Query, selection set và alias" href="/docs/query-mutation-subscription/query-selection-set-alias" description="Kiểm soát shape response bằng selection set và alias." />
+  <Card title="Enum, input object và arguments" href="/docs/schema-va-type-system/enum-input-arguments" description="Mô hình hóa input có kiểu, enum và argument rõ ràng." />
+  <Card title="Mutation và input/payload" href="/docs/query-mutation-subscription/mutation-input-payload" description="Dùng input object và selection cho operation ghi." />
+  <Card title="Binding arguments và input" href="/docs/tich-hop-spring-for-graphql/binding-arguments-input" description="Nối variables và arguments với method Java." />
+  <Card title="Mô hình request/response" href="/docs/nen-tang/mo-hinh-request-response" description="Đọc transport envelope, data, errors và partial result." />
+</Cards>

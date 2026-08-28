@@ -1,23 +1,832 @@
 ---
 title: "Xử lý lỗi trong mutation"
-description: "So sánh GraphQL errors với domain errors và chọn contract lỗi dễ dùng cho client."
+description: "Thiết kế contract lỗi GraphQL để client phân biệt lỗi request, lỗi nghiệp vụ và lỗi execution."
 ---
 
-Trang này sẽ trình bày **Xử lý lỗi trong mutation** trong bối cảnh xây dựng GraphQL API với Spring Boot.
+import { Step, Steps } from 'fumadocs-ui/components/steps';
+import { Accordion, Accordions } from 'fumadocs-ui/components/accordion';
+
+Mutation vừa thay đổi trạng thái vừa cần cho client biết kết quả có thể hành động tiếp theo là gì. Một contract tốt không bắt client đoán từ HTTP `200`, từ chuỗi exception hay từ một giá trị `null` xem thao tác đã được xử lý đến đâu.
+
+<Callout type="info" title="Phạm vi và giả định">
+Các SDL, mutation, variables và JSON trong bài là ví dụ tĩnh được dựng để minh họa contract. Repository này là docs-only, không có backend Spring Boot để chạy các ví dụ. `/graphql`, HTTP status, message cụ thể và các trường trong `extensions` đều phụ thuộc implementation; không response nào bên dưới được trình bày như output đã chạy runtime.
+</Callout>
 
 ## Mục lục
 
-- [Nội dung dự kiến](#nội-dung-dự-kiến)
-- [Bước tiếp theo](#bước-tiếp-theo)
+- [Mục tiêu và mô hình lỗi](#mục-tiêu-và-mô-hình-lỗi)
+  - [Bốn lớp lỗi cần phân biệt](#bốn-lớp-lỗi-cần-phân-biệt)
+  - [Lỗi request không vào resolver](#lỗi-request-không-vào-resolver)
+  - [Lỗi nghiệp vụ và lỗi execution](#lỗi-nghiệp-vụ-và-lỗi-execution)
+- [Đọc response của mutation](#đọc-response-của-mutation)
+  - [GraphQL errors là gì](#graphql-errors-là-gì)
+  - [data, errors và partial data](#data-errors-và-partial-data)
+  - [HTTP status thuộc transport](#http-status-thuộc-transport)
+  - [path, locations và extensions](#path-locations-và-extensions)
+- [Thiết kế SDL cho payload có lỗi typed](#thiết-kế-sdl-cho-payload-có-lỗi-typed)
+  - [Payload thành công và thất bại dự kiến](#payload-thành-công-và-thất-bại-dự-kiến)
+  - [SDL minh họa nhất quán](#sdl-minh-họa-nhất-quán)
+- [Gửi mutation và đọc các outcome](#gửi-mutation-và-đọc-các-outcome)
+  - [Operation và variables](#operation-và-variables)
+  - [Success trong data](#success-trong-data)
+  - [Domain validation trong data](#domain-validation-trong-data)
+  - [Validation hoặc coercion trong errors](#validation-hoặc-coercion-trong-errors)
+  - [Execution error và partial data](#execution-error-và-partial-data)
+- [Chọn payload error hay exception](#chọn-payload-error-hay-exception)
+  - [Khi nên trả lỗi trong payload](#khi-nên-trả-lỗi-trong-payload)
+  - [Khi nên throw exception](#khi-nên-throw-exception)
+  - [Bảng quyết định](#bảng-quyết-định)
+- [Ổn định error code, message và path](#ổn-định-error-code-message-và-path)
+  - [Code cho máy, message cho người](#code-cho-máy-message-cho-người)
+  - [Hai loại path không nên trộn](#hai-loại-path-không-nên-trộn)
+  - [Versioning và mở rộng enum](#versioning-và-mở-rộng-enum)
+- [Null bubbling và phạm vi ảnh hưởng](#null-bubbling-và-phạm-vi-ảnh-hưởng)
+  - [Đọc dấu ! trong payload](#đọc-dấu-trong-payload)
+  - [Khi lỗi làm mất dữ liệu](#khi-lỗi-làm-mất-dữ-liệu)
+- [Liên hệ với Spring for GraphQL](#liên-hệ-với-spring-for-graphql)
+  - [MutationMapping nối root field](#mutationmapping-nối-root-field)
+  - [DataFetcherExceptionResolver ở mức khái niệm](#datafetcherexceptionresolver-ở-mức-khái-niệm)
+  - [Exception resolver không thay service](#exception-resolver-không-thay-service)
+- [Bảo mật, authorization, rate limit và retry](#bảo-mật-authorization-rate-limit-và-retry)
+  - [Authentication và authorization](#authentication-và-authorization)
+  - [Rate limit và transport policy](#rate-limit-và-transport-policy)
+  - [Logging, correlation ID và observability](#logging-correlation-id-và-observability)
+  - [Retry và idempotency](#retry-và-idempotency)
+- [Quy trình debug theo lớp](#quy-trình-debug-theo-lớp)
+- [Checklist review contract](#checklist-review-contract)
+- [Câu hỏi thường gặp](#câu-hỏi-thường-gặp)
+- [Liên kết liên quan](#liên-kết-liên-quan)
 
-## Nội dung dự kiến
+## Mục tiêu và mô hình lỗi
 
-Nội dung chi tiết sẽ bao gồm khái niệm chính, ví dụ code và các lưu ý thực hành liên quan đến chủ đề này.
+Mục tiêu của error contract là giúp client trả lời được ba câu hỏi: request có được GraphQL chấp nhận không, use case có được xử lý không, và nếu thất bại thì có thể sửa hoặc thử lại an toàn không. Muốn vậy, trước hết cần phân biệt nơi lỗi xảy ra.
 
-<Callout type="info" title="Trang placeholder">
-Đây là trang khung. Hãy dùng skill `fumadocs-technical-writer` để viết đầy đủ trang này trong bước tiếp theo.
-</Callout>
+### Bốn lớp lỗi cần phân biệt
 
-## Bước tiếp theo
+Các thuật ngữ dưới đây sẽ được dùng xuyên suốt bài:
 
-Sau khi trang được điền nội dung, đọc bài kế tiếp trong nhóm để tiếp tục lộ trình.
+| Lớp | Gloss | Resolver mutation đã được gọi chưa? | Nơi client thường đọc |
+| --- | --- | --- | --- |
+| **Transport/HTTP** | Lỗi vận chuyển như sai URL, timeout kết nối, body không đọc được hoặc policy ở gateway. | Thường chưa đi vào GraphQL execution. | HTTP status, headers hoặc không có GraphQL body. |
+| **Parse, validation và coercion** | **Parse error** là document sai cú pháp. **Validation error** là document không khớp schema. **Coercion** là bước đọc và kiểm tra literal/variables theo kiểu GraphQL. | Không gọi resolver của field mutation bị lỗi. | `errors`; `data` thường không có. |
+| **Domain/business** | Điều kiện nghiệp vụ có thể dự đoán, chẳng hạn title trống, ISBN đã tồn tại hoặc trạng thái không cho phép. | Có; use case đã nhận request. | Payload typed như `data.createBook.userErrors`. |
+| **Execution** | Lỗi sau khi operation hợp lệ, chẳng hạn exception không kiểm soát, timeout downstream hoặc giá trị vi phạm nullability khi serialize. | Có thể đã gọi resolver hoặc nested resolver. | `errors`, thường có `path`, và có thể có `data` một phần. |
+
+**Typed payload error** là lỗi được mô hình hóa bằng field có type trong SDL. Ví dụ `UserError` có `code`, `message` và `inputPath`, nên client có thể introspect và sinh type. Ngược lại, `errors` là phần envelope chuẩn của execution result, không phải field mà client chọn trong selection set.
+
+**Partial data** (dữ liệu một phần) là response giữ lại được một số nhánh trong `data` dù một nhánh khác có lỗi. **Null bubbling** (lan truyền `null`) là quy tắc GraphQL đưa lỗi từ field non-null lên parent gần nhất cho phép `null`; vì vậy một field lỗi có thể làm mất cả object hoặc root `data`. Hai cơ chế này khiến client phải đọc đồng thời `data`, `errors` và nullability.
+
+### Lỗi request không vào resolver
+
+Có ba nhóm thường dừng trước resolver của mutation:
+
+1. **Transport:** server không nhận được request GraphQL hoàn chỉnh. Ví dụ là sai route, sai method, body malformed ở lớp HTTP, CORS hoặc authentication bị chặn ở gateway.
+2. **Parse:** chuỗi trong `query` thiếu dấu đóng hoặc có cú pháp GraphQL không hợp lệ.
+3. **Validation và coercion:** query gọi field không tồn tại, bỏ selection set của object, thiếu input bắt buộc hoặc gửi `input: null` cho kiểu `CreateBookInput!`.
+
+Nếu request bị từ chối ở các bước này, việc thêm log vào method `@MutationMapping` sẽ không giúp thấy nguyên nhân. Hãy kiểm tra query document, variables, schema đã nạp và lớp transport trước. Một response `errors` không tự chứng minh resolver đã được gọi.
+
+### Lỗi nghiệp vụ và lỗi execution
+
+Lỗi **domain/business** xảy ra sau khi request đã hợp lệ về cú pháp và kiểu. Ví dụ `publishedYear` là một `Int!` hợp lệ về GraphQL nhưng năm `1500` nằm ngoài quy tắc catalog. User có thể sửa input và gửi lại cùng use case. Đây là ứng viên phù hợp cho `userErrors` trong payload.
+
+Lỗi **execution** xảy ra khi engine đã bắt đầu thực thi. Ví dụ service ném exception không được chuyển thành outcome dự kiến, downstream timeout hoặc resolver trả `null` cho field khai báo non-null. Client cần đọc `errors`, `path` và phần `data` còn giữ được thay vì coi đó là lỗi nhập liệu.
+
+Một exception không kiểm soát không nên được biến thành `userErrors` một cách mù quáng. Nếu database đã mất kết nối, client không thể sửa title để giải quyết sự cố. Server cần log chi tiết ở phía trong, trả thông tin an toàn ở phía ngoài và giữ semantics retry theo policy.
+
+## Đọc response của mutation
+
+Mutation vẫn trả một **execution result** (kết quả thực thi) theo quy tắc chung của GraphQL. Client không nên chỉ đọc payload hoặc chỉ đọc HTTP status. Hãy xem cả `data`, `errors` và metadata tùy implementation.
+
+### GraphQL errors là gì
+
+`errors` là một mảng lỗi ở cấp response. Mỗi phần tử thường có `message`, có thể có `locations`, `path` và `extensions`. GraphQL specification không quy định một vocabulary `extensions.code` duy nhất; code trong ví dụ là quy ước của API.
+
+Lỗi parse, validation hoặc coercion thường không có `data` vì operation chưa được thực thi. Lỗi execution có thể có `data` cùng `errors`. Nếu nhiều field độc lập cùng thất bại, mảng này cũng có thể chứa nhiều lỗi.
+
+Client nên xử lý `errors` như một phần contract, không coi nó là log chỉ dành cho developer. Tuy vậy, client phải dùng code/path đã tài liệu hóa để quyết định hành vi. Không nên so sánh cả chuỗi `message` với một câu cố định.
+
+### data, errors và partial data
+
+Có ba hình dạng cần phân biệt:
+
+| Hình dạng | Ý nghĩa cần đọc |
+| --- | --- |
+| Chỉ có `data` | Operation được thực thi và không phát sinh lỗi GraphQL được trả ra. Payload vẫn có thể chứa `userErrors: []` hoặc dữ liệu nullable. |
+| Có `data` và `errors` | Một phần execution đã hoàn tất, phần khác thất bại. Đây là partial data; phải đọc `errors.path` và nullability để biết phần nào còn dùng được. |
+| Chỉ có `errors`, hoặc `data: null` cùng `errors` | Request có thể bị chặn trước execution, hoặc lỗi execution đã bubble qua field/root non-null. Cần xem path và lớp lỗi. |
+
+Ví dụ domain validation không cần `errors` ở cấp GraphQL nếu schema chọn payload như phần sau:
+
+```json title="Domain error trong payload — minh họa tĩnh"
+{
+  "data": {
+    "createBook": {
+      "book": null,
+      "userErrors": [
+        {
+          "code": "TITLE_BLANK",
+          "message": "Title không được để trống.",
+          "inputPath": ["title"]
+        }
+      ]
+    }
+  }
+}
+```
+
+Ngược lại, một exception khi đang resolve field có thể tạo cả hai phần:
+
+```json title="Execution error cùng partial data — minh họa tĩnh"
+{
+  "data": {
+    "createBook": {
+      "book": null,
+      "userErrors": []
+    }
+  },
+  "errors": [
+    {
+      "message": "Không thể đọc bản ghi sách vừa tạo.",
+      "path": ["createBook", "book"],
+      "extensions": {
+        "code": "BOOK_READ_FAILED",
+        "requestId": "request-example-123"
+      }
+    }
+  ]
+}
+```
+
+Hai response trên có thể cùng chứa `book: null`, nhưng ý nghĩa khác nhau. Response thứ nhất là outcome nghiệp vụ có cấu trúc. Response thứ hai là execution error và có `path` ở envelope GraphQL. Các JSON này chỉ minh họa shape, không phải output runtime của repository.
+
+### HTTP status thuộc transport
+
+HTTP status trả lời câu hỏi ở lớp vận chuyển. Nó không thay thế `data` và `errors` của GraphQL.
+
+| Tín hiệu | Cách hiểu thận trọng |
+| --- | --- |
+| HTTP `2xx` | Endpoint đã trả một HTTP response. Body vẫn có thể chứa `errors`, nên `200` không đồng nghĩa mutation thành công. |
+| HTTP `4xx` | Có thể là request malformed, parse/validation policy, authentication, authorization hoặc rate limit. Mapping cụ thể do server/gateway quy định. |
+| HTTP `401` hoặc `403` | Thường liên quan authentication/authorization ở lớp HTTP hoặc policy; vẫn xem body nếu server trả GraphQL result. |
+| HTTP `429` | Thường là rate limit ở gateway hoặc server. Client cần đọc header/policy retry nếu API công bố. |
+| HTTP `5xx` hoặc timeout | Có thể là lỗi server, downstream hoặc proxy. Với mutation, không được tự suy ra thao tác chưa được ghi. |
+
+GraphQL không buộc mọi deployment dùng cùng một status cho parse, validation hoặc execution error. Một server có thể trả `200` cho execution result có lỗi; server khác có thể chọn `400` cho request error. Hãy tài liệu hóa policy của hệ thống và luôn parse body khi body tồn tại.
+
+### path, locations và extensions
+
+Ba metadata này trả lời các câu hỏi khác nhau:
+
+- `locations` trỏ về vị trí trong query document, thường hữu ích cho parse hoặc validation error.
+- `path` trỏ về vị trí trong response đang được hoàn tất, bắt đầu từ field root như `createBook`. Path có thể chứa số nguyên khi đi qua phần tử của list, ví dụ `['createBook', 'items', 0, 'title']`.
+- `extensions` là vùng metadata tùy implementation. API có thể đặt `code`, `requestId`, `retryable` hoặc thông tin khác ở đây, nhưng phải công bố schema của chính phần mở rộng đó.
+
+`path` không phải là đường dẫn tới Java class, URL REST hay input field. Với payload typed, `inputPath` là field do schema thiết kế để chỉ lỗi trong input. Giữ hai khái niệm này tách biệt giúp client biết nên focus form field hay mở trang retry/error.
+
+## Thiết kế SDL cho payload có lỗi typed
+
+Một mutation nên công khai hình dạng kết quả trước khi chọn exception class. Payload cần trả lời rõ: object có được tạo không, có lỗi người dùng nào không, và lỗi nằm ở input field nào.
+
+### Payload thành công và thất bại dự kiến
+
+Trong ví dụ này, `CreateBookPayload` có hai quy tắc:
+
+- `book` nullable vì tạo sách có thể thất bại do điều kiện nghiệp vụ. Khi thất bại dự kiến, server trả `book: null`.
+- `userErrors` là list non-null. Thành công trả `[]`; thất bại trả một hoặc nhiều lỗi có type `UserError`.
+
+Cách thiết kế này giúp client dùng một selection set ổn định cho cả success và lỗi nghiệp vụ. Nó cũng giữ các lỗi có thể sửa ở form trong `data`, thay vì buộc client phân tích một exception message.
+
+`idempotencyKey` trong input chỉ là một phần của vocabulary contract. Việc server thật sự lưu key, phát hiện request lặp và trả lại kết quả cũ hay không phải được implementation bảo đảm riêng.
+
+### SDL minh họa nhất quán
+
+SDL dưới đây là một schema độc lập cho toàn bộ ví dụ trong bài:
+
+```graphql title="schema.graphqls"
+schema {
+  query: Query
+  mutation: Mutation
+}
+
+type Query {
+  book(id: ID!): Book
+}
+
+type Mutation {
+  createBook(input: CreateBookInput!): CreateBookPayload!
+}
+
+input CreateBookInput {
+  idempotencyKey: ID
+  title: String!
+  author: String!
+  publishedYear: Int!
+  isbn: String
+}
+
+type CreateBookPayload {
+  book: Book
+  userErrors: [UserError!]!
+}
+
+type UserError {
+  code: UserErrorCode!
+  message: String!
+  inputPath: [String!]!
+}
+
+enum UserErrorCode {
+  TITLE_BLANK
+  AUTHOR_BLANK
+  PUBLISHED_YEAR_OUT_OF_RANGE
+  ISBN_ALREADY_EXISTS
+  NOT_AUTHORIZED
+  IDEMPOTENCY_CONFLICT
+}
+
+type Book {
+  id: ID!
+  title: String!
+  author: String!
+  publishedYear: Int!
+  isbn: String
+}
+```
+
+Có thể đọc nullability của SDL như sau:
+
+| Thành phần | Cam kết |
+| --- | --- |
+| `createBook: CreateBookPayload!` | Root resolver phải trả payload trong outcome dự kiến; exception ở root vẫn có thể tạo execution error. |
+| `book: Book` | `book` có thể là `null` khi validation nghiệp vụ thất bại hoặc khi một lỗi nested bubble tới field nullable này. |
+| `userErrors: [UserError!]!` | Luôn có list lỗi, list rỗng là thành công; mỗi phần tử lỗi phải có đầy đủ `code`, `message` và `inputPath`. |
+| `inputPath: [String!]!` | Path của input do payload quy ước. Trong ví dụ, path được tính tương đối từ `input`, nên lỗi title là `["title"]`. |
+
+`String!` trên `title` chỉ cấm `null` hoặc thiếu field ở cấp GraphQL. Nó không cấm chuỗi toàn khoảng trắng. Vì vậy `TITLE_BLANK` vẫn là một lỗi domain hợp lệ sau khi input đã qua coercion.
+
+## Gửi mutation và đọc các outcome
+
+Các request và response sau dùng đúng SDL ở trên. Mọi response đều được đánh dấu là minh họa tĩnh. Khi áp dụng, đối chiếu tên field và policy lỗi với schema thực tế.
+
+### Operation và variables
+
+Mutation chọn cả object kết quả và danh sách lỗi:
+
+```graphql title="CreateBook"
+mutation CreateBook($input: CreateBookInput!) {
+  createBook(input: $input) {
+    book {
+      id
+      title
+      author
+      publishedYear
+      isbn
+    }
+    userErrors {
+      code
+      message
+      inputPath
+    }
+  }
+}
+```
+
+Variables nằm ngoài query document và dùng string JSON cho `ID` cùng các field chuỗi:
+
+```json title="Variables cho success — minh họa tĩnh"
+{
+  "input": {
+    "idempotencyKey": "create-book-example-001",
+    "title": "GraphQL in Action",
+    "author": "Samer Buna",
+    "publishedYear": 2022,
+    "isbn": "9781617295680"
+  }
+}
+```
+
+`input` trong `createBook(input: $input)` là tên argument. `$input` là tên variable. `CreateBookInput!` yêu cầu variable tồn tại và khác `null`; các quy tắc như title không được trắng thuộc service/domain.
+
+### Success trong data
+
+Nếu use case thành công, payload có object sách và `userErrors` rỗng:
+
+```json title="Success — minh họa tĩnh"
+{
+  "data": {
+    "createBook": {
+      "book": {
+        "id": "book-3",
+        "title": "GraphQL in Action",
+        "author": "Samer Buna",
+        "publishedYear": 2022,
+        "isbn": "9781617295680"
+      },
+      "userErrors": []
+    }
+  }
+}
+```
+
+`id` và dữ liệu trong response chỉ là giá trị giả định. SDL không tự lưu sách và không tự sinh ID. Resolver/service thật phải thực hiện use case, còn GraphQL chỉ assemble những field mà operation đã chọn.
+
+Client có thể coi `userErrors: []` là không có lỗi nghiệp vụ cho mutation này. Dù vậy, client vẫn nên có logic xử lý `errors` ở cấp response vì một lỗi execution có thể xuất hiện ngoài payload.
+
+### Domain validation trong data
+
+Variables sau vẫn hợp lệ về kiểu GraphQL: `title` là String khác `null`, còn `publishedYear` là Int. Service có thể từ chối chúng vì title chỉ có whitespace và năm nằm ngoài miền nghiệp vụ:
+
+```json title="Variables có lỗi domain — minh họa tĩnh"
+{
+  "input": {
+    "idempotencyKey": "create-book-example-002",
+    "title": "   ",
+    "author": "Samer Buna",
+    "publishedYear": 1500
+  }
+}
+```
+
+Với chiến lược payload, response có thể là:
+
+```json title="Domain validation failure — minh họa tĩnh"
+{
+  "data": {
+    "createBook": {
+      "book": null,
+      "userErrors": [
+        {
+          "code": "TITLE_BLANK",
+          "message": "Title không được để trống.",
+          "inputPath": ["title"]
+        },
+        {
+          "code": "PUBLISHED_YEAR_OUT_OF_RANGE",
+          "message": "Published year không nằm trong khoảng được hỗ trợ.",
+          "inputPath": ["publishedYear"]
+        }
+      ]
+    }
+  }
+}
+```
+
+Không có `errors` trong ví dụ này vì validation nghiệp vụ được mô hình hóa như một kết quả dự kiến của use case. Client có thể focus đúng field theo `inputPath`, hiển thị message an toàn và không retry mù quáng cùng input.
+
+Nếu policy của sản phẩm yêu cầu authorization hoặc duplicate ISBN cũng hiển thị như lỗi form, các outcome đó có thể dùng `UserErrorCode` tương ứng. Team cần thống nhất policy để cùng một nguyên nhân không lúc vào payload, lúc lại vào `errors` mà không có lý do.
+
+### Validation hoặc coercion trong errors
+
+Lỗi request không nên đi vào `userErrors` vì resolver chưa có cơ hội xử lý use case. Ví dụ bỏ selection set của output object:
+
+```graphql
+mutation InvalidCreateBook($input: CreateBookInput!) {
+  createBook(input: $input)
+}
+```
+
+Response lỗi validation có thể có dạng sau:
+
+```json title="Validation error — minh họa tĩnh"
+{
+  "errors": [
+    {
+      "message": "Field \"createBook\" of type \"CreateBookPayload!\" must have a selection of subfields.",
+      "locations": [
+        {
+          "line": 2,
+          "column": 3
+        }
+      ]
+    }
+  ]
+}
+```
+
+Một variables sai kiểu cũng bị chặn trước resolver. Ví dụ thay số nguyên bằng string:
+
+```json title="Variables sai kiểu — minh họa tĩnh"
+{
+  "input": {
+    "title": "GraphQL in Action",
+    "author": "Samer Buna",
+    "publishedYear": "2022"
+  }
+}
+```
+
+Engine có thể trả lỗi kiểu:
+
+```json title="Coercion error — minh họa tĩnh"
+{
+  "errors": [
+    {
+      "message": "Variable \"$input\" got invalid value \"2022\" at \"input.publishedYear\"; Int cannot represent non-integer value.",
+      "locations": [
+        {
+          "line": 1,
+          "column": 21
+        }
+      ]
+    }
+  ]
+}
+```
+
+Message, `locations` và HTTP status thực tế phụ thuộc GraphQL engine cùng error handler. Ý nghĩa cần giữ là request chưa qua coercion/validation, nên không dùng response này để kết luận business service đã chạy. Xem thêm [Mô hình request/response](/docs/nen-tang/mo-hinh-request-response) để phân biệt request error với execution result.
+
+### Execution error và partial data
+
+Giả sử query hợp lệ, resolver tạo hoặc lấy được payload, nhưng field nullable `book` thất bại khi một nested resolver đọc bản ghi. Một response có thể giữ payload và `userErrors` cùng lúc với execution error:
+
+```json title="Nested execution error — minh họa tĩnh"
+{
+  "data": {
+    "createBook": {
+      "book": null,
+      "userErrors": []
+    }
+  },
+  "errors": [
+    {
+      "message": "Không thể đọc bản ghi sách vừa tạo.",
+      "path": ["createBook", "book"],
+      "extensions": {
+        "code": "BOOK_READ_FAILED",
+        "requestId": "request-example-123"
+      }
+    }
+  ]
+}
+```
+
+Đây là partial data theo nullability của SDL. Nếu exception xảy ra ngay trong root resolver `createBook`, field root lại là non-null. Khi đó một response minh họa khác có thể là:
+
+```json title="Root execution error — minh họa tĩnh"
+{
+  "data": null,
+  "errors": [
+    {
+      "message": "Đã xảy ra lỗi khi tạo sách.",
+      "path": ["createBook"],
+      "extensions": {
+        "code": "INTERNAL_ERROR",
+        "requestId": "request-example-124"
+      }
+    }
+  ]
+}
+```
+
+Server không nên đưa stack trace hoặc tên exception nội bộ vào `message`. Chi tiết đầy đủ phải ở log/trace có kiểm soát. `INTERNAL_ERROR` là code minh họa do API quy ước, không phải code bắt buộc của GraphQL.
+
+## Chọn payload error hay exception
+
+Payload typed và exception giải quyết hai loại tín hiệu khác nhau. Đừng chọn một cách chỉ vì framework làm cho cách đó ngắn hơn.
+
+### Khi nên trả lỗi trong payload
+
+Dùng payload cho outcome dự kiến mà người dùng hoặc client có thể xử lý theo use case:
+
+- Field bắt buộc về mặt nghiệp vụ nhưng không thể diễn tả hết bằng SDL, như chuỗi trắng hoặc năm ngoài khoảng.
+- Xung đột dữ liệu có thể hiển thị cho người dùng, như ISBN đã tồn tại.
+- Một mutation cần trả nhiều lỗi input trong cùng một lần kiểm tra.
+- Client cần giữ shape response ổn định để cập nhật form hoặc state.
+- Thao tác đã được nhận diện và có semantics rõ rằng không tạo ra object khi `userErrors` khác rỗng.
+
+Payload không có nghĩa là mọi lỗi đều là thành công. Client vẫn phải coi `userErrors` là một trạng thái thất bại của use case và không tự cập nhật UI như thể đã ghi dữ liệu.
+
+### Khi nên throw exception
+
+Để exception đi qua cơ chế GraphQL error handling khi lỗi không phải outcome nhập liệu bình thường:
+
+- Database, message broker hoặc downstream timeout/unavailable.
+- Lỗi lập trình, invariant bị phá hoặc serialization không khớp schema.
+- Authentication/authorization bị chặn theo policy chung.
+- Request đã qua validation nhưng server không thể xác định kết quả commit.
+- Lỗi cần logging, alerting và phân loại tập trung thay vì hiển thị như lỗi form.
+
+“Throw exception” không có nghĩa trả nguyên exception cho client. Server cần map exception thành GraphQL error an toàn, có code ổn định nếu client cần hành động, và giữ stack trace ở log nội bộ. Với lỗi domain dự kiến, có thể bắt exception domain ở application boundary rồi chuyển thành payload, nhưng phải chọn policy nhất quán.
+
+### Bảng quyết định
+
+| Tình huống | Kênh đề xuất | Tín hiệu client | Retry mặc định |
+| --- | --- | --- | --- |
+| Input đúng kiểu nhưng vi phạm rule domain | `data.createBook.userErrors` | `code`, `message`, `inputPath` | Không; sửa input trước. |
+| Query/variables sai contract | GraphQL `errors` trước execution | `message`, `locations`, có thể không có `path` | Không; sửa operation hoặc variables. |
+| Không có credentials hoặc không đủ quyền | HTTP hoặc GraphQL `errors` theo policy auth | Status/code an toàn, không lộ resource | Không tự retry cùng credentials. |
+| Downstream timeout hoặc lỗi hạ tầng | Exception resolver → `errors` | `path`, code ổn định, request/correlation ID | Chỉ khi policy và idempotency cho phép. |
+| Vi phạm non-null/serialization | `errors` và null bubbling | `path`, phần `data` còn lại | Không retry mù quáng; sửa contract/data trước. |
+
+Bảng này là điểm bắt đầu thiết kế. Deployment có thể chọn mapping khác, nhưng client cần một quy ước được tài liệu hóa và áp dụng đồng đều.
+
+## Ổn định error code, message và path
+
+Một error contract hữu ích có hai tầng: trường typed trong payload cho lỗi nghiệp vụ dự kiến và metadata trong `errors` cho lỗi request/execution. Cả hai cần vocabulary được review như schema public.
+
+### Code cho máy, message cho người
+
+Dùng `code` để client chọn hành vi, không dùng `message` làm khóa chương trình:
+
+| Trường | Quy tắc nên giữ |
+| --- | --- |
+| `code` | Ổn định, có ngữ nghĩa, không phụ thuộc tên Java exception. `TITLE_BLANK` dễ duy trì hơn `IllegalArgumentException`. |
+| `message` | Rõ ràng, an toàn và có thể hiển thị hoặc ghi nhận. Có thể thay đổi câu chữ hoặc được bản địa hóa; client không nên parse nó. |
+| `inputPath` | Có quy ước canonical, chẳng hạn path tương đối từ `input`. Có thể là `[]` cho lỗi không gắn với một field. |
+| `extensions.code` | Là quy ước của API khi đặt trên GraphQL `errors`, không phải field bắt buộc của specification. |
+| `requestId` | Mã opaque để nối response với log/trace nếu policy cho phép trả ra. Không đưa token hoặc dữ liệu cá nhân vào đây. |
+
+Với cùng `code`, `message` nên giữ cùng ý nghĩa giữa các deployment; nếu thay đổi làm client cần nhánh mới, phát hành code mới. Nếu message cần ổn định cho một client cụ thể, hãy công bố message key hoặc thêm field localization riêng thay vì buộc client so sánh văn bản hiển thị. `message` phải tránh stack trace, SQL, tên bảng, access token, PII và chi tiết có thể giúp suy đoán dữ liệu nhạy cảm.
+
+### Hai loại path không nên trộn
+
+Trong response domain error:
+
+```json
+{
+  "code": "TITLE_BLANK",
+  "message": "Title không được để trống.",
+  "inputPath": ["title"]
+}
+```
+
+`inputPath` chỉ vào dữ liệu client gửi trong `CreateBookInput`. Trong GraphQL execution error:
+
+```json
+{
+  "message": "Không thể đọc bản ghi sách vừa tạo.",
+  "path": ["createBook", "book"]
+}
+```
+
+`path` chỉ vào response đang được hoàn tất. Một lỗi trong `book.title` có thể có path `['createBook', 'book', 'title']`; nó không nói client đã gửi field `title` sai. Client có thể dùng `inputPath` để highlight form và dùng `path` để định vị phần UI/data bị mất.
+
+### Versioning và mở rộng enum
+
+Enum `UserErrorCode` là output contract. Không đổi tên hoặc xóa code đang được client dùng nếu chưa có migration. Thêm enum value cũng cần review vì client sinh code có thể xử lý exhaustive switch.
+
+Khi mở rộng:
+
+- Giữ code cũ cho cùng semantics. Nếu ý nghĩa đổi, tạo code mới.
+- Cập nhật tài liệu, fixture và fallback `UNKNOWN_ERROR` ở client.
+- Không dùng tên exception class, message hoặc database constraint làm code public.
+- Giữ `message` an toàn và nhất quán với code, nhưng cho phép copy/localization thay đổi có kiểm soát.
+- Nếu payload cần thêm metadata, ưu tiên field nullable/additive và ghi rõ compatibility.
+
+Schema evolution của error payload cũng là schema evolution. Hãy kiểm tra operation client trước khi đổi nullability hoặc xóa `inputPath`, tương tự khi đổi các output field khác.
+
+## Null bubbling và phạm vi ảnh hưởng
+
+Nullability quyết định một lỗi execution làm mất bao nhiêu dữ liệu. Đừng dùng `null` làm tín hiệu duy nhất cho domain error, vì `null` có thể là giá trị hợp lệ, kết quả bubbling hoặc dấu hiệu downstream thất bại.
+
+### Đọc dấu ! trong payload
+
+Ba khai báo trong SDL minh họa có ý nghĩa khác nhau:
+
+```graphql
+type Mutation {
+  createBook(input: CreateBookInput!): CreateBookPayload!
+}
+
+type CreateBookPayload {
+  book: Book
+  userErrors: [UserError!]!
+}
+```
+
+- `CreateBookInput!` cấm argument input bị bỏ qua hoặc là `null`. Lỗi ở đây là request/coercion, không phải `userErrors`.
+- `CreateBookPayload!` yêu cầu root resolver trả payload khác `null` trong execution bình thường.
+- `book: Book` cho phép payload còn tồn tại khi book không được tạo hoặc một nested read thất bại.
+- `[UserError!]!` dùng list rỗng cho không có lỗi. Nếu resolver lỗi khi tạo chính list hoặc chèn phần tử `null`, lỗi có thể bubble lên payload.
+
+Nullability của `Book.title: String!` cũng quan trọng. Nếu field này lỗi trong lúc hoàn tất `book`, GraphQL có thể biến cả object `book` thành `null` vì `book` ở payload là nullable. `userErrors` và payload có thể vẫn được giữ lại.
+
+### Khi lỗi làm mất dữ liệu
+
+Có thể theo dõi đường lan truyền trong ví dụ:
+
+```text
+Book.title: String!
+        │ lỗi hoặc trả null
+        ▼
+book: Book
+        │ nullable, dừng bubbling
+        ▼
+createBook: CreateBookPayload!
+        │ payload còn được giữ
+        ▼
+response data vẫn có thể chứa userErrors
+```
+
+Nếu lỗi xảy ra ở `userErrors: [UserError!]!`, không có vị trí nullable giữa field đó và root `createBook` trong SDL minh họa. Lỗi có thể làm `createBook` thành `null`, rồi vì root field là non-null làm `data` ở cấp root thành `null`.
+
+Vì vậy client cần đọc `errors.path` trước khi diễn giải một field `null`:
+
+- `data.createBook.book: null` không có `errors` có thể là domain validation bình thường.
+- Cùng vị trí `book: null` kèm `errors.path` cho thấy execution error hoặc lỗi nested đã bubble.
+- `data: null` kèm path `createBook` cho thấy phạm vi ảnh hưởng đã lên root field non-null.
+
+Xem [List và nullable](/docs/schema-va-type-system/list-va-nullable) để ôn các wrapper `[T]`, `[T!]`, `[T]!` và `[T!]!` trước khi chốt nullability cho payload.
+
+## Liên hệ với Spring for GraphQL
+
+Spring for GraphQL nối root field trong SDL với method Java và cung cấp các hook để chuyển exception của data fetcher thành GraphQL error. Tên API và cách đăng ký cụ thể có thể khác theo version; phần này chỉ mô tả boundary khái niệm.
+
+### MutationMapping nối root field
+
+`@MutationMapping` thường map method trong `@Controller` vào field dưới root `Mutation`. Fragment minh họa sau không phải source code có sẵn trong repository:
+
+```java
+@Controller
+public class BookMutationController {
+
+    @MutationMapping
+    public CreateBookPayload createBook(
+            @Argument("input") CreateBookInput input) {
+        return bookService.create(input);
+    }
+}
+```
+
+Method này nên bind input và ủy quyền cho application service. Service có thể trả `CreateBookPayload` cho outcome domain dự kiến. Với exception hạ tầng hoặc lỗi không kiểm soát, method có thể phát sinh exception để error resolver xử lý tập trung.
+
+`@MutationMapping` không tạo SDL, không tự quyết định `userErrors` và không tự bảo đảm transaction hay idempotency. Schema phải có `Mutation.createBook`; việc binding `@Argument` phải khớp tên input theo version và cấu hình project. Xem [QueryMapping, MutationMapping, SubscriptionMapping](/docs/tich-hop-spring-for-graphql/query-mutation-subscription-mapping) và [Binding arguments và input](/docs/tich-hop-spring-for-graphql/binding-arguments-input) để nối phần này với mapping operation và variables.
+
+### DataFetcherExceptionResolver ở mức khái niệm
+
+`DataFetcherExceptionResolver` là một extension point của Spring for GraphQL để nhận exception phát sinh từ data fetcher/resolver và chuyển chúng thành GraphQL error. Ở mức contract, một resolver tập trung nên:
+
+1. Phân loại exception theo nhóm public như `FORBIDDEN`, `BOOK_READ_FAILED` hoặc `INTERNAL_ERROR`.
+2. Chọn message an toàn, không trả stack trace, SQL, token hoặc PII.
+3. Đưa code và correlation/request ID vào metadata nếu API có công bố convention.
+4. Giữ path của field mà execution đang xử lý, để client biết nhánh nào thất bại.
+5. Ghi chi tiết exception ở log/trace phía server với redaction phù hợp.
+
+Tên method, kiểu adapter, cơ chế đăng ký bean và cách custom `GraphQLError` có thể thay đổi theo dòng Spring for GraphQL. Không sao chép một cấu hình version-specific từ bài này. Hãy đối chiếu tài liệu đúng version của project và kiểm tra bằng integration test khi có backend. [Xử lý lỗi tập trung](/docs/tich-hop-spring-for-graphql/xu-ly-loi-tap-trung) là trang nối tiếp cho boundary này.
+
+Một `DataFetcherExceptionResolver` cũng không làm cho mọi lỗi có cùng HTTP status. Status do transport/server/gateway policy quyết định. Nó chủ yếu định hình GraphQL error result và metadata.
+
+### Exception resolver không thay service
+
+Exception resolver là adapter ở ranh giới GraphQL. Nó không nên sở hữu invariant nghiệp vụ, transaction, authorization resource hoặc quyết định retry thay cho service.
+
+Ranh giới thực dụng:
+
+| Lớp | Trách nhiệm |
+| --- | --- |
+| GraphQL schema | Khai báo input/output, payload, nullability và vocabulary code. |
+| `@MutationMapping` | Bind argument, đọc context cần thiết và gọi use case. |
+| Application/domain service | Kiểm tra rule, authorization, transaction, idempotency và chọn outcome nghiệp vụ. |
+| `DataFetcherExceptionResolver` | Chuyển exception không được xử lý thành GraphQL error an toàn, có metadata theo policy. |
+| Transport/gateway | Route, authentication biên, rate limit, timeout và HTTP status policy. |
+
+Nếu query hợp lệ nhưng method không được gọi, đó có thể là lỗi mapping hoặc wiring chứ không phải error contract của mutation. Xem [Lỗi mapping resolver](/docs/xu-ly-su-co/loi-mapping-resolver) khi cần khoanh vùng annotation, package và return type.
+
+## Bảo mật, authorization, rate limit và retry
+
+Error contract phải giúp client hành động mà không biến response thành kênh rò rỉ thông tin. Các policy vận hành cũng cần được thiết kế cùng payload, không thêm sau khi production gặp lỗi.
+
+### Authentication và authorization
+
+**Authentication** xác định request thuộc principal nào. **Authorization** quyết định principal đó có được thực hiện mutation hoặc đọc resource hay không. Authentication có thể bị chặn ở HTTP/gateway trước resolver. Authorization có thể được kiểm tra ở GraphQL layer, service hoặc cả hai.
+
+Một policy có thể chọn:
+
+- Thiếu hoặc token không hợp lệ: HTTP `401` hoặc GraphQL error với code an toàn.
+- Đã xác thực nhưng không đủ quyền: HTTP `403` hoặc GraphQL error với code `FORBIDDEN`.
+- Lỗi quyền là outcome nghiệp vụ cần hiển thị trong form: payload `UserError` nếu policy không làm lộ sự tồn tại của resource.
+
+Không có mapping status/code duy nhất đúng cho mọi deployment. Điều quan trọng là cùng một policy được áp dụng nhất quán, không trả message kiểu “ISBN đã tồn tại” cho user vốn không được phép biết ISBN đó.
+
+Không coi việc ẩn field trên GraphiQL hoặc tắt introspection là authorization. Quyền phải được kiểm tra ở server/service theo principal và tenant. Đọc [Authentication với JWT/OAuth2](/docs/bao-mat-va-quan-sat/authentication-jwt-oauth2), [Authorization theo field và resolver](/docs/bao-mat-va-quan-sat/authorization-field-resolver) và [Lỗi authentication/authorization](/docs/xu-ly-su-co/loi-authentication-authorization) để đặt error contract vào security flow.
+
+### Rate limit và transport policy
+
+Rate limit có thể được áp dụng ở gateway trước GraphQL, ở endpoint hoặc theo principal/tenant. Nếu gateway từ chối sớm, resolver không được gọi và client có thể chỉ nhận HTTP `429`. Nếu server đưa rate limit vào execution result, nó có thể xuất hiện trong `errors` với code do API định nghĩa.
+
+Tài liệu cần nói rõ:
+
+- giới hạn tính theo IP, token, user, tenant hay operation;
+- response dùng status, `errors` hay cả hai;
+- có `Retry-After` hoặc metadata retry hay không;
+- mutation nào có thể retry và điều kiện idempotency nào phải giữ.
+
+Đừng biến rate-limit error thành `userErrors` chỉ để ép mọi response có cùng shape nếu việc đó làm mất tín hiệu `Retry-After` ở transport. Ngược lại, nếu client SDK chỉ đọc GraphQL body, hãy cung cấp metadata đủ rõ theo policy. Không khẳng định `429` hoặc header cụ thể luôn xuất hiện trong mọi deployment.
+
+### Logging, correlation ID và observability
+
+**Correlation ID** là mã tương quan giúp nối một request qua gateway, Spring, resolver, service và downstream. **Observability** là khả năng suy ra trạng thái hệ thống từ log, metric và trace. Với GraphQL, nên nhóm telemetry theo operation thay vì chỉ ghi URL `/graphql`.
+
+Một event lỗi đã làm sạch có thể ghi:
+
+```json title="Log event minh họa"
+{
+  "operationName": "CreateBook",
+  "queryHash": "hash-example",
+  "requestId": "request-example-123",
+  "errorCodes": ["BOOK_READ_FAILED"],
+  "errorPaths": [["createBook", "book"]],
+  "durationMs": 184,
+  "downstream": "catalog-read"
+}
+```
+
+Đây là format minh họa, không phải logging schema bắt buộc. Tối thiểu cần biết operation hoặc query hash, code, path, thời gian, downstream và request ID để điều tra. Principal, tenant và variables chỉ được ghi ở dạng redaction phù hợp.
+
+Không log access token, toàn bộ variables, PII hoặc query text chưa chuẩn hóa một cách vô điều kiện. Stack trace cần được giữ ở log server có quyền truy cập phù hợp, không đưa vào `message` hoặc `extensions`. Nếu trả `requestId` cho client, dùng một ID opaque và bảo đảm nó không chứa thông tin nhạy cảm.
+
+Xem [Logging và tracing](/docs/bao-mat-va-quan-sat/logging-va-tracing) để nối operation, resolver, downstream và correlation với observability của ứng dụng.
+
+### Retry và idempotency
+
+Không retry mutation chỉ vì HTTP status là `5xx` hoặc client bị timeout. Timeout có thể xảy ra sau khi server đã commit nhưng response chưa về client. Retry lúc đó có thể tạo bản ghi trùng.
+
+Một policy thận trọng:
+
+| Kết quả | Hành động mặc định |
+| --- | --- |
+| Parse, validation hoặc coercion error | Không retry cho tới khi sửa query/variables. |
+| `userErrors` do input | Không retry y nguyên; sửa input theo `code`/`inputPath`. |
+| `401` hoặc `403` | Làm mới credentials hoặc yêu cầu quyền theo policy; không lặp vô hạn. |
+| Rate limit | Chờ theo policy hoặc `Retry-After` nếu có; tôn trọng giới hạn. |
+| Timeout/5xx của mutation | Chỉ retry khi use case và idempotency policy cho phép. |
+| Exception tạm thời nhưng kết quả commit không rõ | Kiểm tra trạng thái bằng operation an toàn hoặc dùng key idempotency đã được server bảo đảm. |
+
+Field `idempotencyKey` trong SDL không tự làm mutation idempotent. Để hứa semantics đó, server cần lưu key trong phạm vi đã định, gắn key với principal/tenant phù hợp, phát hiện cùng key nhưng khác input, và quy định TTL cùng cách replay kết quả. Nếu chưa có các cơ chế đó, hãy coi retry sau timeout là không an toàn.
+
+## Quy trình debug theo lớp
+
+Dùng quy trình sau để đi từ tín hiệu ngoài vào nguyên nhân bên trong. Các bước là checklist tư duy; repository docs-only này không cung cấp runtime để chạy chúng.
+
+<Steps>
+  <Step>
+    **Giữ lại request có thể tái lập.** Lưu `operationName`, query document, variables đã che secret và headers cần thiết. Gắn một correlation/request ID mới cho lần thử.
+  </Step>
+  <Step>
+    **Kiểm tra transport trước.** Xác nhận URL, method, `Content-Type`, context path, status, timeout và response body. Nếu không có GraphQL body, chưa điều tra resolver.
+  </Step>
+  <Step>
+    **Kiểm tra parse, validation và coercion.** Đối chiếu field, selection set, argument, variable type và non-null với SDL. Các lỗi ở lớp này thường không gọi `@MutationMapping`.
+  </Step>
+  <Step>
+    **Đọc `errors` trước khi đọc `null`.** Với mỗi lỗi, xem `message` an toàn, `extensions.code`, `path` và `locations`. Sau đó đối chiếu `data` để tìm nhánh còn dùng được.
+  </Step>
+  <Step>
+    **Phân biệt payload với execution error.** `data.createBook.userErrors` là outcome typed của use case. `errors.path` là lỗi GraphQL ở execution. Nếu có cả hai, đừng gộp chúng thành một loại lỗi.
+  </Step>
+  <Step>
+    **Lần theo nullability và log server.** Đi từ `path` qua từng wrapper `!`, rồi tra log/trace bằng request ID để biết resolver, service hay downstream nào phát sinh lỗi. Không dùng message client làm stack trace duy nhất.
+  </Step>
+</Steps>
+
+Khi operation không vào resolver, bắt đầu ở schema/request. Khi operation đã vào resolver, so sánh outcome domain với exception mapping. Khi có timeout hoặc lỗi không xác định trạng thái commit, dừng trước khi retry mutation.
+
+## Checklist review contract
+
+Trước khi công khai hoặc thay đổi một mutation, hãy kiểm tra:
+
+- [ ] SDL tách rõ request error, domain error và execution error.
+- [ ] `CreateBookPayload` hoặc payload tương đương có type rõ, không dùng `JSON` để che shape.
+- [ ] Payload có `userErrors` typed nếu client cần xử lý nhiều lỗi nghiệp vụ dự kiến.
+- [ ] `book`/result có nullability phù hợp; list lỗi dùng `[]` cho success và không chứa phần tử `null`.
+- [ ] Query, variables và response success đã được viết trên cùng một SDL.
+- [ ] Có response domain validation trong `data` và response validation/coercion trong `errors`.
+- [ ] Có response execution error với `path`, partial data hoặc `data: null`, và đã ghi rõ là minh họa tĩnh.
+- [ ] Client đọc cả HTTP status, `data` và `errors`; không dùng HTTP `200` làm tín hiệu thành công duy nhất.
+- [ ] `code` ổn định, message an toàn và client không parse message.
+- [ ] `inputPath` và GraphQL `path` được tài liệu hóa như hai khái niệm khác nhau.
+- [ ] Không trả stack trace, SQL, token, PII hoặc thông tin giúp suy đoán resource ngoài quyền.
+- [ ] Authentication, authorization, rate limit và mapping status/code có owner cùng policy rõ.
+- [ ] Logging có operation/query hash, code, path, correlation ID và redaction phù hợp.
+- [ ] Retry mutation chỉ được bật khi đã xem xét timeout sau commit và idempotency.
+- [ ] `@MutationMapping` và exception resolver được kiểm tra theo version Spring for GraphQL thật; không suy ra runtime từ docs-only repository.
+- [ ] Schema compatibility và operation client được review khi thêm/xóa code enum hoặc đổi nullability.
+
+## Câu hỏi thường gặp
+
+<Accordions type="single">
+  <Accordion title="Có nên đưa mọi lỗi vào userErrors không?">
+    Không. `userErrors` phù hợp với outcome nghiệp vụ dự kiến mà client có thể sửa hoặc hiển thị. Parse, validation, coercion, lỗi hạ tầng và exception không kiểm soát nên đi qua `errors` hoặc policy transport phù hợp. Hãy chọn một quy ước ổn định cho từng nhóm thay vì làm client đoán.
+  </Accordion>
+  <Accordion title="HTTP 200 có nghĩa mutation đã thành công không?">
+    Không. HTTP `200` chỉ cho biết server đã trả response ở lớp transport. Body vẫn có thể chứa `errors`, partial data hoặc payload có `userErrors`. Client phải đọc execution result theo contract của API.
+  </Accordion>
+  <Accordion title="Có thể retry mutation sau timeout không?">
+    Không nên retry mù quáng. Server có thể đã commit trước khi response bị mất. Chỉ retry khi use case có semantics idempotency được server thật sự bảo đảm, hoặc khi có cách kiểm tra trạng thái mà không tạo side effect mới.
+  </Accordion>
+</Accordions>
+
+## Liên kết liên quan
+
+- [Mutation và input/payload](/docs/query-mutation-subscription/mutation-input-payload) — tách input object, payload và selection set trước khi thêm error contract.
+- [Mô hình request/response](/docs/nen-tang/mo-hinh-request-response) — đọc request envelope, `data`, `errors`, `extensions` và HTTP transport.
+- [Binding arguments và input](/docs/tich-hop-spring-for-graphql/binding-arguments-input) — nối variables và input object với argument trong resolver.
+- [QueryMapping, MutationMapping, SubscriptionMapping](/docs/tich-hop-spring-for-graphql/query-mutation-subscription-mapping) — đặt `@MutationMapping` trong flow mapping của Spring for GraphQL.
+- [Xử lý lỗi tập trung](/docs/tich-hop-spring-for-graphql/xu-ly-loi-tap-trung) — đi sâu vào boundary exception resolver và GraphQL error.
+- [Lỗi mapping resolver](/docs/xu-ly-su-co/loi-mapping-resolver) — khoanh vùng lỗi annotation, binding và return type trước execution.
+- [Authentication với JWT/OAuth2](/docs/bao-mat-va-quan-sat/authentication-jwt-oauth2) — authentication và principal trong request context.
+- [Authorization theo field và resolver](/docs/bao-mat-va-quan-sat/authorization-field-resolver) — authorization ở operation, field và service boundary.
+- [Logging và tracing](/docs/bao-mat-va-quan-sat/logging-va-tracing) — observability, correlation và trace xuyên resolver.
+- [Lỗi authentication/authorization](/docs/xu-ly-su-co/loi-authentication-authorization) — phân biệt lỗi credentials với lỗi quyền.
+- [List và nullable](/docs/schema-va-type-system/list-va-nullable) — dự đoán null bubbling từ wrapper list và field non-null.

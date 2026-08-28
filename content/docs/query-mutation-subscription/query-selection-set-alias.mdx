@@ -1,23 +1,986 @@
 ---
 title: "Query, selection set và alias"
-description: "Xây dựng query có selection set, nested field và alias để kiểm soát shape response."
+description: "Xây dựng query bằng selection set, nested field và alias để kiểm soát shape của response."
 ---
 
-Trang này sẽ trình bày **Query, selection set và alias** trong bối cảnh xây dựng GraphQL API với Spring Boot.
+import { Accordion, Accordions } from 'fumadocs-ui/components/accordion';
+import { Step, Steps } from 'fumadocs-ui/components/steps';
+
+Trong GraphQL, `query` là một **operation** (yêu cầu thực thi) dùng để đọc dữ liệu. Client không yêu cầu server trả nguyên một object cố định. Client viết một **selection set** (tập các field được chọn) để mô tả phần dữ liệu mình cần.
+
+Một **scalar field** (field vô hướng) trả về giá trị ở lá như `String`, `Int` hoặc `ID`, nên không có field con. Một **object field** trả về object; **nested field** (field lồng nhau) là field được chọn bên trong object đó và cần một selection set riêng. Hình dạng cuối cùng mà client nhận được gọi là **response shape** (hình dạng response). **Alias** (bí danh) cho phép đặt tên key trong response mà không đổi field GraphQL trong schema.
+
+<Callout type="info" title="Phạm vi và giả định">
+Các SDL, query và JSON trong bài dùng `Catalog` và `Book` như schema minh họa độc lập. Chúng được viết để giải thích contract và response shape, không phải schema hoặc output runtime đã có sẵn trong repository. Repo này là docs-only, không có backend Spring Boot để chạy; phần Spring for GraphQL ở cuối chỉ mô tả wiring và data fetching ở mức khái niệm.
+</Callout>
 
 ## Mục lục
 
-- [Nội dung dự kiến](#nội-dung-dự-kiến)
-- [Bước tiếp theo](#bước-tiếp-theo)
+- [Bắt đầu từ schema và response shape](#bắt-đầu-từ-schema-và-response-shape)
+  - [Các từ vựng cần nắm](#các-từ-vựng-cần-nắm)
+  - [SDL minh họa cho Catalog và Book](#sdl-minh-họa-cho-catalog-và-book)
+- [Selection set định hình response](#selection-set-định-hình-response)
+  - [Query scalar](#query-scalar)
+  - [Query object](#query-object)
+  - [Nested selection cho object](#nested-selection-cho-object)
+  - [Không chọn thừa field](#không-chọn-thừa-field)
+- [Alias đổi response key](#alias-đổi-response-key)
+  - [Cú pháp và response](#cú-pháp-và-response)
+  - [Đọc hai object cùng type](#đọc-hai-object-cùng-type)
+  - [Đặt hai field khác tên cạnh nhau](#đặt-hai-field-khác-tên-cạnh-nhau)
+  - [Field schema và key response không phải một](#field-schema-và-key-response-không-phải-một)
+- [Quy tắc hợp lệ và lỗi thường gặp](#quy-tắc-hợp-lệ-và-lỗi-thường-gặp)
+  - [Object phải có selection set](#object-phải-có-selection-set)
+  - [Scalar không có subfield](#scalar-không-có-subfield)
+  - [Field phải tồn tại trong schema](#field-phải-tồn-tại-trong-schema)
+  - [Alias collision](#alias-collision)
+- [Duplicate selection và field merging](#duplicate-selection-và-field-merging)
+  - [Khi selection trùng nhau](#khi-selection-trùng-nhau)
+  - [Khi cùng response key có conflict](#khi-cùng-response-key-có-conflict)
+  - [Cách giữ query dễ đọc](#cách-giữ-query-dễ-đọc)
+- [Operation name và tổ chức query](#operation-name-và-tổ-chức-query)
+  - [Tên operation](#tên-operation)
+  - [Một document nhiều operation](#một-document-nhiều-operation)
+  - [Khi nào dùng alias](#khi-nào-dùng-alias)
+- [Alias trong Spring for GraphQL](#alias-trong-spring-for-graphql)
+  - [Resolver vẫn nhận field gốc](#resolver-vẫn-nhận-field-gốc)
+  - [Selection set và data fetching](#selection-set-và-data-fetching)
+  - [Điều không thể kết luận từ alias](#điều-không-thể-kết-luận-từ-alias)
+- [Quy trình đọc và kiểm tra query](#quy-trình-đọc-và-kiểm-tra-query)
+  - [Các bước từ schema đến response](#các-bước-từ-schema-đến-response)
+  - [Static checklist](#static-checklist)
+- [Học tiếp](#học-tiếp)
 
-## Nội dung dự kiến
+## Bắt đầu từ schema và response shape
 
-Nội dung chi tiết sẽ bao gồm khái niệm chính, ví dụ code và các lưu ý thực hành liên quan đến chủ đề này.
+### Các từ vựng cần nắm
 
-<Callout type="info" title="Trang placeholder">
-Đây là trang khung. Hãy dùng skill `fumadocs-technical-writer` để viết đầy đủ trang này trong bước tiếp theo.
+Hãy đọc một query từ trái sang phải: bắt đầu ở root field, đi vào object nếu cần, rồi dừng ở các scalar field. Bảng sau gom các từ sẽ dùng xuyên suốt bài:
+
+| Thuật ngữ | Nghĩa trong bài | Ví dụ |
+| --- | --- | --- |
+| **Operation** | Một yêu cầu thực thi có loại, có thể có tên, arguments và selection set. | `query CatalogName { catalog { name } }` |
+| **Query** | Operation dùng để đọc dữ liệu. Từ khóa `query` cũng là phần mở đầu của một query operation. | `query BookDetails { ... }` |
+| **Field GraphQL** | Field được schema công khai trên một type. Tên field này là thứ resolver và validation sử dụng. | `Catalog.featuredBook` |
+| **Selection set** | Các field nằm trong cặp `{ ... }` mà client muốn nhận. Selection set có thể lồng nhau. | `featuredBook { id title }` |
+| **Scalar field** | Field trả về một giá trị ở lá, không thể chọn subfield. | `Book.title: String!` |
+| **Object field** | Field trả về một object hoặc list của object, nên phải có selection set con. | `Catalog.featuredBook: Book` |
+| **Nested field** | Field được chọn trên object kết quả của một field khác. | `Book.author { name }` |
+| **Response shape** | Cấu trúc key, object, list và scalar mà client nhận dưới `data`, theo selection set. | `data.catalog.featuredBook.title` |
+| **Alias** | Tên đặt trước field để đổi response key trong operation đó. | `label: title` |
+| **Response key** | Key mà GraphQL dùng trong response: alias nếu có, nếu không thì dùng tên field. | `label` là key của `label: title` |
+
+`Catalog.featuredBook` và `featuredBook` trong query đang nói cùng một field GraphQL. Nếu query viết `highlight: featuredBook`, `highlight` chỉ là response key ở request đó. Schema vẫn chỉ có `Catalog.featuredBook`.
+
+### SDL minh họa cho Catalog và Book
+
+SDL (*Schema Definition Language*, ngôn ngữ định nghĩa schema) là văn bản mô tả contract của GraphQL. SDL tối thiểu dùng trong bài là:
+
+```graphql title="schema.graphqls"
+schema {
+  query: Query
+}
+
+type Query {
+  catalog: Catalog!
+  book(id: ID!): Book
+}
+
+type Catalog {
+  id: ID!
+  name: String!
+  featuredBook: Book
+  books: [Book!]!
+}
+
+type Book {
+  id: ID!
+  title: String!
+  author: Author!
+  publishedYear: Int!
+}
+
+type Author {
+  id: ID!
+  name: String!
+}
+```
+
+Có thể đọc schema này theo từng nấc:
+
+- Client bắt đầu từ `Query.catalog` hoặc `Query.book`.
+- `catalog` trả về object `Catalog`, nên query phải chọn field con như `name`, `featuredBook` hoặc `books`.
+- `featuredBook` trả về một `Book` có thể `null`. Nếu object tồn tại, query phải chọn field của `Book`.
+- `books` trả về list các `Book` không `null`. List rỗng vẫn là một response hợp lệ.
+- `Book.author` trả về object `Author`, nên nó có nested selection set như `author { id name }`.
+- `name`, `id`, `title`, `publishedYear` và `Author.name` là scalar field. Client dừng tại các field này.
+
+Dấu `!` là non-null (không được `null`). Nó không biến object thành scalar và cũng không làm thay đổi quy tắc selection set. `featuredBook: Book` có thể là `null`, nhưng khi query đã chọn field `featuredBook`, object type `Book` vẫn cần selection set. Xem [Scalar, object và field](/docs/schema-va-type-system/scalar-object-field) và [List và nullable](/docs/schema-va-type-system/list-va-nullable) để đọc sâu hơn về kiểu và wrapper.
+
+<Callout type="idea" title="Schema minh họa, không phải database schema">
+`Catalog`, `Book` và `Author` trong SDL chỉ là output type của API. Chúng không khẳng định ứng dụng có class Java, bảng database hoặc resolver với đúng tên đó. Schema là contract; implementation phía sau có thể dùng DTO, service, repository hoặc nhiều data source.
 </Callout>
 
-## Bước tiếp theo
+## Selection set định hình response
 
-Sau khi trang được điền nội dung, đọc bài kế tiếp trong nhóm để tiếp tục lộ trình.
+Selection set là cơ chế để client kiểm soát response shape. GraphQL không tự thêm field chỉ vì field đó tồn tại trong schema hoặc object phía server.
+
+### Query scalar
+
+Với `Catalog.name: String!`, query có thể dừng ở scalar field `name`:
+
+```graphql
+query CatalogName {
+  catalog {
+    name
+  }
+}
+```
+
+Response minh họa là:
+
+```json
+{
+  "data": {
+    "catalog": {
+      "name": "Tech books"
+    }
+  }
+}
+```
+
+`catalog` là object field nên có selection set con. `name` là scalar field nên không có `{ ... }` phía sau. Key `name` trong response mặc định trùng với tên field GraphQL vì query chưa dùng alias.
+
+### Query object
+
+Nếu muốn đọc một object `Book`, client phải chọn các field bên trong object đó:
+
+```graphql
+query FeaturedBook {
+  catalog {
+    featuredBook {
+      id
+      title
+    }
+  }
+}
+```
+
+Response có thể là:
+
+```json
+{
+  "data": {
+    "catalog": {
+      "featuredBook": {
+        "id": "book-1",
+        "title": "Effective Java"
+      }
+    }
+  }
+}
+```
+
+Response chỉ có `id` và `title` vì đó là hai field nằm trong selection set của `featuredBook`. `author` và `publishedYear` có trong schema nhưng chưa được chọn nên không xuất hiện.
+
+Nếu catalog không có sách nổi bật, `featuredBook` có thể là `null` theo SDL. Khi đó, client vẫn đã chọn field này; `null` khác với việc field không xuất hiện vì query không yêu cầu nó. Quy tắc `null` lan truyền khi execution lỗi được trình bày thêm trong [List và nullable](/docs/schema-va-type-system/list-va-nullable).
+
+### Nested selection cho object
+
+Khi một field con lại trả về object, selection set tiếp tục lồng xuống. `Book.author` là ví dụ nested field:
+
+```graphql
+query BookDetails {
+  catalog {
+    featuredBook {
+      id
+      title
+      author {
+        id
+        name
+      }
+      publishedYear
+    }
+  }
+}
+```
+
+Response minh họa:
+
+```json
+{
+  "data": {
+    "catalog": {
+      "featuredBook": {
+        "id": "book-1",
+        "title": "Effective Java",
+        "author": {
+          "id": "author-1",
+          "name": "Joshua Bloch"
+        },
+        "publishedYear": 2018
+      }
+    }
+  }
+}
+```
+
+Có thể đối chiếu từng cặp dấu ngoặc:
+
+```text
+catalog {                         # Catalog object
+  featuredBook {                  # Book object
+    author {                       # Author object
+      name                        # String scalar, điểm dừng
+    }
+  }
+}
+```
+
+`author` không phải một chuỗi đã được “nối sẵn” trong query này. Nó là field GraphQL trả về `Author`, vì vậy client phải chọn tiếp `id` hoặc `name`. Việc một Java model có getter hay một database có join sẵn không thay đổi quy tắc validation của selection set.
+
+### Không chọn thừa field
+
+GraphQL cho phép client chọn ít field hơn schema công khai. Query card có thể chỉ lấy dữ liệu tối thiểu:
+
+```graphql
+query BookCards {
+  catalog {
+    books {
+      id
+      title
+    }
+  }
+}
+```
+
+Response tương ứng có thể là:
+
+```json
+{
+  "data": {
+    "catalog": {
+      "books": [
+        {
+          "id": "book-1",
+          "title": "Effective Java"
+        },
+        {
+          "id": "book-2",
+          "title": "Designing Data-Intensive Applications"
+        }
+      ]
+    }
+  }
+}
+```
+
+`Book.author` và `Book.publishedYear` không xuất hiện. Không cần chọn tất cả field của `Book`, và cũng không nên chọn thêm field chỉ vì chúng có sẵn. Selection set giúp response sát với use case, nhưng không tự bảo đảm database chỉ đọc đúng hai cột; việc tối ưu data fetching thuộc implementation.
+
+## Alias đổi response key
+
+**Alias** là phần đứng trước dấu `:` trong một field selection:
+
+```text
+responseKey: fieldName
+```
+
+Alias đổi key trong response của operation hiện tại. Nó không thêm field vào schema, không đổi tên `fieldName` trong SDL và không đổi tên method resolver.
+
+### Cú pháp và response
+
+Query sau đặt alias `catalogName` cho field GraphQL `name`:
+
+```graphql
+query NamedCatalog {
+  catalog {
+    catalogName: name
+  }
+}
+```
+
+Response là:
+
+```json
+{
+  "data": {
+    "catalog": {
+      "catalogName": "Tech books"
+    }
+  }
+}
+```
+
+Ở đây có hai tên cần phân biệt:
+
+| Vị trí | Tên | Ý nghĩa |
+| --- | --- | --- |
+| Schema và resolver | `name` | Field GraphQL thật trên `Catalog`, kiểu `String!`. |
+| Response của operation | `catalogName` | Response key do alias tạo ra. |
+
+Nếu query sau đó bỏ alias, response lại có key `name`:
+
+```graphql
+query PlainCatalog {
+  catalog {
+    name
+  }
+}
+```
+
+Alias không phải cơ chế rename schema. Một client khác vẫn phải gọi `name`, trừ khi schema được thay đổi thật sự bằng migration riêng.
+
+### Đọc hai object cùng type
+
+Use case phổ biến nhất của alias là đọc cùng một field nhiều lần với arguments khác nhau. Schema có `Query.book(id: ID!): Book`, nên query sau đọc hai object đều có type `Book`:
+
+```graphql
+query CompareBooks {
+  firstBook: book(id: "book-1") {
+    id
+    title
+    author {
+      name
+    }
+  }
+  secondBook: book(id: "book-2") {
+    id
+    title
+    author {
+      name
+    }
+  }
+}
+```
+
+Response minh họa:
+
+```json
+{
+  "data": {
+    "firstBook": {
+      "id": "book-1",
+      "title": "Effective Java",
+      "author": {
+        "name": "Joshua Bloch"
+      }
+    },
+    "secondBook": {
+      "id": "book-2",
+      "title": "Designing Data-Intensive Applications",
+      "author": {
+        "name": "Martin Kleppmann"
+      }
+    }
+  }
+}
+```
+
+Nếu không có alias, cả hai selection đều dùng response key `book`. Hai lần gọi có `id` khác nhau sẽ xung đột, vì GraphQL không thể đặt hai object khác nhau vào cùng một key `book` một cách rõ ràng. `firstBook` và `secondBook` tạo hai response key riêng; chúng không phải hai field mới trong `Query`.
+
+Alias cũng giúp client diễn tả ý nghĩa của từng lần đọc. Tuy vậy, nên chọn tên phản ánh vai trò trong màn hình hoặc use case, không đặt tên quá mơ hồ như `a` và `b`.
+
+### Đặt hai field khác tên cạnh nhau
+
+Alias cũng có thể làm hai field GraphQL khác tên trở nên dễ ghép trong một response. `Catalog` có cả `books` và `featuredBook`:
+
+```graphql
+query CatalogView {
+  catalog {
+    allBooks: books {
+      id
+      title
+    }
+    highlight: featuredBook {
+      id
+      title
+    }
+  }
+}
+```
+
+Response có thể là:
+
+```json
+{
+  "data": {
+    "catalog": {
+      "allBooks": [
+        {
+          "id": "book-1",
+          "title": "Effective Java"
+        },
+        {
+          "id": "book-2",
+          "title": "Designing Data-Intensive Applications"
+        }
+      ],
+      "highlight": {
+        "id": "book-1",
+        "title": "Effective Java"
+      }
+    }
+  }
+}
+```
+
+`allBooks` là response key của field `books`, còn `highlight` là response key của field `featuredBook`. Alias không làm hai field có cùng kiểu: một field vẫn trả list, field kia vẫn trả `Book` nullable. Client phải đọc đúng shape đã được schema định nghĩa cho từng field gốc.
+
+### Field schema và key response không phải một
+
+Có thể dùng bảng sau để lần theo một response key về field GraphQL gốc:
+
+| Query selection | Field được validate theo schema | Key trong response | Resolver cần xử lý |
+| --- | --- | --- | --- |
+| `name` | `Catalog.name` | `name` | Field `name` |
+| `catalogName: name` | `Catalog.name` | `catalogName` | Vẫn là field `name` |
+| `allBooks: books` | `Catalog.books` | `allBooks` | Vẫn là field `books` |
+| `firstBook: book(id: "book-1")` | `Query.book` với argument `id` | `firstBook` | Vẫn là field `book` |
+
+Alias chỉ nằm ở lớp operation/response. Khi đọc lỗi validation, introspection hoặc schema mapping, hãy dùng tên field bên phải dấu `:`. Khi đọc JSON phía client, hãy dùng response key bên trái dấu `:`.
+
+<Callout type="warn" title="Alias không đổi contract server">
+Đừng tạo resolver tên `firstBook()` chỉ vì query có `firstBook: book(...)`. Resolver vẫn map `Query.book`; alias chỉ nói response nên đặt key là `firstBook`. Tương tự, `highlight: featuredBook` vẫn resolve `Catalog.featuredBook`.
+</Callout>
+
+## Quy tắc hợp lệ và lỗi thường gặp
+
+GraphQL validation kiểm tra query với schema trước khi execution. Vì vậy, các lỗi selection set hoặc tên field thường được phát hiện trước khi resolver và data source được gọi.
+
+### Object phải có selection set
+
+Field trả về object phải có selection set. Query sau sai vì `featuredBook` trả về `Book`:
+
+```graphql
+query InvalidObjectSelection {
+  catalog {
+    featuredBook
+  }
+}
+```
+
+Response lỗi minh họa có thể là:
+
+```json
+{
+  "errors": [
+    {
+      "message": "Field \"featuredBook\" of type \"Book\" must have a selection of subfields. Did you mean \"featuredBook { ... }\"?"
+    }
+  ]
+}
+```
+
+Cách sửa là chọn ít nhất một field hợp lệ của `Book`:
+
+```graphql
+query ValidObjectSelection {
+  catalog {
+    featuredBook {
+      id
+    }
+  }
+}
+```
+
+Dù `featuredBook` có thể trả `null`, kiểu của field vẫn là `Book`, không phải scalar. Nullable quyết định giá trị có thể vắng mặt; nó không loại bỏ yêu cầu selection set.
+
+### Scalar không có subfield
+
+Chiều ngược lại, scalar không được mở selection set. Query sau sai vì `name` có kiểu `String!`:
+
+```graphql
+query InvalidScalarSelection {
+  catalog {
+    name {
+      value
+    }
+  }
+}
+```
+
+Một response validation minh họa có thể là:
+
+```json
+{
+  "errors": [
+    {
+      "message": "Field \"name\" must not have a selection since type \"String!\" has no subfields."
+    }
+  ]
+}
+```
+
+Cách sửa là dừng tại `name`:
+
+```graphql
+query ValidScalarSelection {
+  catalog {
+    name
+  }
+}
+```
+
+Custom scalar cũng là scalar ở quy tắc selection set. Ví dụ một scalar `Date` vẫn được chọn như `publishedAt`, không viết `publishedAt { year month }`, trừ khi schema khai báo nó là object type.
+
+### Field phải tồn tại trong schema
+
+Alias không cho phép né validation. Query sau vẫn sai dù response key `bookTitle` nghe hợp lý, vì field `summary` không tồn tại trên `Book` trong SDL minh họa:
+
+```graphql
+query InvalidField {
+  catalog {
+    featuredBook {
+      bookTitle: summary
+    }
+  }
+}
+```
+
+Lỗi có thể có dạng:
+
+```json
+{
+  "errors": [
+    {
+      "message": "Cannot query field \"summary\" on type \"Book\"."
+    }
+  ]
+}
+```
+
+`bookTitle` chỉ là response key, không phải field mà schema tìm kiếm. Nếu muốn có `bookTitle` từ `title`, query đúng là:
+
+```graphql
+query ValidFieldAlias {
+  catalog {
+    featuredBook {
+      bookTitle: title
+    }
+  }
+}
+```
+
+Thông báo lỗi, `locations`, suggestions và HTTP status phụ thuộc GraphQL implementation, GraphQL Java và error handler. Các message trong bài chỉ minh họa ý nghĩa validation, không phải chuỗi output cố định. Đây là caveat quan trọng khi viết test: nên assert error category/path hoặc contract đã thống nhất, không phụ thuộc câu chữ nếu implementation không cam kết câu chữ đó.
+
+### Alias collision
+
+**Alias collision** là xung đột khi hai selection cùng tạo một response key nhưng không thể gộp an toàn. Ví dụ dưới đây dùng alias `same` cho hai field khác nhau:
+
+```graphql
+query AliasCollision {
+  catalog {
+    same: books {
+      id
+    }
+    same: featuredBook {
+      id
+    }
+  }
+}
+```
+
+Hai selection đều muốn ghi vào `data.catalog.same`, nhưng một selection trả list và selection kia trả object. Query có thể parse được, nhưng validation thường từ chối vì hai field khác nhau dùng cùng response key.
+
+Alias collision cũng xảy ra khi cùng một field được gọi với arguments khác nhau:
+
+```graphql
+query ArgumentConflict {
+  firstBook: book(id: "book-1") {
+    id
+  }
+  firstBook: book(id: "book-2") {
+    id
+  }
+}
+```
+
+Cách sửa là dùng hai alias khác nhau:
+
+```graphql
+query DifferentResponseKeys {
+  firstBook: book(id: "book-1") {
+    id
+  }
+  secondBook: book(id: "book-2") {
+    id
+  }
+}
+```
+
+Nguyên tắc thực hành là mỗi response key phải biểu diễn một kết quả có thể hợp nhất rõ ràng. Đừng dùng alias chung như `value` cho các field khác nhau chỉ để làm JSON ngắn hơn.
+
+## Duplicate selection và field merging
+
+GraphQL có thể gặp cùng một field nhiều lần do query viết lặp, fragment hoặc nhiều nhánh có điều kiện. Runtime thu thập selection theo **response key**, tức alias nếu có hoặc tên field nếu không có.
+
+### Khi selection trùng nhau
+
+Hai selection hoàn toàn giống nhau thường được GraphQL merge (gộp) thành một response key:
+
+```graphql
+query RepeatedFields {
+  catalog {
+    featuredBook {
+      title
+      title
+      author {
+        id
+      }
+      author {
+        name
+      }
+    }
+  }
+}
+```
+
+Response thành công có thể là:
+
+```json
+{
+  "data": {
+    "catalog": {
+      "featuredBook": {
+        "title": "Effective Java",
+        "author": {
+          "id": "author-1",
+          "name": "Joshua Bloch"
+        }
+      }
+    }
+  }
+}
+```
+
+`title` chỉ xuất hiện một lần. Hai selection `author` cùng trỏ đến `Book.author`, nên các nested field `id` và `name` được gộp vào một object `author`. Đây là field merging, không phải alias tự động.
+
+Việc merge chỉ an toàn khi field name, arguments và kiểu kết quả tương thích. Selection lặp có thể xuất hiện khi hai fragment cùng chọn một field chung, nên validation GraphQL được thiết kế để kiểm tra các selection overlap đó.
+
+### Khi cùng response key có conflict
+
+Hai selection cùng response key không phải lúc nào cũng merge được. Có ba nhóm conflict dễ gặp:
+
+| Tình huống | Ví dụ | Vì sao conflict |
+| --- | --- | --- |
+| Field name khác nhau | `label: title` và `label: author { name }` | Cùng key `label` nhưng là hai field GraphQL khác nhau, kiểu cũng khác. |
+| Arguments khác nhau | `first: book(id: "book-1")` và `first: book(id: "book-2")` | Cùng key `first` nhưng đại diện hai kết quả khác nhau. |
+| Nested selection không tương thích | Cùng field `author` nhưng một nhánh alias con xung đột | Object con không thể gộp thành shape duy nhất một cách rõ ràng. |
+
+Ví dụ field name khác nhau:
+
+```graphql
+query FieldNameConflict {
+  catalog {
+    featuredBook {
+      label: title
+      label: author {
+        name
+      }
+    }
+  }
+}
+```
+
+Ví dụ arguments khác nhau đã dùng ở phần [Alias collision](#alias-collision). Cả hai query đều có thể hợp lệ về cú pháp GraphQL, nhưng validation thường báo conflict trước execution. Đừng chờ resolver quyết định key nào thắng; GraphQL không nên âm thầm ghi đè dữ liệu trong response.
+
+Fragments có thể làm conflict khó nhìn thấy hơn vì selection nằm ở file hoặc đoạn khác. Khi query lớn, tìm theo response key và kiểm tra cả fragment để phát hiện alias trùng.
+
+### Cách giữ query dễ đọc
+
+Có thể giữ selection set dễ đọc bằng các nguyên tắc sau:
+
+- Đặt các field cùng nhóm cạnh nhau, chẳng hạn định danh trước, field hiển thị sau, nested object ở cuối nhóm.
+- Dùng alias có nghĩa nghiệp vụ như `primaryBook` và `comparisonBook`, không dùng `a` và `b`.
+- Chỉ dùng alias khi cần đọc cùng field nhiều lần, ghép hai tên field khác nhau hoặc đổi vocabulary cho một response cụ thể.
+- Không alias mọi field chỉ để đổi `title` thành `bookTitle` nếu không có lợi ích rõ; alias quá mức làm query xa schema hơn.
+- Khi hai selection hợp nhất được, có thể để GraphQL merge, nhưng vẫn nên viết query một lần nếu việc lặp không giúp ích cho người đọc.
+- Tách phần selection dùng lại bằng fragment khi query bắt đầu dài. Xem [Variables, arguments và fragments](/docs/query-mutation-subscription/variables-arguments-fragments).
+- Giữ alias ổn định nếu client map response vào model hoặc cache. Đổi alias là đổi response shape của client dù schema không đổi.
+
+<Accordions type="single">
+  <Accordion title="Duplicate selection có phải luôn là lỗi không?">
+    Không. Hai selection trỏ tới cùng field, cùng arguments và có nested selection tương thích thường được validation cho phép và execution gộp lại dưới một response key. Tuy nhiên, selection lặp làm query khó đọc; hãy viết một lần hoặc dùng fragment có chủ đích. Nếu field name, arguments hoặc nested shape xung đột, query có thể bị từ chối trước execution.
+  </Accordion>
+  <Accordion title="Alias có giúp đổi tên API mà không migration không?">
+    Không. Alias chỉ đổi key trong response của một operation. Introspection, schema, resolver, arguments và các client khác vẫn nhìn thấy field gốc. Muốn đổi tên công khai của field, cần thêm field mới, migration và deprecation theo quy trình schema evolution.
+  </Accordion>
+</Accordions>
+
+## Operation name và tổ chức query
+
+Alias định danh một field trong response. **Operation name** định danh cả operation để người và hệ thống quan sát biết query đang làm gì. Hai khái niệm này không thay thế nhau.
+
+### Tên operation
+
+Operation name là tên tùy chọn đứng sau từ khóa `query`:
+
+```graphql
+query CatalogCards {
+  catalog {
+    books {
+      id
+      title
+    }
+  }
+}
+```
+
+`CatalogCards` không xuất hiện tự động trong JSON response. Response vẫn bắt đầu từ key `catalog`, rồi đến `books`. Operation name có ích cho:
+
+- log, trace và dashboard, nhất là khi nhiều operation đi qua cùng endpoint;
+- persisted operation hoặc allow-list nếu server có hỗ trợ;
+- phân biệt query card, query detail và query dùng cho màn hình khác;
+- đọc lỗi và trao đổi trong review code.
+
+Tên nên phản ánh use case, không chỉ lặp lại tên root field. `CompareBooks` nói rõ mục đích hơn `BookQuery`, vì query đó đọc hai sách để so sánh.
+
+### Một document nhiều operation
+
+Một query document (toàn bộ văn bản GraphQL gửi trong request) có thể chứa nhiều operation có tên:
+
+```graphql
+query CatalogCards {
+  catalog {
+    name
+  }
+}
+
+query BookDetails {
+  catalog {
+    featuredBook {
+      id
+      title
+      author {
+        name
+      }
+    }
+  }
+}
+```
+
+Client chỉ thực thi một operation trong document. Khi document có nhiều operation, request envelope nên chỉ rõ `operationName`:
+
+```json
+{
+  "query": "query CatalogCards { catalog { name } }\n\nquery BookDetails { catalog { featuredBook { id title author { name } } } }",
+  "operationName": "BookDetails"
+}
+```
+
+`operationName` phải khớp chính xác tên operation. Nó không phải alias của `catalog`, `featuredBook` hoặc bất kỳ field nào. Nếu document có nhiều operation mà không chọn được operation, server có thể trả lỗi trước execution. Cấu trúc envelope, variables và cách transport đóng gói request được giải thích ở [Mô hình request/response](/docs/nen-tang/mo-hinh-request-response).
+
+### Khi nào dùng alias
+
+Dùng alias khi alias giải quyết một nhu cầu đọc cụ thể:
+
+| Nhu cầu | Ví dụ | Lợi ích |
+| --- | --- | --- |
+| Đọc cùng field nhiều lần với arguments khác nhau | `primary: book(id: "book-1")` | Hai kết quả có response key riêng. |
+| Đổi tên key cho vocabulary của màn hình | `displayTitle: title` | Client nhận key phù hợp với model của màn hình. |
+| Ghép field khác tên vào một shape thống nhất | `items: books`, `featured: featuredBook` | Response dễ map vào một view model cụ thể. |
+| Tránh response key collision | `first: book(...)`, `second: book(...)` | Validation không phải gộp hai kết quả khác nhau. |
+
+Không dùng alias để:
+
+- giả vờ schema có một field mới;
+- che một field sai hoặc field chưa được khai báo;
+- thay thế arguments, variables hoặc fragments;
+- đặt tên khác nhau tùy tiện giữa các query khiến client khó tái sử dụng model.
+
+Một query dễ đọc thường dùng alias ở những điểm response thực sự cần tên khác, còn các field thông thường giữ nguyên tên schema. Nếu response phải có một contract ổn định cho nhiều client, cân nhắc thiết kế output type/schema rõ ràng thay vì để mỗi query tự tạo một vocabulary alias khác.
+
+## Alias trong Spring for GraphQL
+
+Spring for GraphQL đưa SDL vào ứng dụng Spring Boot và map field GraphQL tới method resolver. Alias nằm ở operation của client, không làm thay đổi bước mapping đó.
+
+### Resolver vẫn nhận field gốc
+
+Với SDL minh họa:
+
+```graphql
+type Query {
+  book(id: ID!): Book
+}
+```
+
+Một mapping Spring for GraphQL ở mức khái niệm có thể được viết như sau:
+
+```java
+@QueryMapping
+public Book book(@Argument String id) {
+    return catalogService.findById(id).orElse(null);
+}
+```
+
+Đoạn Java chỉ là fragment minh họa, không phải code có sẵn hoặc đã chạy trong repository này. Tên method `book` và field `Query.book` là phần mapping. Với query:
+
+```graphql
+query CompareBooks {
+  primary: book(id: "book-1") {
+    id
+  }
+  comparison: book(id: "book-2") {
+    id
+  }
+}
+```
+
+Spring/GraphQL execution vẫn gọi logic của `Query.book` cho hai selection với hai arguments khác nhau. Resolver không được tìm theo tên `primary` hoặc `comparison`. Alias chỉ được dùng khi engine đặt kết quả vào `data.primary` và `data.comparison`.
+
+Tương tự, nếu `Book.author` cần resolver nested riêng, mapping khái niệm sẽ nhắm vào field schema `author`:
+
+```java
+@SchemaMapping(typeName = "Book", field = "author")
+public Author author(Book book) {
+    return authorService.findByBookId(book.getId()).orElseThrow();
+}
+```
+
+Query `primary { author { name } }` và `comparison { author { name } }` đều đi qua `Book.author`. Không có mapping riêng cho `primary.author` hoặc `comparison.author`. Cách map nested field trong Spring for GraphQL được nối tiếp ở [Schema mapping và nested field](/docs/tich-hop-spring-for-graphql/schema-mapping-va-nested-field).
+
+### Selection set và data fetching
+
+Selection set ảnh hưởng hai lớp khác nhau:
+
+1. **Contract và serialization:** GraphQL chỉ đưa các field được chọn vào response, theo key mặc định hoặc alias.
+2. **Công việc phía server:** execution engine biết field/nested field nào được yêu cầu và có thể gọi resolver tương ứng. Implementation có thể tận dụng thông tin đó để projection, batching hoặc DataLoader.
+
+Alias không thay đổi field mà server cần resolve. Với:
+
+```graphql
+query AliasDoesNotChangeFetch {
+  catalog {
+    highlight: featuredBook {
+      id
+      title
+    }
+  }
+}
+```
+
+Server vẫn resolve `Catalog.featuredBook`; chỉ key response là `highlight`. Nếu resolver hoặc data source trả một `Book`, engine tiếp tục hoàn tất `id` và `title` theo selection set. `highlight` không phải tên cột database và không phải tham số tự động truyền xuống service.
+
+Nested selection cũng không tự bảo đảm chỉ có một database query hoặc một downstream call. Một resolver có thể lấy cả object rồi đọc property. Một implementation khác có thể dùng projection, join hoặc batch loading. Hãy đo và thiết kế data fetching ở backend thật thay vì suy ra từ alias.
+
+### Điều không thể kết luận từ alias
+
+Chỉ nhìn query có alias, không thể kết luận:
+
+- resolver nào chắc chắn được gọi bao nhiêu lần;
+- database sẽ select đúng những cột trong selection set;
+- hai alias cùng field sẽ dùng chung cache hay tạo hai backend call;
+- alias có tác động đến authorization, transaction hoặc nullability;
+- response key alias có được một client khác hiểu hay không.
+
+Những điều đó thuộc implementation, policy và client contract. Ở mức GraphQL, ta có thể kết luận chắc chắn rằng field gốc phải tồn tại, selection set phải hợp lệ và response key sẽ dùng alias. [Viết query đầu tiên](/docs/bat-dau/viet-query-dau-tien) trình bày flow từ schema đến resolver; [Query, mutation và subscription mapping](/docs/tich-hop-spring-for-graphql/query-mutation-subscription-mapping) là bài tham chiếu cho mapping root operation.
+
+<Callout type="warn" title="Không tuyên bố runtime từ ví dụ">
+Các method Java, service và response trong trang này chỉ minh họa quan hệ giữa schema, resolver và selection set. Repo không có backend Spring Boot tương ứng để chạy. Khi áp dụng vào project thật, đối chiếu version Spring for GraphQL, schema đang nạp, resolver mapping, authorization và data source trước khi kết luận về số lần fetch hoặc hiệu năng.
+</Callout>
+
+## Quy trình đọc và kiểm tra query
+
+Một quy trình ngắn giúp phát hiện lỗi selection set và alias trước khi điều tra resolver.
+
+### Các bước từ schema đến response
+
+<Steps>
+  <Step>
+    **Xác định operation và operation name.** Kiểm tra đây là `query` đọc dữ liệu, tên operation là gì và document có chứa operation nào khác không.
+  </Step>
+  <Step>
+    **Đọc từng field theo kiểu trả về.** Scalar thì dừng tại field. Object hoặc list object thì mở selection set và đi tiếp vào type con.
+  </Step>
+  <Step>
+    **Theo dõi response key.** Với `alias: field`, validation dùng `field`, còn JSON dùng `alias`. Tìm alias trùng trước khi chạy request.
+  </Step>
+  <Step>
+    **Đối chiếu response với selection set.** Field không được chọn không được tự xuất hiện; object phải giữ nested shape; `null` phải được đọc cùng nullability và `errors`.
+  </Step>
+</Steps>
+
+Ví dụ áp dụng quy trình vào query sau:
+
+```graphql
+query CatalogSummary {
+  catalog {
+    catalogName: name
+    highlight: featuredBook {
+      bookId: id
+      title
+      writer: author {
+        name
+      }
+    }
+  }
+}
+```
+
+Có thể lập bảng theo dõi:
+
+| Vị trí query | Field schema | Response key | Kiểu cần kiểm tra |
+| --- | --- | --- | --- |
+| `catalog` | `Query.catalog` | `catalog` | `Catalog!`, cần selection set |
+| `catalogName: name` | `Catalog.name` | `catalogName` | `String!`, không có subfield |
+| `highlight: featuredBook` | `Catalog.featuredBook` | `highlight` | `Book`, cần selection set nếu khác `null` |
+| `bookId: id` | `Book.id` | `bookId` | `ID!`, không có subfield |
+| `writer: author` | `Book.author` | `writer` | `Author!`, cần selection set |
+| `name` trong `writer` | `Author.name` | `name` | `String!`, điểm dừng |
+
+Response minh họa tương ứng:
+
+```json
+{
+  "data": {
+    "catalog": {
+      "catalogName": "Tech books",
+      "highlight": {
+        "bookId": "book-1",
+        "title": "Effective Java",
+        "writer": {
+          "name": "Joshua Bloch"
+        }
+      }
+    }
+  }
+}
+```
+
+Nếu thấy `catalog.name` thay vì `catalog.catalogName`, hãy kiểm tra query hoặc response của client. Schema không có field `catalogName`; đó chỉ là key alias ở response.
+
+### Static checklist
+
+Trước khi gửi query, dùng checklist sau:
+
+- [ ] Operation bắt đầu bằng `query` và có tên mô tả use case khi query được log hoặc chia sẻ.
+- [ ] Mỗi root field tồn tại trong `Query` của schema hiện tại.
+- [ ] Mỗi object hoặc list object có selection set; scalar field không có subfield.
+- [ ] Mọi field con thuộc đúng object type ở vị trí đang chọn.
+- [ ] Không thêm field “thừa” như `summary` chỉ vì model backend có thể có property đó.
+- [ ] Mỗi alias có tên rõ nghĩa và không collision với selection khác cùng parent.
+- [ ] Hai lần gọi cùng field với arguments khác nhau có response key khác nhau.
+- [ ] Khi đọc JSON, dùng alias để tìm key; khi debug validation/resolver, dùng field bên phải dấu `:`.
+- [ ] Selection set nested phản ánh response shape mà client thật sự cần.
+- [ ] Nếu document có nhiều operation, request envelope có `operationName` đúng tên.
+- [ ] Không suy ra từ selection set hoặc alias rằng data source đã tối ưu số query.
+- [ ] Nếu query dùng arguments hoặc variables, đối chiếu thêm [Variables, arguments và fragments](/docs/query-mutation-subscription/variables-arguments-fragments).
+- [ ] Nếu query có list hoặc field nullable, đọc [List và nullable](/docs/schema-va-type-system/list-va-nullable) để dự đoán `null`, list rỗng và lỗi lan truyền.
+
+Khi query hợp lệ nhưng response có `errors`, chuyển sang đọc `path`, resolver và data source theo [Mô hình request/response](/docs/nen-tang/mo-hinh-request-response). Khi lỗi là `Cannot query field`, object thiếu selection set hoặc scalar có subfield, sửa query theo schema trước; resolver thường chưa được gọi.
+
+## Học tiếp
+
+- [Viết query đầu tiên](/docs/bat-dau/viet-query-dau-tien) — đi từ schema nhập môn đến resolver và execution result đầu tiên.
+- [Mô hình request/response](/docs/nen-tang/mo-hinh-request-response) — đọc query document, operation name, `data`, `errors` và response shape.
+- [Variables, arguments và fragments](/docs/query-mutation-subscription/variables-arguments-fragments) — tách dữ liệu động khỏi query và tái sử dụng selection set.
+- [List và nullable](/docs/schema-va-type-system/list-va-nullable) — hiểu list object, `null`, list rỗng và null propagation.
+- [Schema mapping và nested field](/docs/tich-hop-spring-for-graphql/schema-mapping-va-nested-field) — nối nested field với method Spring for GraphQL ở mức implementation.
+- [@QueryMapping, @MutationMapping, @SubscriptionMapping](/docs/tich-hop-spring-for-graphql/query-mutation-subscription-mapping) — phân biệt mapping của root operation trong Spring.
+
+<Cards>
+  <Card title="Viết query đầu tiên" href="/docs/bat-dau/viet-query-dau-tien" description="Nối field trong schema với resolver và đọc execution result." />
+  <Card title="Mô hình request và response" href="/docs/nen-tang/mo-hinh-request-response" description="Theo dõi operation name, data, errors và request envelope." />
+  <Card title="Variables và fragments" href="/docs/query-mutation-subscription/variables-arguments-fragments" description="Mở rộng query bằng arguments, variables và selection dùng lại." />
+  <Card title="Schema mapping nested field" href="/docs/tich-hop-spring-for-graphql/schema-mapping-va-nested-field" description="Hiểu alias vẫn resolve field gốc trong Spring for GraphQL." />
+</Cards>

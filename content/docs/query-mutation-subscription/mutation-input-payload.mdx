@@ -3,21 +3,712 @@ title: "Mutation và input/payload"
 description: "Thiết kế mutation với input object, payload type và quy ước trả về kết quả."
 ---
 
-Trang này sẽ trình bày **Mutation và input/payload** trong bối cảnh xây dựng GraphQL API với Spring Boot.
+import { Accordion, Accordions } from 'fumadocs-ui/components/accordion';
+import { Step, Steps } from 'fumadocs-ui/components/steps';
+
+**Mutation** là operation GraphQL dành cho việc thay đổi trạng thái phía server, như tạo hoặc cập nhật một cuốn sách. **Input object** là object type chỉ dùng để mô tả dữ liệu client gửi vào mutation. **Payload** là output type mô tả kết quả server trả về sau khi xử lý mutation. Input đi **vào** server; payload đi **ra** server.
+
+Mutation thường tạo **side effect** (tác động làm thay đổi trạng thái hoặc gây hành động bên ngoài, chẳng hạn ghi dữ liệu hay phát sự kiện), còn query chủ yếu dành cho đọc và không nên tạo side effect. **Idempotency** (tính có thể xử lý lặp mà không tạo thêm tác động ngoài lần đầu) là một quy ước nghiệp vụ tùy use case, không tự xuất hiện chỉ vì operation có từ khóa `mutation`. **Selection set** (tập các field nằm trong `{ ... }`) cho client chọn chính xác phần payload muốn nhận.
+
+Trang này đi từ một contract `createBook` hoàn chỉnh đến request, response và mapping nhập môn với Spring for GraphQL. SDL chỉ mô tả contract GraphQL. Resolver, service, transaction, authorization và database là implementation phía sau contract đó.
+
+<Callout type="info" title="Phạm vi và giả định">
+  SDL, query, JSON và Java trong bài là ví dụ tĩnh, dùng domain catalog sách. Repository này là docs-only, không có backend Spring Boot để chạy; response, resolver và transaction bên dưới chưa được kiểm chứng ở runtime. Java code chỉ minh họa cách nối schema với service, không phải source code hoàn chỉnh của một ứng dụng.
+</Callout>
 
 ## Mục lục
 
-- [Nội dung dự kiến](#nội-dung-dự-kiến)
+- [Bức tranh tổng thể](#bức-tranh-tổng-thể)
+  - [Mutation khác query ở đâu](#mutation-khác-query-ở-đâu)
+  - [Input và payload đi theo hai hướng](#input-và-payload-đi-theo-hai-hướng)
+  - [Contract không phải transaction](#contract-không-phải-transaction)
+- [Thiết kế contract với SDL](#thiết-kế-contract-với-sdl)
+  - [SDL hoàn chỉnh cho createBook](#sdl-hoàn-chỉnh-cho-createbook)
+  - [Đọc input object](#đọc-input-object)
+  - [Đọc payload và error contract](#đọc-payload-và-error-contract)
+  - [Required nullable và default](#required-nullable-và-default)
+- [Gửi mutation từ client](#gửi-mutation-từ-client)
+  - [Mutation và selection set](#mutation-và-selection-set)
+  - [Variables JSON](#variables-json)
+  - [Response thành công](#response-thành-công)
+  - [Lỗi nghiệp vụ trong payload](#lỗi-nghiệp-vụ-trong-payload)
+  - [Lỗi GraphQL ở cấp execution](#lỗi-graphql-ở-cấp-execution)
+- [Validation và xử lý lỗi](#validation-và-xử-lý-lỗi)
+  - [Validation cấu trúc](#validation-cấu-trúc)
+  - [Validation nghiệp vụ](#validation-nghiệp-vụ)
+  - [Chọn errors và warnings](#chọn-errors-và-warnings)
+- [Naming và thiết kế field](#naming-và-thiết-kế-field)
+  - [Quy ước naming](#quy-ước-naming)
+  - [Idempotency và duplicate submission](#idempotency-và-duplicate-submission)
+  - [Chọn selection set tối thiểu](#chọn-selection-set-tối-thiểu)
+- [Mapping với Spring for GraphQL](#mapping-với-spring-for-graphql)
+  - [Resolver và argument](#resolver-và-argument)
+  - [Binding input vào kiểu Java](#binding-input-vào-kiểu-java)
+  - [Service và transaction boundary](#service-và-transaction-boundary)
+- [Tiến hóa an toàn](#tiến-hóa-an-toàn)
+  - [Tiến hóa input](#tiến-hóa-input)
+  - [Tiến hóa payload](#tiến-hóa-payload)
+- [Quy trình thực hành](#quy-trình-thực-hành)
+- [Checklist review mutation](#checklist-review-mutation)
 - [Bước tiếp theo](#bước-tiếp-theo)
 
-## Nội dung dự kiến
+## Bức tranh tổng thể
 
-Nội dung chi tiết sẽ bao gồm khái niệm chính, ví dụ code và các lưu ý thực hành liên quan đến chủ đề này.
+Một mutation có thể được đọc qua bốn lớp: client gửi input, GraphQL kiểm tra contract, resolver chuyển yêu cầu vào use case, rồi payload đưa kết quả trở lại client.
 
-<Callout type="info" title="Trang placeholder">
-Đây là trang khung. Hãy dùng skill `fumadocs-technical-writer` để viết đầy đủ trang này trong bước tiếp theo.
+```text
+Client: mutation + variables + selection set
+                    │
+                    ▼
+GraphQL: parse, validate và coerce input theo SDL
+                    │
+                    ▼
+@MutationMapping: bind argument và gọi service/use case
+                    │
+                    ▼
+Service: validation nghiệp vụ, authorization, transaction hoặc downstream
+                    │
+                    ▼
+CreateBookPayload: book + errors + warnings theo selection set
+```
+
+GraphQL engine chịu trách nhiệm về cú pháp, kiểu dữ liệu, field và hình dạng response. Nó không tự biết “tạo sách” có nghĩa là ghi vào database nào, gửi email hay phát message. Những quyết định đó thuộc service và boundary nghiệp vụ.
+
+### Mutation khác query ở đâu
+
+| Operation | Mục đích contract | Kỳ vọng về side effect | Ví dụ |
+| --- | --- | --- | --- |
+| `query` | Đọc dữ liệu hoặc trạng thái | Không nên làm thay đổi trạng thái quan sát được | `book(id: $id)` |
+| `mutation` | Yêu cầu một hành động thay đổi trạng thái | Có thể tạo, cập nhật, xóa hoặc kích hoạt hành động bên ngoài | `createBook(input: $input)` |
+| `subscription` | Nhận các sự kiện trong một luồng dài hơn | Không phải điểm vào để client yêu cầu ghi dữ liệu | `bookAdded` |
+
+Từ khóa `mutation` giúp client, server và tooling hiểu rằng operation này có semantics ghi. Nó không thay thế HTTP method, không tự mở transaction và không bảo đảm retry an toàn. Một resolver mutation vẫn có thể chỉ gọi một service in-memory trong ví dụ học tập; ngược lại, một mutation production có thể phối hợp nhiều hệ thống phía sau.
+
+Đặt tên root field theo động từ và đối tượng giúp contract tự giải thích: `createBook`, `updateBook` hoặc `archiveBook`. Không dùng `Query.saveBook` chỉ vì method Java hiện tại dùng chung một lớp đọc/ghi.
+
+### Input và payload đi theo hai hướng
+
+Input và payload có thể chứa những field trông giống nhau, nhưng chúng phục vụ hai hướng khác nhau:
+
+| Thành phần | Hướng dữ liệu | Client làm gì với nó? | Ví dụ |
+| --- | --- | --- | --- |
+| `CreateBookInput` | Client → server | Gửi qua argument, thường từ `variables` | `title`, `author`, `format` |
+| `Book` | Server → client | Chọn field trong selection set | `id`, `title`, `author` |
+| `CreateBookPayload` | Server → client | Chọn object kết quả, lỗi và cảnh báo | `book`, `errors`, `warnings` |
+
+Client không thể viết selection set trên `CreateBookInput`. Ngược lại, client phải viết selection set trên `CreateBookPayload` vì đây là output object. Không dùng `Book` làm input chỉ vì `title` và `author` có cùng tên: `Book` có `id` do server cấp, còn input cần quy định field nào client được phép ghi.
+
+`CreateBookPayload` cũng không phải request body HTTP. HTTP envelope có thể chứa `query` và `variables`; payload là một type nằm bên trong `data` của execution result. Cùng một payload type có thể được chọn khác nhau bởi các client khác nhau.
+
+### Contract không phải transaction
+
+**GraphQL contract** trả lời các câu hỏi về vocabulary và hình dạng:
+
+- Mutation nào tồn tại và argument có kiểu gì?
+- Input field nào bắt buộc, nullable hoặc có default?
+- Payload có object, lỗi và warning nào?
+- Client được chọn field nào trong response?
+
+**Transaction** là ranh giới thực thi để nhóm các thay đổi dữ liệu theo chính sách commit/rollback. SDL không khai báo transaction và GraphQL không tự suy ra transaction từ `type Mutation`.
+
+Ví dụ, `createBook` có thể được thực hiện bằng một transaction database duy nhất, bằng một service gọi thêm hệ thống tác giả, hoặc bằng một quy trình bất đồng bộ. Mỗi lựa chọn có semantics lỗi và khả năng rollback khác nhau. Một request GraphQL thành công ở transport cũng không chứng minh mọi side effect phía sau đã commit.
+
+Nói ngắn gọn: thiết kế payload để client hiểu kết quả của use case; thiết kế service/transaction để bảo vệ invariant và dữ liệu. Đừng dùng schema để hứa một mức atomicity (tính tất cả-hoặc-không gì) mà implementation không thể bảo đảm.
+
+## Thiết kế contract với SDL
+
+Hãy viết SDL trước khi viết controller. SDL làm rõ input được phép gửi và payload cần trả về mà không khóa contract vào entity hoặc bảng database.
+
+### SDL hoàn chỉnh cho createBook
+
+Ví dụ dưới đây là một schema độc lập, tự nhất quán cho các phần còn lại của bài:
+
+```graphql title="schema.graphqls"
+schema {
+  query: Query
+  mutation: Mutation
+}
+
+type Query {
+  book(id: ID!): Book
+}
+
+type Mutation {
+  createBook(input: CreateBookInput!): CreateBookPayload!
+}
+
+input CreateBookInput {
+  title: String!
+  author: String!
+  publishedYear: Int
+  format: BookFormat! = PAPERBACK
+  idempotencyKey: String
+}
+
+enum BookFormat {
+  HARDCOVER
+  PAPERBACK
+  EBOOK
+}
+
+type CreateBookPayload {
+  book: Book
+  errors: [CreateBookError!]!
+  warnings: [CreateBookWarning!]!
+}
+
+type CreateBookError {
+  code: CreateBookErrorCode!
+  message: String!
+  path: [String!]!
+}
+
+enum CreateBookErrorCode {
+  DUPLICATE_BOOK
+  INVALID_TITLE
+  IDEMPOTENCY_KEY_REUSED
+}
+
+type CreateBookWarning {
+  code: CreateBookWarningCode!
+  message: String!
+}
+
+enum CreateBookWarningCode {
+  AUTHOR_NOT_VERIFIED
+}
+
+type Book {
+  id: ID!
+  title: String!
+  author: String!
+  publishedYear: Int
+  format: BookFormat!
+}
+```
+
+Schema này công khai một query để đối chiếu, một mutation để tạo sách và các type cần cho mutation. Nó không tuyên bố server đã có database hoặc resolver. Nếu ghép schema này với module khác, chỉ giữ một definition cho mỗi type và field.
+
+### Đọc input object
+
+`CreateBookInput` là input object có tên theo use case. Nó không phải một JSON blob tùy ý:
+
+- `title` và `author` là field bắt buộc về mặt GraphQL.
+- `publishedYear` nullable vì catalog có thể chưa biết năm xuất bản.
+- `format` dùng enum thay vì String tự do. Giá trị bị bỏ qua sẽ nhận default `PAPERBACK`.
+- `idempotencyKey` là token tùy chọn do client gửi khi nghiệp vụ có cơ chế deduplicate; field này một mình không tạo ra cơ chế đó.
+
+Input object nên chứa dữ liệu mà client được phép gửi, không phải toàn bộ object phía server. Nếu `id` do server cấp, không đưa `id` vào `CreateBookInput`. Nếu cập nhật có semantics khác tạo mới, hãy tạo `UpdateBookInput` thay vì tái sử dụng input này.
+
+Các enum trong input được kiểm tra ở biên GraphQL. Trong GraphQL document, literal enum viết `PAPERBACK` không có dấu ngoặc kép. Trong JSON variables, cùng giá trị đó viết thành chuỗi JSON `"PAPERBACK"`. Phần [Enum, input object và arguments](/docs/schema-va-type-system/enum-input-arguments) giải thích thêm sự khác nhau này.
+
+### Đọc payload và error contract
+
+`CreateBookPayload` là một output object. Thiết kế này dành chỗ cho kết quả chính và metadata xử lý:
+
+- `book: Book` nullable để payload vẫn có thể trả về khi validation nghiệp vụ thất bại. Khi tạo thành công, service thường đặt `book`; khi thất bại, service có thể đặt `book: null`.
+- `errors: [CreateBookError!]!` luôn là một list không `null`. List rỗng biểu thị không có lỗi nghiệp vụ được công khai trong payload.
+- `warnings: [CreateBookWarning!]!` biểu thị cảnh báo không ngăn use case hoàn tất. List rỗng là trạng thái bình thường.
+- `CreateBookError.path` là quy ước để trỏ về phần input liên quan, chẳng hạn `['input', 'title']`. Đây là field của payload, không phải `path` bắt buộc trong top-level GraphQL error.
+
+Tên `errors` ở đây dễ bị nhầm với top-level `errors` của execution result. Hai lớp này khác nhau:
+
+```text
+Top-level errors  → parse, validation, binding hoặc execution failure
+Payload.errors    → kết quả nghiệp vụ có chủ đích của createBook
+```
+
+Nếu resolver ném exception không được xử lý, GraphQL có thể trả top-level `errors` và `data.createBook` có thể là `null` vì field root là non-null. Nếu service chủ động trả `CreateBookPayload` có `errors`, đó là một response theo contract và client có thể đọc cả `book` lẫn danh sách lỗi.
+
+Không đưa stack trace, SQL, token hoặc chi tiết nội bộ vào `CreateBookError.message`. `code` nên ổn định để client phân nhánh; `message` hướng tới người dùng hoặc log đã được làm sạch tùy policy.
+
+### Required nullable và default
+
+Dấu `!` có ý nghĩa ở cả input và output, nhưng cần đọc đúng vị trí:
+
+| Khai báo | Khi client bỏ qua | Khi client gửi `null` | Trách nhiệm còn lại |
+| --- | --- | --- | --- |
+| `input: CreateBookInput!` | Request không hợp lệ vì thiếu argument | Không hợp lệ | GraphQL kiểm tra trước resolver |
+| `title: String!` | Input không hợp lệ vì thiếu field bắt buộc | Không hợp lệ | Service vẫn cần kiểm tra chuỗi trắng và độ dài |
+| `publishedYear: Int` | Được bỏ qua | Hợp lệ về mặt kiểu | Domain quyết định “chưa biết” và cách lưu |
+| `format: BookFormat! = PAPERBACK` | GraphQL dùng `PAPERBACK` | Không hợp lệ vì kiểu non-null | Service vẫn bảo đảm enum phù hợp với use case |
+| `idempotencyKey: String` | Không có key | Hợp lệ về mặt kiểu | Không có dedup guarantee nếu nghiệp vụ không hỗ trợ |
+| `createBook: CreateBookPayload!` | Không áp dụng cho output | Resolver không được trả `null` trong execution thành công | Resolver/service phải tạo payload hoặc để lỗi execution xảy ra |
+| `book: Book` | Có thể không có object | Có thể là `null` | Client đọc `errors` để hiểu vì sao không có sách |
+
+`format: BookFormat! = PAPERBACK` là input field có default: client được phép bỏ qua field, nhưng nếu gửi field thì phải gửi một enum không `null`. Default chỉ áp dụng khi field bị bỏ qua; nó không biến `null` tường minh thành `PAPERBACK`.
+
+`String!` cũng không có nghĩa “chuỗi không rỗng”. GraphQL chỉ kiểm tra giá trị không phải `null`. Chuỗi `"   "` vẫn có thể qua bước coercion và phải được service từ chối nếu domain không chấp nhận. Phân tích sâu hơn về input, default và nullability có trong [List và nullable](/docs/schema-va-type-system/list-va-nullable) và [Enum, input object và arguments](/docs/schema-va-type-system/enum-input-arguments).
+
+## Gửi mutation từ client
+
+Client gửi operation và variables riêng nhau. Operation mô tả kiểu của variable và selection set; JSON variables chứa giá trị runtime.
+
+### Mutation và selection set
+
+Mutation sau chọn đủ các field chính của payload và các field cần hiển thị của `Book`:
+
+```graphql title="CreateBook"
+mutation CreateBook($input: CreateBookInput!) {
+  createBook(input: $input) {
+    book {
+      id
+      title
+      author
+      publishedYear
+      format
+    }
+    errors {
+      code
+      message
+      path
+    }
+    warnings {
+      code
+      message
+    }
+  }
+}
+```
+
+Có ba tên cần phân biệt:
+
+1. `CreateBook` là operation name, giúp log và tooling nhận diện mục đích request.
+2. `$input` là variable của operation, được khai báo với kiểu `CreateBookInput!`.
+3. `input` trong `createBook(input: $input)` là argument mà SDL của `Mutation.createBook` khai báo.
+
+`createBook` trả `CreateBookPayload!`, là output object, nên phải có selection set. `book` cũng trả object `Book`, nên cần selection set lồng. Các scalar và enum như `id`, `title`, `format`, `code` và `message` là điểm dừng của selection set.
+
+### Variables JSON
+
+Variables tương ứng với operation trên có thể là:
+
+```json title="Variables"
+{
+  "input": {
+    "title": "GraphQL in Action",
+    "author": "Samer Buna",
+    "publishedYear": 2022,
+    "format": "HARDCOVER",
+    "idempotencyKey": "catalog-create-book-001"
+  }
+}
+```
+
+Trong JSON, enum được biểu diễn bằng string có đúng tên enum. GraphQL sẽ kiểm tra và chuẩn hóa chuỗi đó theo `BookFormat`. Key `input` không có dấu `$`; dấu `$` chỉ xuất hiện trong GraphQL document.
+
+Một request envelope HTTP có thể chứa operation và variables như sau:
+
+```json title="Request envelope minh họa"
+{
+  "query": "mutation CreateBook($input: CreateBookInput!) { createBook(input: $input) { book { id title author publishedYear format } errors { code message path } warnings { code message } } }",
+  "operationName": "CreateBook",
+  "variables": {
+    "input": {
+      "title": "GraphQL in Action",
+      "author": "Samer Buna",
+      "publishedYear": 2022,
+      "format": "HARDCOVER",
+      "idempotencyKey": "catalog-create-book-001"
+    }
+  }
+}
+```
+
+Variables giúp giữ query document ổn định khi title, author hoặc key thay đổi. Đừng nối giá trị user trực tiếp vào query string để tạo literal động. Khi cần tổ chức operation, variables và fragment lớn hơn, xem [Variables, arguments và fragments](/docs/query-mutation-subscription/variables-arguments-fragments).
+
+### Response thành công
+
+Giả sử use case được xử lý thành công và server tạo định danh `book-3`, response minh họa có thể là:
+
+```json title="Response thành công minh họa"
+{
+  "data": {
+    "createBook": {
+      "book": {
+        "id": "book-3",
+        "title": "GraphQL in Action",
+        "author": "Samer Buna",
+        "publishedYear": 2022,
+        "format": "HARDCOVER"
+      },
+      "errors": [],
+      "warnings": []
+    }
+  }
+}
+```
+
+Đây là response tĩnh, không phải kết quả từ backend trong repository. Shape của `data.createBook` khớp selection set và SDL:
+
+- `book` là object được chọn với năm field.
+- `errors` và `warnings` xuất hiện vì operation đã chọn chúng, dù cả hai list đều rỗng.
+- `id` xuất hiện vì selection set yêu cầu nó; client không nhận `idempotencyKey` vì đó là input field và không thuộc `Book`.
+
+Nếu client bỏ `warnings` khỏi selection set, server không cần đưa field đó vào response. GraphQL không tự trả toàn bộ payload type.
+
+### Lỗi nghiệp vụ trong payload
+
+Giả sử title đã tồn tại theo quy tắc catalog. Đây là lỗi nghiệp vụ có chủ đích, không phải lỗi cú pháp GraphQL. Service có thể trả payload với `book: null` và một error có mã ổn định:
+
+```json title="Response lỗi nghiệp vụ minh họa"
+{
+  "data": {
+    "createBook": {
+      "book": null,
+      "errors": [
+        {
+          "code": "DUPLICATE_BOOK",
+          "message": "Một sách có cùng định danh nghiệp vụ đã tồn tại.",
+          "path": ["input", "title"]
+        }
+      ],
+      "warnings": []
+    }
+  }
+}
+```
+
+`DUPLICATE_BOOK` và message trong block chỉ là quy ước minh họa. Vì `createBook` trả về payload không `null`, client vẫn nhận được payload và có thể hiển thị lỗi theo field `errors`. Client không nên suy ra rằng HTTP `200` hay việc có `data` đồng nghĩa use case đã tạo sách.
+
+Nếu business policy muốn coi duplicate là exception thay vì một outcome có thể hiển thị, resolver/error handler có thể đưa lỗi lên top-level `errors`. Chọn một policy nhất quán cho từng mutation và ghi rõ trong contract.
+
+### Lỗi GraphQL ở cấp execution
+
+Có những lỗi xảy ra trước hoặc ngoài error contract của payload. Ví dụ dưới đây bỏ selection set của `createBook`, dù SDL khai báo field này trả về object:
+
+```graphql
+mutation InvalidCreateBook($input: CreateBookInput!) {
+  createBook(input: $input)
+}
+```
+
+GraphQL có thể từ chối operation với response khái quát:
+
+```json
+{
+  "errors": [
+    {
+      "message": "Field \"createBook\" of type \"CreateBookPayload!\" must have a selection of subfields."
+    }
+  ]
+}
+```
+
+Message và HTTP status phụ thuộc GraphQL implementation. Điểm chính là lỗi xảy ra ở validation, nên resolver `createBook` thường chưa được gọi và không có `data.createBook` để đọc `errors` của payload.
+
+Tương tự, thiếu `title`, gửi `format: "paperback"`, gửi `publishedYear: "2022"` hoặc truyền `$input: null` là lỗi coercion/validation theo SDL. Không nên cố biến enum thành String hoặc biến field bắt buộc thành nullable chỉ để che request sai. [Mô hình request/response](/docs/nen-tang/mo-hinh-request-response) mô tả thêm ranh giới giữa transport, validation và execution.
+
+## Validation và xử lý lỗi
+
+Một mutation rõ ràng tách validation thành các lớp. Mỗi lớp có owner và hình dạng lỗi riêng.
+
+### Validation cấu trúc
+
+GraphQL engine thường xử lý các kiểm tra sau trước khi gọi resolver:
+
+- `input` có tồn tại và có phải `CreateBookInput!` không.
+- Field input có tồn tại trong schema không.
+- `title` và `author` có bị bỏ qua hoặc nhận `null` không.
+- `format` có phải một value của `BookFormat` không.
+- `publishedYear` có phải số nguyên JSON không.
+- Output object như `createBook` và `book` có selection set hợp lệ không.
+
+Một số lỗi cấu trúc minh họa:
+
+| Request | Lý do bị từ chối | Lớp xử lý |
+| --- | --- | --- |
+| Thiếu `input` trong `createBook` | Argument `input` là `CreateBookInput!` | GraphQL validation |
+| Input thiếu `title` | `title: String!` là required input field | Variable coercion |
+| `format: "paperback"` | Không khớp enum value `PAPERBACK` | Literal/variable coercion |
+| `publishedYear: "2022"` | String JSON không phải `Int` | Variable coercion |
+| Gửi thêm `isbn` chưa có trong SDL | Input object không nhận field lạ | GraphQL validation |
+| Viết `createBook(input: $input)` không có `{ ... }` | Payload là output object | Selection-set validation |
+
+Các lỗi này thường tạo top-level `errors` và resolver chưa được gọi. Message cụ thể, `locations`, `path` và HTTP status có thể khác theo GraphQL engine hoặc Spring configuration. Đọc schema trước khi điều tra service.
+
+### Validation nghiệp vụ
+
+Sau khi input đã qua coercion, service vẫn phải kiểm tra quy tắc domain. `String!` không kiểm tra chuỗi trắng, và `Int` không biết năm nào là hợp lệ. Các ví dụ thường gặp:
+
+- `title` không được rỗng, chỉ chứa khoảng trắng hoặc vượt giới hạn độ dài.
+- `publishedYear` phải nằm trong khoảng domain chấp nhận nếu có giá trị.
+- `format` phải được phép với loại catalog hoặc tenant hiện tại.
+- User phải có quyền tạo sách trong catalog tương ứng.
+- Một title hoặc định danh nghiệp vụ không được trùng theo policy.
+- `idempotencyKey` phải có format, phạm vi và thời gian lưu phù hợp nếu use case hỗ trợ deduplication.
+
+Business validation có thể trả `CreateBookPayload.errors` như ví dụ duplicate, hoặc có thể ném domain exception để error handler map thành top-level error. Cả hai đều là quyết định API; đừng để client phải đoán dựa trên message exception.
+
+Một quy tắc hữu ích là giữ invariant trong service/application layer. Controller GraphQL có thể bind input và gọi use case, nhưng REST endpoint, job hoặc message consumer khác cũng có thể gọi cùng service. Đừng chỉ bảo vệ duplicate, authorization hoặc transaction trong một resolver.
+
+### Chọn errors và warnings
+
+Dùng payload error khi lỗi là outcome đã dự kiến và client có thể hành động trên nó. Dùng warning khi use case vẫn hoàn tất nhưng client cần biết một trạng thái không lý tưởng.
+
+| Tình huống | Hình dạng phù hợp | Ví dụ |
+| --- | --- | --- |
+| Field không tồn tại, sai kiểu hoặc thiếu selection set | Top-level GraphQL `errors` | `format: "paperback"` |
+| Input hợp lệ về kiểu nhưng vi phạm rule domain | Payload `errors` hoặc top-level theo policy | `DUPLICATE_BOOK`, `INVALID_TITLE` |
+| Resolver/service ném lỗi không dự kiến | Top-level `errors` với message an toàn | Downstream timeout |
+| Tạo sách thành công nhưng tác giả chưa xác minh | Payload `warnings` | `AUTHOR_NOT_VERIFIED` |
+| Không được tiết lộ nguyên nhân nội bộ | Error code/message đã làm sạch | Không trả SQL hoặc stack trace |
+
+Giữ `errors` và `warnings` là list không `null` giúp client có một quy tắc đơn giản: list rỗng nghĩa là không có mục tương ứng. Không đưa mọi log vận hành vào payload. Nếu warning chứa dữ liệu nhạy cảm hoặc chi tiết retry nội bộ, hãy giữ nó ở log/telemetry.
+
+<Accordions type="single">
+  <Accordion title="Khi nào nên dùng payload errors thay vì top-level errors?">
+    Dùng payload errors khi lỗi là một outcome đã dự kiến của use case, chẳng hạn title trùng hoặc title không đạt quy tắc nghiệp vụ, và client vẫn cần nhận một payload có cấu trúc. Dùng top-level errors cho parse, validation, binding hoặc execution failure không thể hoàn tất payload theo contract. Đây là policy thiết kế; điều quan trọng là giữ cách phân loại ổn định giữa các mutation.
+  </Accordion>
+  <Accordion title="Payload errors có tự rollback transaction không?">
+    Không. Trả về một field `errors` chỉ là cách biểu diễn kết quả. Nếu service đã thực hiện side effect trước khi tạo payload lỗi, việc rollback, compensation hoặc phát event tiếp theo phụ thuộc transaction boundary và thiết kế nghiệp vụ. GraphQL schema không tự undo database write hoặc lời gọi tới hệ thống bên ngoài.
+  </Accordion>
+</Accordions>
+
+## Naming và thiết kế field
+
+Naming tốt làm lộ use case, hướng dữ liệu và khả năng tiến hóa ngay trong schema.
+
+### Quy ước naming
+
+| Thành phần | Quy ước đề xuất | Ví dụ |
+| --- | --- | --- |
+| Mutation root field | Động từ + danh từ, `camelCase` | `createBook` |
+| Input type | Tên use case + hậu tố `Input` | `CreateBookInput` |
+| Payload type | Tên mutation + hậu tố `Payload` | `CreateBookPayload` |
+| Input argument | Thường dùng `input` khi nhận một input object | `input: CreateBookInput!` |
+| Output object | Danh từ domain, không sao chép entity persistence | `Book` |
+| Enum type | `PascalCase`; enum value ổn định, thường `UPPER_SNAKE_CASE` | `BookFormat.PAPERBACK` |
+| Error code | Vocabulary công khai, không chứa chi tiết kỹ thuật | `DUPLICATE_BOOK` |
+
+`createBook` rõ hơn `save`, vì client biết đây là hành động tạo. `CreateBookPayload` rõ hơn `Result`, vì type gắn với use case và có thể mở rộng có chủ đích. Tránh `data: JSON` hoặc `payload: JSON` chung chung khi shape đã biết; type system mất nhiều giá trị nếu server bắt client tự giải mã một blob.
+
+Naming của GraphQL là contract public. Không đổi tên theo tên bảng hoặc class Java chỉ để làm mapping ngắn hơn. [SDL và nguyên tắc thiết kế schema](/docs/schema-va-type-system/sdl-va-thiet-ke-schema) đặt naming cùng ownership, nullability và schema evolution trong một quy trình review.
+
+### Idempotency và duplicate submission
+
+Duplicate submission thường xuất hiện khi client timeout rồi retry, người dùng bấm nút nhiều lần hoặc một queue gửi lại message. Không phải mutation nào cũng cần idempotency key. Cần cân nhắc nó khi việc tạo lặp có chi phí hoặc rủi ro, chẳng hạn tạo đơn hàng, thanh toán hoặc gửi lệnh tới hệ thống bên ngoài.
+
+Trong SDL minh họa, `idempotencyKey` là nullable để không áp đặt policy cho mọi caller. Nếu domain chọn hỗ trợ key, implementation thường cần:
+
+1. Xác định key trong một scope rõ ràng, chẳng hạn theo user/tenant và loại mutation.
+2. Lưu key cùng trạng thái hoặc kết quả của use case trong một idempotency store có quy tắc retention.
+3. Khi nhận lại cùng key và cùng input hợp lệ, trả lại outcome đã ghi nhận thay vì tạo thêm sách.
+4. Khi cùng key đi kèm input khác, trả lỗi conflict như `IDEMPOTENCY_KEY_REUSED` thay vì đoán ý định client.
+5. Định nghĩa thời hạn, quyền truy cập và cách xử lý khi lần đầu đang ở trạng thái pending.
+
+Field `idempotencyKey` trong schema không tự thực hiện bất kỳ bước nào. Một unique constraint, transaction hoặc store phù hợp cũng không tự làm cho email, message broker hay downstream API trở nên idempotent. Nếu use case có nhiều side effect, cần thiết kế outbox, deduplication hoặc compensation theo hệ thống thực tế.
+
+<Callout type="warn" title="Caveat nghiệp vụ về retry">
+  Chỉ nói “mutation có idempotency” khi service thật sự có policy deduplicate và lưu trạng thái cần thiết. Nếu không có key hoặc key không được server kiểm tra, retry sau timeout vẫn có thể tạo duplicate. Đừng coi `mutation` hay một field String tên `idempotencyKey` là bằng chứng về tính an toàn khi gửi lại.
 </Callout>
+
+### Chọn selection set tối thiểu
+
+Client không cần chọn toàn bộ `Book` sau mỗi mutation. Một màn hình vừa tạo thẻ sách có thể chỉ cần ID, title và lỗi:
+
+```graphql
+mutation CreateBookCard($input: CreateBookInput!) {
+  createBook(input: $input) {
+    book {
+      id
+      title
+    }
+    errors {
+      code
+      message
+      path
+    }
+  }
+}
+```
+
+Selection set này vẫn hợp lệ vì mọi field đều có trong SDL. Nó không chọn `author`, `publishedYear`, `format` hoặc `warnings`, nên các field đó không xuất hiện trong response. Chọn field theo nhu cầu UI giúp response nhỏ hơn, nhưng không tự làm service hoặc database chỉ đọc đúng các field đó. Nếu nhiều operation dùng cùng selection, có thể gom các field hợp lệ vào fragment; xem [Query, selection set và alias](/docs/query-mutation-subscription/query-selection-set-alias) và [Variables, arguments và fragments](/docs/query-mutation-subscription/variables-arguments-fragments).
+
+Nếu client cần cập nhật normalized cache, thường nên chọn `id` cùng các field hiển thị. Đây là quyết định của client cache, không phải yêu cầu GraphQL bắt buộc mọi payload phải trả toàn bộ object.
+
+## Mapping với Spring for GraphQL
+
+Spring for GraphQL cung cấp annotation để nối root field trong SDL với method Java. Annotation giúp đăng ký handler; nó không thay thế service, validation hoặc transaction.
+
+### Resolver và argument
+
+Controller nhập môn có thể có dạng sau:
+
+```java
+import org.springframework.graphql.data.method.annotation.Argument;
+import org.springframework.graphql.data.method.annotation.MutationMapping;
+import org.springframework.stereotype.Controller;
+
+@Controller
+public class BookMutationController {
+
+    private final BookService bookService;
+
+    public BookMutationController(BookService bookService) {
+        this.bookService = bookService;
+    }
+
+    @MutationMapping
+    public CreateBookPayload createBook(
+            @Argument("input") CreateBookInput input) {
+        return bookService.create(input);
+    }
+}
+```
+
+Với convention mặc định, tên method `createBook` khớp field `Mutation.createBook`. `@Argument("input")` khớp tên argument trong SDL. `$input` trong operation chỉ là tên variable; annotation không bind trực tiếp vào dấu `$`, mà nhận giá trị sau khi GraphQL đã xử lý variables và argument.
+
+Đoạn code giả định đã có `BookService`, `CreateBookPayload` và `CreateBookInput` tương ứng với schema. Nó không tự tạo field `createBook`: SDL vẫn phải khai báo field, class phải được Spring phát hiện và service phải trả kết quả phù hợp.
+
+### Binding input vào kiểu Java
+
+Một nhóm kiểu Java minh họa có thể là:
+
+```java
+import java.util.List;
+
+record CreateBookInput(
+        String title,
+        String author,
+        Integer publishedYear,
+        BookFormat format,
+        String idempotencyKey) {}
+
+enum BookFormat {
+    HARDCOVER,
+    PAPERBACK,
+    EBOOK
+}
+
+record Book(
+        String id,
+        String title,
+        String author,
+        Integer publishedYear,
+        BookFormat format) {}
+
+record CreateBookPayload(
+        Book book,
+        List<CreateBookError> errors,
+        List<CreateBookWarning> warnings) {}
+
+record CreateBookError(
+        CreateBookErrorCode code,
+        String message,
+        List<String> path) {}
+
+enum CreateBookErrorCode {
+    DUPLICATE_BOOK,
+    INVALID_TITLE,
+    IDEMPOTENCY_KEY_REUSED
+}
+
+record CreateBookWarning(
+        CreateBookWarningCode code,
+        String message) {}
+
+enum CreateBookWarningCode {
+    AUTHOR_NOT_VERIFIED
+}
+```
+
+Các record trên là mảnh minh họa để tách thành file DTO/domain riêng trong project thật. Tên component `title`, `author`, `publishedYear`, `format` và `idempotencyKey` khớp field trong `CreateBookInput`; tên enum cũng khớp enum SDL để mapping mặc định dễ hiểu.
+
+`Integer` được dùng cho `publishedYear` vì SDL cho phép `null`. Java type không tự thay thế nullability của SDL: `List<CreateBookError>` vẫn có thể là `null` trong Java nếu service tạo sai, dù SDL yêu cầu list không `null`. Service nên trả `List.of()` cho danh sách rỗng và bảo đảm từng item không `null`, hoặc map lỗi trước khi tạo payload.
+
+Nếu cần phân biệt field bị bỏ qua với field được gửi `null`, một record với component nullable có thể không giữ đủ thông tin sau binding. Hãy xem API binding của version Spring for GraphQL đang dùng, chẳng hạn `ArgumentValue`, trong [Binding arguments và input](/docs/tich-hop-spring-for-graphql/binding-arguments-input) thay vì đoán hành vi binder.
+
+### Service và transaction boundary
+
+Resolver nên làm ít việc: nhận argument đã bind, đọc context cần thiết và gọi service. Service/application layer nên sở hữu:
+
+- validation nghiệp vụ và invariant;
+- authorization theo user, tenant và resource;
+- kiểm tra duplicate hoặc idempotency;
+- transaction boundary nếu use case có thể được bảo vệ bởi transaction manager;
+- mapping kết quả thành `CreateBookPayload` hoặc exception theo error policy.
+
+`@MutationMapping` chỉ là annotation mapping field GraphQL vào method. Nó **không tự** mở transaction, không tự rollback, không bảo đảm atomicity và không làm một lời gọi tới nhiều service trở thành một transaction phân tán. Nếu cần transaction, đặt boundary ở service theo kiến trúc ứng dụng và kiểm tra phạm vi resource mà transaction thật sự bao phủ.
+
+Nếu mutation vừa ghi database vừa gửi message hoặc gọi HTTP downstream, commit database không tự rollback side effect bên ngoài. Hãy ghi rõ retry, timeout, outbox hoặc compensation trong thiết kế nghiệp vụ. Trang này không tuyên bố bất kỳ transaction hoặc database call nào đã chạy trong repository.
+
+[Query, mutation và subscription mapping](/docs/tich-hop-spring-for-graphql/query-mutation-subscription-mapping) trình bày vị trí của `@MutationMapping` cùng các mapping root khác. [Kiến trúc GraphQL](/docs/nen-tang/kien-truc-graphql) giải thích ranh giới schema, resolver, service, repository và data source.
+
+## Tiến hóa an toàn
+
+Payload type giúp mutation có chỗ mở rộng, nhưng input và enum vẫn là public contract. Mỗi thay đổi cần được review với operation thật của client.
+
+### Tiến hóa input
+
+| Thay đổi | Tác động thường gặp | Hướng an toàn hơn |
+| --- | --- | --- |
+| Thêm input field nullable | Request cũ thường vẫn hợp lệ | Thêm description và xử lý rõ khi field bị bỏ qua |
+| Thêm input field có default | Có thể giữ request cũ nếu default đúng semantics | Dùng default có chủ đích, không giấu thay đổi behavior |
+| Thêm input field non-null không default | Client cũ thiếu field sẽ fail validation | Dùng nullable/default hoặc tạo mutation version/use case mới |
+| Đổi enum value hoặc xóa value | Client có thể fail validation hoặc codegen | Deprecation/migration trước khi xóa |
+| Đổi default `format` | Request cũ có thể tạo sách với behavior khác | Review operation, dữ liệu và release note |
+| Đổi `String` thành object hoặc ngược lại | Variables và binding client phải đổi | Thêm field/input mới rồi migrate |
+
+Thêm `isbn: String` nullable có thể là thay đổi additive; thêm `isbn: String!` không default sẽ khiến request cũ không còn hợp lệ. Đừng biến một input field nullable thành non-null chỉ vì database mới thêm `NOT NULL`; dữ liệu cũ, client cũ và service contract đều phải được kiểm tra.
+
+### Tiến hóa payload
+
+Payload output thường dễ mở rộng hơn return trực tiếp `Book`:
+
+- Có thể thêm field nullable như `auditId`, `warnings` hoặc metadata mới mà không đổi kiểu của root mutation.
+- Giữ `book` nullable nếu business error hợp lệ có thể xảy ra. Đổi `book: Book` thành `book: Book!` có thể làm payload lỗi không còn biểu diễn được.
+- Giữ `errors` và `warnings` có semantics rõ. Không đổi `errors` từ payload errors sang top-level errors âm thầm.
+- Không đổi ý nghĩa hoặc đơn vị của `message`, `path` và `code` mà không có migration.
+- Thêm enum value như `AUTHOR_NOT_VERIFIED` vẫn có thể ảnh hưởng client xử lý exhaustive switch; client nên có fallback cho code chưa biết.
+
+Nếu payload cần một object khác hoàn toàn, tạo type mới và mutation mới thường an toàn hơn việc đổi `CreateBookPayload` thành một shape không liên quan. Deprecation cần reason, hướng thay thế và thời hạn hỗ trợ; schema không tự cập nhật operation của client.
+
+## Quy trình thực hành
+
+Khi thiết kế một mutation mới, đi từ contract đến implementation theo thứ tự sau:
+
+<Steps>
+  <Step>
+    **Chốt use case và side effect.** Viết rõ mutation tạo/cập nhật điều gì, ai được gọi, duplicate có ý nghĩa gì và outcome nào client cần hiển thị. Không bắt đầu bằng một entity hoặc một method repository.
+  </Step>
+  <Step>
+    **Viết SDL.** Tách input khỏi output, đặt required/nullable/default, chọn payload có object kết quả cùng `errors`/`warnings` ở mức phù hợp và đặt owner cho type/field.
+  </Step>
+  <Step>
+    **Viết operation và variables.** Chọn operation name, gửi variables với đúng kiểu JSON, rồi chọn selection set tối thiểu. Kiểm tra mọi field trong query đều tồn tại trong SDL.
+  </Step>
+  <Step>
+    **Map resolver vào service.** Dùng `@MutationMapping` và `@Argument` ở controller. Để service xử lý validation nghiệp vụ, authorization, idempotency và transaction boundary nếu cần.
+  </Step>
+  <Step>
+    **Kiểm tra positive và negative case.** Đối chiếu response thành công, duplicate, input sai kiểu, thiếu field và execution failure. Trong backend thật, bổ sung schema/contract test và integration test; không coi docs build là bằng chứng runtime.
+  </Step>
+</Steps>
+
+## Checklist review mutation
+
+- [ ] Tên mutation diễn tả động từ và đối tượng, chẳng hạn `createBook`.
+- [ ] Input object và output payload là hai type riêng; input không làm lộ `id` hoặc persistence detail không cần thiết.
+- [ ] SDL có `Mutation`, input, payload và mọi type/enum mà query hoặc response sử dụng.
+- [ ] `!`, nullable và default phân biệt được missing, `null`, giá trị hợp lệ và giá trị mặc định.
+- [ ] `book`, `errors` và `warnings` có semantics rõ; list rỗng được dùng thay vì `null` khi đó là contract đã chọn.
+- [ ] Structural validation/coercion được phân biệt với business validation và execution error.
+- [ ] Có response success và ít nhất một lỗi nghiệp vụ có chủ đích; message cụ thể được đánh dấu là minh họa nếu chưa chạy runtime.
+- [ ] Error code ổn định, message không làm lộ stack trace/SQL/secret và `path` có quy ước rõ.
+- [ ] Selection set trả tối thiểu field client cần; object luôn có selection set hợp lệ.
+- [ ] Duplicate submission và idempotency key chỉ được công bố khi service thật sự có policy dedup, scope và retention phù hợp.
+- [ ] `@MutationMapping`/`@Argument` chỉ làm mapping và binding; service mới sở hữu invariant, authorization và transaction boundary.
+- [ ] Java nullable type và list được map nhất quán với SDL; đã xem xét omitted/null nếu use case cần phân biệt.
+- [ ] Thay đổi tương lai ưu tiên input nullable/default và output additive; enum, nullability, error semantics và deprecation đã được review.
 
 ## Bước tiếp theo
 
-Sau khi trang được điền nội dung, đọc bài kế tiếp trong nhóm để tiếp tục lộ trình.
+- Đọc [Enum, input object và arguments](/docs/schema-va-type-system/enum-input-arguments) để ôn enum, input object, default và coercion.
+- Đọc [Variables, arguments và fragments](/docs/query-mutation-subscription/variables-arguments-fragments) để tổ chức request, variables và selection dùng lại.
+- Xem [Xử lý lỗi trong mutation](/docs/query-mutation-subscription/xu-ly-loi-trong-mutation) để chọn giữa GraphQL errors, domain errors và error response.
+- Xem [Binding arguments và input](/docs/tich-hop-spring-for-graphql/binding-arguments-input) để đi sâu vào `@Argument`, kiểu Java và phân biệt omitted/null.
+- Đối chiếu [Mô hình request/response](/docs/nen-tang/mo-hinh-request-response) khi cần đọc `data`, top-level `errors`, `path` và HTTP transport.
+- Ôn [SDL và nguyên tắc thiết kế schema](/docs/schema-va-type-system/sdl-va-thiet-ke-schema) để review naming, nullability, ownership và evolution.
+- Học [Query, mutation và subscription mapping](/docs/tich-hop-spring-for-graphql/query-mutation-subscription-mapping) để nối root operation với controller Spring for GraphQL.
+- Khi cần selection set và fragment cho client, xem [Query, selection set và alias](/docs/query-mutation-subscription/query-selection-set-alias).

@@ -1,23 +1,728 @@
 ---
 title: "Subscription và WebSocket"
-description: "Mô tả luồng subscription, transport WebSocket và cách phát sự kiện từ Spring Boot."
+description: "Thiết kế subscription, event stream và transport WebSocket an toàn với Spring for GraphQL."
 ---
 
-Trang này sẽ trình bày **Subscription và WebSocket** trong bối cảnh xây dựng GraphQL API với Spring Boot.
+import { Step, Steps } from 'fumadocs-ui/components/steps';
+import { Accordion, Accordions } from 'fumadocs-ui/components/accordion';
+
+**Subscription** (đăng ký nhận kết quả theo thời gian) cho phép client mở một yêu cầu dài hạn và nhận dữ liệu mới khi server có **event** (sự kiện) phù hợp. Tập các event được phát theo thời gian tạo thành **event stream** (luồng sự kiện). **WebSocket** (kết nối hai chiều, giữ lâu giữa client và server) là một transport phổ biến cho luồng này.
+
+Trang này đi từ contract GraphQL đến vòng đời kết nối, rồi đến các quyết định cần có khi triển khai an toàn: authentication (xác thực danh tính), authorization (kiểm soát quyền), reconnect, fan-out, backpressure (điều tiết khi bên phát nhanh hơn bên nhận) và cleanup (dọn tài nguyên). Các ví dụ minh họa độc lập; repository hiện là docs-only, không có backend, broker hay subscriber để chạy kiểm chứng.
+
+<Callout type="info" title="Phiên bản và giả định">
+  Ví dụ Spring giả định Spring Boot 3.5.x và Spring for GraphQL tương ứng, nhưng không khẳng định mọi property hoặc API giống nhau ở mọi version. WebSocket endpoint, web stack MVC/WebFlux, interceptor và client protocol phải được đối chiếu với tài liệu cùng version trước khi áp dụng. Bài dùng protocol hiện đại `graphql-transport-ws` (tên WebSocket subprotocol và bộ message GraphQL realtime); đây không phải protocol legacy `subscriptions-transport-ws`.
+</Callout>
 
 ## Mục lục
 
-- [Nội dung dự kiến](#nội-dung-dự-kiến)
+- [Subscription là gì](#subscription-là-gì)
+  - [Subscription khác query và mutation](#subscription-khác-query-và-mutation)
+  - [Subscription không phải polling](#subscription-không-phải-polling)
+- [Bốn lớp cần tách](#bốn-lớp-cần-tách)
+  - [GraphQL operation](#graphql-operation)
+  - [Publisher và event stream](#publisher-và-event-stream)
+  - [WebSocket protocol message](#websocket-protocol-message)
+  - [HTTP endpoint và WebSocket endpoint](#http-endpoint-và-websocket-endpoint)
+- [Schema và operation minh họa](#schema-và-operation-minh-họa)
+  - [SDL subscription](#sdl-subscription)
+  - [Query subscription và variables](#query-subscription-và-variables)
+  - [Next và error JSON](#next-và-error-json)
+- [Luồng handshake và message](#luồng-handshake-và-message)
+  - [Handshake mở connection](#handshake-mở-connection)
+  - [Subscribe bắt đầu operation](#subscribe-bắt-đầu-operation)
+  - [Next error complete kết thúc stream](#next-error-complete-kết-thúc-stream)
+- [Connection lifecycle](#connection-lifecycle)
+  - [Từ connect đến cleanup](#từ-connect-đến-cleanup)
+  - [Reconnect và keepalive](#reconnect-và-keepalive)
+  - [Idempotent subscription và sự kiện bị lặp](#idempotent-subscription-và-sự-kiện-bị-lặp)
+- [Triển khai Spring for GraphQL](#triển-khai-spring-for-graphql)
+  - [SubscriptionMapping trả Flux hoặc Publisher](#subscriptionmapping-trả-flux-hoặc-publisher)
+  - [WebSocket enablement và version](#websocket-enablement-và-version)
+  - [Context authentication và authorization](#context-authentication-và-authorization)
+- [Bảo mật handshake và từng event](#bảo-mật-handshake-và-từng-event)
+  - [Authentication ở handshake](#authentication-ở-handshake)
+  - [Authorization lúc subscribe và per event](#authorization-lúc-subscribe-và-per-event)
+- [Fan out backpressure và cleanup](#fan-out-backpressure-và-cleanup)
+  - [Publisher và event source](#publisher-và-event-source)
+  - [Backpressure thực dụng](#backpressure-thực-dụng)
+  - [Dọn tài nguyên](#dọn-tài-nguyên)
+- [Proxy load balancer và production](#proxy-load-balancer-và-production)
+  - [Upgrade và timeout](#upgrade-và-timeout)
+  - [Sticky connection và scale ngang](#sticky-connection-và-scale-ngang)
+- [Phân loại và xử lý lỗi](#phân-loại-và-xử-lý-lỗi)
+- [Checklist triển khai an toàn](#checklist-triển-khai-an-toàn)
 - [Bước tiếp theo](#bước-tiếp-theo)
 
-## Nội dung dự kiến
+## Subscription là gì?
 
-Nội dung chi tiết sẽ bao gồm khái niệm chính, ví dụ code và các lưu ý thực hành liên quan đến chủ đề này.
+Một subscription là một GraphQL operation (yêu cầu thực thi gồm loại, tên và selection set) có thể tạo ra nhiều execution result theo thời gian. Client gửi operation một lần. Server giữ một đăng ký với event source (nguồn phát sự kiện), rồi thực thi selection set cho từng event phù hợp và gửi kết quả về.
 
-<Callout type="info" title="Trang placeholder">
-Đây là trang khung. Hãy dùng skill `fumadocs-technical-writer` để viết đầy đủ trang này trong bước tiếp theo.
+Một subscription không tự tạo event. Schema chỉ công bố field và kiểu dữ liệu. Resolver phải nối field đó với một **Publisher** (nguồn phát giá trị theo Reactive Streams), message broker, change feed hoặc nguồn event khác. Nếu không có nguồn phát, operation vẫn có thể hợp lệ về schema nhưng không có dữ liệu để gửi.
+
+### Subscription khác query và mutation
+
+| Operation | Ý nghĩa chính | Vòng đời kết quả | Side effect và retry |
+| --- | --- | --- | --- |
+| `query` | Đọc snapshot tại thời điểm gọi | Thường một execution result | Không nên thay đổi state; có thể retry theo policy đọc. |
+| `mutation` | Thực hiện thay đổi state | Thường một execution result | Có thể tạo side effect; retry phải xét idempotency và transaction. |
+| `subscription` | Theo dõi các thay đổi sau khi đăng ký | Nhiều execution result cho cùng một đăng ký | Nên chỉ đăng ký và đọc event; reconnect có thể tạo đăng ký thứ hai. |
+
+Đây là sự khác nhau về ngữ nghĩa GraphQL, không phải quy tắc bắt buộc về URL. Query và mutation thường đi qua HTTP. Subscription thường đi qua WebSocket hoặc Server-Sent Events (SSE) nếu server hỗ trợ. Một WebSocket cũng có thể chạy query hoặc mutation với một kết quả, còn một HTTP endpoint có thể hỗ trợ subscription bằng transport streaming ở những version phù hợp.
+
+Client vẫn phải dùng selection set cho từng payload. Nếu event chứa object `Book`, operation phải chọn các field của `Book`. GraphQL không gửi toàn bộ object Java chỉ vì event source phát ra object đó. Xem [Query, selection set và alias](/docs/query-mutation-subscription/query-selection-set-alias) để ôn cách selection set định hình response, và [Mutation cùng input/payload](/docs/query-mutation-subscription/mutation-input-payload) để phân biệt contract đọc với contract ghi.
+
+### Subscription không phải polling
+
+**Polling** là việc client gửi lại cùng một query theo chu kỳ để tìm thay đổi. Mỗi lần polling tạo một request, chạy validation/resolver và có thể trả cùng một snapshot. Subscription giữ một đăng ký và để server đẩy execution result khi có event.
+
+```text
+Polling:
+Client ── query ──► Server       (chưa có thay đổi)
+Client ◄─ snapshot ─ Server
+Client ── query ──► Server       (lặp lại sau một khoảng thời gian)
+
+Subscription:
+Client ── subscribe một lần ──► Server ── đăng ký event source
+Client ◄──── next event 1 ───── Server
+Client ◄──── next event 2 ───── Server
+```
+
+Subscription giảm request lặp và độ trễ chờ chu kỳ, nhưng không tự bảo đảm event được lưu bền vững hoặc phát lại. Khi WebSocket mất kết nối, event phát trong khoảng gián đoạn có thể bị bỏ lỡ. Nếu sản phẩm không chấp nhận mất event, cần thêm event ID/sequence, replay hoặc một query catch-up sau reconnect. Đừng dùng keepalive để giả vờ rằng event đã được nhận.
+
+## Bốn lớp cần tách
+
+Một lỗi phổ biến là gọi tất cả dữ liệu gửi trên WebSocket là “subscription”. Hãy tách bốn lớp: operation GraphQL, nguồn phát, message của protocol và endpoint nhận kết nối.
+
+### GraphQL operation
+
+GraphQL operation là document mà client muốn server thực thi. Ví dụ `subscription OnBookAdded { ... }` có từ khóa `subscription`, operation name, variables và selection set. Nó được validate theo schema GraphQL.
+
+Operation không chứa địa chỉ WebSocket, không tự chứa protocol `id` và không tự mở socket. Cùng một document có thể được vận chuyển bằng WebSocket, SSE hoặc transport khác nếu server hỗ trợ.
+
+### Publisher và event stream
+
+**Publisher** là abstraction Reactive Streams có thể phát không, một hoặc nhiều giá trị rồi kết thúc bằng complete hoặc error. Trong Reactor, `Flux<T>` là một Publisher thường dùng cho stream nhiều giá trị. **Event stream** là luồng event có semantics ứng dụng: event nào được phát, theo thứ tự nào, có replay hay không và ai được nhận.
+
+Publisher là implementation; stream là contract vận hành rộng hơn. Một `Flux<Book>` trong bộ nhớ không tự có durability (khả năng giữ để phát lại), không tự fan-out sang instance khác và không tự lọc tenant. Những tính chất đó phải đến từ event source, service và policy của ứng dụng.
+
+### WebSocket protocol message
+
+Sau khi WebSocket được mở, client và server trao đổi các JSON message theo một protocol. Với protocol hiện đại `graphql-transport-ws`, message có `type`, thường có `id` cho một operation và có thể có `payload`. Các message chính gồm `connection_init` (khởi tạo protocol và gửi metadata xác thực), `subscribe` (bắt đầu một GraphQL operation), `next` (một execution result), `error` (lỗi của operation hoặc stream) và `complete` (kết thúc một operation).
+
+Protocol message không phải GraphQL operation. Ví dụ, `type: "subscribe"` là chỉ thị của transport; GraphQL document nằm bên trong `payload.query`. `id: "sub-42"` là ID của đăng ký trong connection, không phải ID của sách và cũng không phải `operationName`.
+
+### HTTP endpoint và WebSocket endpoint
+
+HTTP endpoint là route nhận HTTP request, thường là `POST /graphql` với JSON envelope gồm `query`, `variables` và `operationName`. WebSocket endpoint là route nhận HTTP Upgrade rồi chuyển sang kết nối hai chiều; nó có thể là `/graphql-ws`, `/graphql` hoặc path khác do ứng dụng cấu hình.
+
+| Thành phần | Ví dụ | Trách nhiệm |
+| --- | --- | --- |
+| GraphQL operation | `subscription OnBookAdded { ... }` | Nói client muốn thực thi gì theo schema. |
+| WebSocket protocol | `subscribe`, `next`, `error`, `complete` | Điều khiển connection và gắn kết quả với operation ID. |
+| Endpoint | `wss://api.example.com/graphql-ws` | Địa chỉ và route để Upgrade connection. |
+| Event source | Broker, change feed, `Flux` hoặc service | Cung cấp event cho Publisher của subscription. |
+
+Không gửi `POST /graphql` rồi mong có WebSocket stream. Cũng không gửi message `subscribe` vào HTTP endpoint. Path thực tế và khả năng SSE/HTTP streaming phụ thuộc Spring Boot, Spring for GraphQL và reverse proxy version đang dùng.
+
+## Schema và operation minh họa
+
+Ví dụ dùng catalog sách để nối mutation tạo sách với event `bookAdded`. SDL này độc lập với backend của repository.
+
+### SDL subscription
+
+```graphql title="schema.graphqls"
+schema {
+  query: Query
+  mutation: Mutation
+  subscription: Subscription
+}
+
+type Query {
+  books(tenantId: ID!): [Book!]!
+}
+
+type Mutation {
+  addBook(input: AddBookInput!): AddBookPayload!
+}
+
+input AddBookInput {
+  tenantId: ID!
+  title: String!
+  author: String!
+  publishedYear: Int!
+}
+
+type AddBookPayload {
+  book: Book!
+}
+
+type Subscription {
+  bookAdded(tenantId: ID!): Book!
+}
+
+type Book {
+  id: ID!
+  tenantId: ID!
+  title: String!
+  author: String!
+  publishedYear: Int!
+}
+```
+
+`Subscription.bookAdded` là root field. Argument `tenantId` chỉ là dữ liệu đầu vào để định tuyến hoặc lọc; nó không phải bằng chứng rằng client có quyền xem tenant đó. Resolver/service vẫn phải kiểm tra quyền dựa trên principal đã xác thực.
+
+`Book!` làm contract thành công chặt hơn: mỗi event được gửi phải là một `Book` hoàn chỉnh theo schema. Nếu event không được phép gửi, service nên lọc event trước khi execution hoặc áp dụng error policy rõ ràng, thay vì trả `null` cho field non-null. Nếu domain cần biểu diễn một event bị từ chối như dữ liệu một phần, hãy thiết kế payload nullable có chủ đích và tài liệu hóa semantics của `errors`.
+
+### Query subscription và variables
+
+Operation GraphQL sau đăng ký event của một tenant. Variables nằm ngoài document và sẽ được đặt trong payload của message `subscribe`:
+
+```graphql title="OnBookAdded.graphql"
+subscription OnBookAdded($tenantId: ID!) {
+  bookAdded(tenantId: $tenantId) {
+    id
+    tenantId
+    title
+    author
+    publishedYear
+  }
+}
+```
+
+```json title="Variables"
+{
+  "tenantId": "tenant-7"
+}
+```
+
+`OnBookAdded` là `operationName`. `$tenantId` là variable của GraphQL. Cả hai khác với protocol ID `sub-42`. Nếu document có nhiều operation, protocol payload phải gửi `operationName` đúng operation cần chạy. Xem [Variables, arguments và fragments](/docs/query-mutation-subscription/variables-arguments-fragments) để ôn cách giữ query ổn định và thay variables, cũng như cách dùng fragment cho selection set lớn.
+
+### Next và error JSON
+
+Khi event `event-103` của `tenant-7` đến, server có thể gửi một protocol message `next` như sau:
+
+```json title="graphql-transport-ws next"
+{
+  "id": "sub-42",
+  "type": "next",
+  "payload": {
+    "data": {
+      "bookAdded": {
+        "id": "book-3",
+        "tenantId": "tenant-7",
+        "title": "GraphQL in Action",
+        "author": "Samer Buna",
+        "publishedYear": 2022
+      }
+    },
+    "extensions": {
+      "eventId": "event-103",
+      "sequence": 103
+    }
+  }
+}
+```
+
+`payload.data.bookAdded` khớp selection set và SDL. `extensions.eventId` cùng `sequence` là metadata do ứng dụng thêm để deduplicate (loại bản ghi lặp) hoặc catch-up; GraphQL không tự định nghĩa chúng. Nếu hệ thống không có contract cho `extensions`, client không được tự suy ra rằng các field này luôn tồn tại.
+
+Nếu server từ chối đăng ký trước khi stream bắt đầu, message `error` có thể có dạng:
+
+```json title="graphql-transport-ws error"
+{
+  "id": "sub-42",
+  "type": "error",
+  "payload": [
+    {
+      "message": "Không được đăng ký event của tenant này.",
+      "extensions": {
+        "code": "FORBIDDEN"
+      }
+    }
+  ]
+}
+```
+
+`error` ở đây là lỗi gắn với protocol operation, không phải một `next` chứa execution result. Trong một số tình huống, Publisher cũng có thể kết thúc bằng error và transport gửi message `error` cuối cùng. Ngược lại, một execution error của từng event có thể được đặt trong `payload.errors` của `next` nếu schema và policy cho phép stream tiếp tục. Cách map exception cụ thể phụ thuộc GraphQL Java, Spring for GraphQL và error resolver; client phải đọc cả `type`, `payload`, `data` và `errors` thay vì chỉ nhìn số lượng message.
+
+## Luồng handshake và message
+
+Handshake (quá trình bắt tay) có hai phần: HTTP Upgrade để mở WebSocket và protocol handshake để xác nhận client đã sẵn sàng gửi operation GraphQL. Không nên bỏ qua phần thứ hai chỉ vì HTTP trả `101`.
+
+### Handshake mở connection
+
+<Steps>
+  <Step>
+    **Mở kết nối TLS và HTTP Upgrade.** Client dùng `wss://` trong production, gửi request Upgrade và đề xuất subprotocol `graphql-transport-ws`. Reverse proxy phải chuyển tiếp đúng các header Upgrade và `Sec-WebSocket-Protocol`. Server trả `101 Switching Protocols` chỉ cho biết transport đã được nâng cấp, chưa cho biết authentication hoặc schema đã thành công.
+  </Step>
+  <Step>
+    **Gửi `connection_init` một lần.** Client gửi message `{"type":"connection_init","payload":{...}}`. Payload có thể chứa credential hoặc metadata theo contract của server. Đây là protocol message, không phải GraphQL operation.
+  </Step>
+  <Step>
+    **Xác thực và trả `connection_ack`.** Server kiểm tra credential, tạo principal/tenant context và chỉ gửi `{"type":"connection_ack"}` khi policy cho phép. Đặt timeout cho việc nhận `connection_init`; không cho client gửi `subscribe` trước khi nhận ACK.
+  </Step>
+  <Step>
+    **Từ chối rõ ràng khi handshake không hợp lệ.** Server có thể đóng connection hoặc trả lỗi theo protocol/framework policy. Mã close cụ thể phụ thuộc implementation; client nên ghi nhận nguyên nhân và không retry vô hạn với lỗi authentication hoặc authorization.
+  </Step>
+</Steps>
+
+Một connection đã ACK có thể mang nhiều subscription operation. Principal gắn với connection không làm cho mọi field hoặc mọi tenant tự động được phép; từng `subscribe` vẫn cần kiểm tra quyền.
+
+### Subscribe bắt đầu operation
+
+Sau `connection_ack`, client gửi message `subscribe`. Payload chứa chính operation GraphQL và variables đã nêu ở trên:
+
+```json title="Client gửi subscribe"
+{
+  "id": "sub-42",
+  "type": "subscribe",
+  "payload": {
+    "operationName": "OnBookAdded",
+    "query": "subscription OnBookAdded($tenantId: ID!) { bookAdded(tenantId: $tenantId) { id tenantId title author publishedYear } }",
+    "variables": {
+      "tenantId": "tenant-7"
+    }
+  }
+}
+```
+
+Server xử lý message này theo các bước:
+
+1. Kiểm tra `id` chưa được dùng trong connection hiện tại.
+2. Parse và validate `payload.query` với schema, gồm field `bookAdded`, argument và selection set.
+3. Bind/coerce variables, sau đó kiểm tra authorization của principal với `tenantId` và selection nhạy cảm nếu có.
+4. Gọi resolver `@SubscriptionMapping` để tạo Publisher. Resolver được gọi để tạo đăng ký; nó không được coi là một method chạy lại từ đầu cho mỗi event.
+5. Subscribe vào event source và bắt đầu gửi `next` cho từng execution result.
+
+`subscribe` là tên message của protocol hiện đại. Protocol legacy thường dùng `start` cho vai trò tương tự. Không trộn hai loại message chỉ vì cả hai đều có trường `query`.
+
+### Next error complete kết thúc stream
+
+| Message | Hướng thường gặp | Ý nghĩa |
+| --- | --- | --- |
+| `next` | Server → client | Một execution result của operation; payload có thể có `data`, `errors` và `extensions`. |
+| `error` | Server → client | Lỗi gắn với operation hoặc lỗi kết thúc Publisher theo mapping của transport; payload là danh sách GraphQL error. |
+| `complete` | Client → server hoặc server → client | Hủy hoặc kết thúc **một** operation theo `id`; không nhất thiết đóng cả WebSocket. |
+| `ping`/`pong` | Hai chiều | Keepalive ở protocol; không phải event nghiệp vụ và không phải execution result. |
+| `connection_ack` | Server → client | Xác nhận protocol handshake sau `connection_init`. |
+
+Client có thể hủy `sub-42` bằng:
+
+```json title="Client hủy một subscription"
+{
+  "id": "sub-42",
+  "type": "complete"
+}
+```
+
+Server phải truyền cancellation xuống Publisher và event source. Nếu event source hoàn tất bình thường, server gửi `complete` cho ID đó. Nếu chỉ muốn đóng connection, client phải đóng WebSocket; việc đó ảnh hưởng mọi operation đang chạy trên connection.
+
+## Connection lifecycle
+
+**Connection lifecycle** (vòng đời kết nối) là chuỗi trạng thái từ lúc HTTP Upgrade bắt đầu, qua protocol ACK và các subscription operation, đến khi từng stream hoặc toàn bộ socket bị đóng. Mỗi trạng thái cần có timeout, log và hành động cleanup tương ứng.
+
+### Từ connect đến cleanup
+
+```text
+CONNECTING
+   │  HTTP Upgrade + TLS
+   ▼
+OPEN
+   │  connection_init / authentication
+   ├──────────────► CLOSED nếu timeout hoặc bị từ chối
+   ▼
+ACKED
+   │  subscribe operation
+   ▼
+STREAMING  ── next ──► STREAMING
+   │
+   ├── complete một operation ──► operation đã cleanup
+   ├── Publisher error ──────────► operation lỗi và cleanup
+   └── socket close/revoke ──────► mọi operation cleanup ──► CLOSED
+```
+
+Một connection có thể ở trạng thái `ACKED` nhưng chưa có subscription nào. Một `complete` chỉ kết thúc ID tương ứng. Khi socket mất, server phải coi mọi operation trên socket là bị hủy, kể cả client chưa kịp gửi `complete`.
+
+Các trigger cleanup cần được kiểm tra riêng:
+
+- client gửi `complete`;
+- browser/network/proxy đóng socket;
+- token hết hạn hoặc quyền bị thu hồi;
+- Publisher phát error hoặc complete;
+- server deploy, pod drain hoặc application shutdown;
+- giới hạn thời gian, số message, tốc độ hoặc bộ nhớ bị vượt.
+
+Đừng lưu principal, tenant filter hoặc subscription handle trong một map toàn cục mà không gắn với connection và operation ID. Nếu buộc phải có registry, registry phải xóa entry khi complete, error và cancel, không chỉ khi ứng dụng nhận một message đẹp.
+
+### Reconnect và keepalive
+
+Keepalive hiện đại thường dùng `ping` và `pong` của `graphql-transport-ws`:
+
+```json
+{
+  "type": "ping",
+  "payload": { "sentAt": "2025-01-01T00:00:00Z" }
+}
+```
+
+```json
+{
+  "type": "pong",
+  "payload": { "sentAt": "2025-01-01T00:00:00Z" }
+}
+```
+
+Server hoặc client có thể chủ động gửi ping tùy protocol implementation. Khoảng ping phải ngắn hơn idle timeout nhỏ nhất của proxy, load balancer và server, nhưng vẫn có giới hạn để không tạo traffic vô ích. Pong chỉ chứng minh đường kết nối còn phản hồi; nó không chứng minh event source, authorization hoặc resolver đang khỏe.
+
+Khi reconnect, client nên:
+
+1. đóng hoặc đánh dấu connection cũ là không còn sử dụng;
+2. mở WebSocket mới và đề xuất đúng `graphql-transport-ws`;
+3. gửi `connection_init` mới với credential còn hợp lệ và chờ `connection_ack`;
+4. gửi lại các subscription cần thiết với operation ID mới trong connection mới;
+5. chạy catch-up bằng cursor/sequence hoặc query nếu ứng dụng không chấp nhận khoảng mất event.
+
+Dùng exponential backoff (thời gian chờ tăng dần) cùng jitter (nhiễu ngẫu nhiên) và giới hạn số lần retry. Không retry mù với `401`, `403`, token hết hạn hoặc lỗi schema/protocol; hãy yêu cầu refresh credential hoặc sửa cấu hình. `connection_init` không phải message refresh token chung. Nếu hệ thống cần đổi credential khi socket đang mở, hãy thiết kế cơ chế re-auth riêng và kiểm tra API version trước khi dùng.
+
+### Idempotent subscription và sự kiện bị lặp
+
+**Idempotent** (gọi lại không tạo thêm tác động ngoài ý muốn) không phải là thuộc tính tự động của reconnect. Nếu client mất mạng ngay sau `subscribe`, nó không biết server đã tạo stream hay chưa. Việc subscribe lại có thể để lại stream cũ và tạo stream mới, dẫn đến nhận cùng event hai lần.
+
+Thiết kế thực dụng:
+
+- Subscription resolver chỉ đăng ký đọc và không tạo mutation, gửi email hoặc side effect không thể lặp an toàn.
+- Mỗi event có `eventId` ổn định và, nếu cần, `sequence` hoặc cursor. Client deduplicate theo ID trước khi cập nhật UI.
+- Server có thể nhận `clientSubscriptionKey` qua một extension riêng để nhận diện đăng ký logic, nhưng đây là contract ứng dụng, không phải field chuẩn của protocol.
+- Nếu cần không bỏ sót event, dùng broker/replay hoặc query đồng bộ sau reconnect. Timestamp đơn thuần có thể bỏ sót hai event cùng thời điểm; sequence/cursor có semantics rõ hơn.
+- Ghi rõ delivery guarantee là at-most-once, at-least-once hay có replay. WebSocket protocol tự nó không tạo exactly-once delivery.
+
+## Triển khai Spring for GraphQL
+
+Spring for GraphQL nối GraphQL Java với lifecycle Spring Boot. Subscription vẫn cần schema, resolver, event source và WebSocket transport; thêm starter không tự tạo event hoặc broker.
+
+### SubscriptionMapping trả Flux hoặc Publisher
+
+`@SubscriptionMapping` là shortcut để map method vào field dưới root type `Subscription`, tương tự `@QueryMapping` và `@MutationMapping` cho hai root còn lại. Một method subscription thường trả `Flux<T>` hoặc một `Publisher<T>`:
+
+```java
+@Controller
+public class BookSubscriptionController {
+
+    private final BookEventStream eventStream;
+
+    public BookSubscriptionController(BookEventStream eventStream) {
+        this.eventStream = eventStream;
+    }
+
+    @SubscriptionMapping
+    public Flux<Book> bookAdded(@Argument("tenantId") String tenantId) {
+        return eventStream.forTenant(tenantId);
+    }
+}
+```
+
+`BookEventStream` và `Book` trong đoạn code là tên minh họa, không tồn tại trong repository. `Flux<Book>` là một implementation Reactor của `org.reactivestreams.Publisher<Book>`. Có thể dùng interface `Publisher<Book>` ở boundary nếu không muốn controller phụ thuộc trực tiếp vào Reactor:
+
+```java
+@SubscriptionMapping
+public Publisher<Book> bookAdded(@Argument("tenantId") String tenantId) {
+    return eventStream.forTenant(tenantId);
+}
+```
+
+Các điểm cần giữ:
+
+- Tên method `bookAdded` khớp field GraphQL trong ví dụ. Nếu tên Java khác, dùng mapping tường minh theo API version đang dùng.
+- `@Argument("tenantId")` bind argument GraphQL; giá trị này vẫn phải được kiểm tra quyền ở service.
+- Method tạo hoặc trả về Publisher một lần cho operation. GraphQL Java thực thi selection set cho từng item phát ra.
+- Với query thông thường, `Flux` có thể được aggregate thành list. Với subscription, Reactive Streams `Publisher` được giữ như stream để transport gửi nhiều result.
+- Một `Flux` có thể là cold (mỗi subscriber tạo nguồn riêng) hoặc hot (nguồn phát độc lập với subscriber). Chọn semantics theo event source và fan-out, không dùng `share()`/multicast chỉ để chữa duplicate hoặc scale.
+
+API annotation, package, method argument và cơ chế bind có thể thay đổi giữa Spring for GraphQL versions. Hãy đối chiếu [Query, mutation và subscription mapping](/docs/tich-hop-spring-for-graphql/query-mutation-subscription-mapping) với version dự án trước khi sao chép code. Bài [Kiến trúc GraphQL](/docs/nen-tang/kien-truc-graphql) giúp đặt resolver, service và data source vào đúng boundary.
+
+### WebSocket enablement và version
+
+Trong các dòng Spring Boot hiện hành, GraphQL WebSocket endpoint thường **tắt mặc định**. Tài liệu Boot hiện tại mô tả các điểm sau:
+
+| Web stack | Dependency bổ sung thường gặp | Điều kiện endpoint |
+| --- | --- | --- |
+| Spring MVC/Servlet | `spring-boot-starter-websocket` | Cần bật WebSocket support và đặt WebSocket path theo version. |
+| Spring WebFlux | Thường không cần starter WebSocket riêng | Cần đặt WebSocket path theo version và để WebFlux cung cấp transport. |
+
+Tọa độ dependency Servlet minh họa, không khóa version riêng:
+
+```xml title="pom.xml"
+<dependency>
+  <groupId>org.springframework.boot</groupId>
+  <artifactId>spring-boot-starter-websocket</artifactId>
+</dependency>
+```
+
+Với các version Boot có auto-configuration tương ứng, property được tài liệu hiện tại sử dụng để bật path là:
+
+```yaml title="application.yml minh họa"
+spring:
+  graphql:
+    websocket:
+      path: /graphql-ws
+```
+
+Không coi đoạn YAML trên là property universal. Repository đang dùng các ví dụ HTTP version-aware (`spring.graphql.http.path` ở dòng mới và `spring.graphql.path` ở dòng cũ), còn WebSocket path cũng phải được kiểm tra trong reference documentation và configuration metadata của đúng Spring Boot/Spring for GraphQL version. Nếu auto-configuration không phù hợp, Spring for GraphQL cung cấp `GraphQlWebSocketHandler` cho MVC/WebFlux và có thể cần mapping thủ công; class, bean và thứ tự mapping phải lấy từ tài liệu version đó.
+
+Client và server phải thống nhất subprotocol hiện đại `graphql-transport-ws`. Đừng nhầm:
+
+| Lựa chọn | Wire subprotocol và message điển hình | Tình trạng |
+| --- | --- | --- |
+| `graphql-ws` project | `graphql-transport-ws`; `subscribe`, `next`, `error`, `complete`, `ping`, `pong` | Lựa chọn hiện đại được ưu tiên khi stack hỗ trợ. |
+| `subscriptions-transport-ws` | Thường đề xuất `graphql-ws`; `start`, `data`, `stop`, `ka` | Legacy, không nên trộn với handler/client hiện đại. |
+
+Tên package/client `graphql-ws` và token subprotocol `graphql-transport-ws` dễ gây nhầm. Hãy kiểm tra Network tab hoặc WebSocket handshake để thấy token thật. Spring handler mở được socket nhưng client dùng protocol legacy vẫn có thể thất bại ngay khi gửi message đầu tiên.
+
+Spring for GraphQL có các extension/interceptor WebSocket ở những version hỗ trợ, như `WebSocketGraphQlInterceptor` cho lifecycle connection, cancellation và từng request GraphQL. Tài liệu Spring cũng có `AuthenticationWebSocketInterceptor` cho một số MVC/WebFlux transport để lấy thông tin từ `connection_init` và truyền `SecurityContext`. Đây là capability version-dependent; không tự giả định bean đã được đăng ký hoặc authorization per-event đã được xử lý.
+
+Một số version còn hỗ trợ subscription qua SSE. SSE có trade-off khác về chiều dữ liệu và proxy. Nếu chọn SSE thay WebSocket, hãy đổi client, endpoint và timeout theo contract riêng; không gọi đó là cùng protocol.
+
+### Context authentication và authorization
+
+Khi WebSocket handshake thành công, ứng dụng cần đưa principal, tenant và correlation ID đáng tin cậy vào context của từng operation. Context này phải do server tạo từ credential đã xác minh, không lấy nguyên `tenantId` từ variables làm danh tính.
+
+Trong Spring for GraphQL, có thể dùng web interceptor để:
+
+- đọc header/cookie hoặc `connection_init` payload;
+- xác thực token và gắn thông tin vào GraphQL context/SecurityContext;
+- kiểm tra từng GraphQL request trên connection;
+- nhận callback khi connection bắt đầu, kết thúc hoặc client hủy subscription;
+- truyền correlation metadata đến resolver và event source.
+
+`WebSocketGraphQlInterceptor` không thay thế service authorization. Nếu event source là broker hoặc registry riêng, lớp đó cũng phải nhận thông tin tenant/principal đã được kiểm soát và không được dùng credential của client để truy cập dữ liệu ngoài policy.
+
+Đối chiếu [Context, interceptor và request lifecycle](/docs/tich-hop-spring-for-graphql/context-interceptor-request-lifecycle), [DataFetcher và GraphQL context](/docs/tich-hop-spring-for-graphql/datafetcher-va-graphql-context) và [Xử lý lỗi tập trung](/docs/tich-hop-spring-for-graphql/xu-ly-loi-tap-trung) trước khi chọn hook cụ thể. Các trang mapping trong repository hiện là tài liệu tham chiếu, không phải bằng chứng một backend đã chạy.
+
+## Bảo mật handshake và từng event
+
+WebSocket là kết nối dài hạn nên auth không chỉ là một lần kiểm tra route. Credential, quyền truy cập và dữ liệu event đều có thể thay đổi trong khi socket còn mở.
+
+### Authentication ở handshake
+
+Authentication xác định client là ai. Có ba vị trí thường gặp, với trade-off khác nhau:
+
+| Vị trí | Cách dùng | Lưu ý |
+| --- | --- | --- |
+| HTTP Upgrade | Cookie hoặc header mà client/runtime có thể gửi khi mở socket | Có thể bị proxy/security filter xử lý trước GraphQL; browser WebSocket API không tiện đặt mọi custom header. |
+| `connection_init.payload` | Gửi token hoặc credential theo protocol sau Upgrade | Phù hợp nhiều browser client; server phải giới hạn thời gian chờ và không ACK trước khi xác minh. |
+| Cookie phiên bảo vệ | Browser gửi cookie cùng origin phù hợp | Cần TLS, kiểm tra `Origin`, SameSite/CSRF và policy session; cookie không thay thế authorization. |
+
+Ưu tiên `wss://` và không đặt bearer token trong query string của URL. URL thường đi vào access log, proxy metric, browser history hoặc tracing. Không log nguyên payload `connection_init`; hãy redaction token và PII.
+
+Sau khi xác thực:
+
+- lưu principal đã xác minh vào context server;
+- ACK chỉ sau khi kiểm tra thành công;
+- đặt giới hạn thời gian sống connection hoặc xử lý token expiry;
+- khi token bị thu hồi, hủy subscription và đóng socket theo policy;
+- không cho client gửi nhiều `connection_init` để đổi danh tính trên cùng socket trừ khi protocol mở rộng đó được thiết kế và kiểm thử rõ ràng.
+
+`Origin` allowlist giúp giảm request từ origin không mong muốn nhưng không chứng minh danh tính. CORS của HTTP cũng không tự bảo vệ WebSocket. Cookie auth cần thêm CSRF/Origin policy; bearer token cần TLS và redaction.
+
+### Authorization lúc subscribe và per event
+
+Authorization quyết định principal được phép làm gì và đọc dữ liệu nào. Kiểm tra tối thiểu ở hai thời điểm:
+
+1. **Lúc `subscribe`:** xác nhận principal được đăng ký field và arguments đó. `tenantId: "tenant-7"` phải được đối chiếu với tenant claims/membership, không được tin như một filter vô hại.
+2. **Lúc phát event:** xác nhận event hiện tại vẫn thuộc phạm vi được phép. Membership có thể bị thu hồi, record có thể đổi tenant, hoặc event source có thể phát nhầm dữ liệu.
+
+Có thể lọc event trước khi đưa vào Publisher, kiểm tra trong service ngay trước execution, hoặc kết hợp cả hai. Không phát payload nhạy cảm vào một stream chung rồi hy vọng resolver nested sẽ che được sau đó. Nếu kiểm tra per-event tốn kém, dùng cache ngắn hạn có invalidation khi quyền thay đổi và đo chi phí; đừng bỏ qua kiểm tra chỉ vì stream nhanh.
+
+Khi một event không còn được phép, policy cần nói rõ:
+
+- bỏ qua event và giữ stream nếu việc im lặng không làm lộ sự tồn tại của record;
+- gửi execution error trong `next` nếu schema nullable và client biết xử lý;
+- kết thúc operation bằng `error`/`complete` nếu stream không còn an toàn;
+- đóng toàn connection nếu credential bị thu hồi nghiêm trọng.
+
+Không có lựa chọn nào tự đúng cho mọi domain. Điều cần tránh là gửi dữ liệu trái quyền, phân biệt “không có event” với “bị từ chối” theo cách làm lộ thông tin, hoặc giữ stream sau khi principal không còn hợp lệ. Xem thêm [Authorization theo field và resolver](/docs/bao-mat-va-quan-sat/authorization-field-resolver) và [Authentication với JWT/OAuth2](/docs/bao-mat-va-quan-sat/authentication-jwt-oauth2).
+
+## Fan out backpressure và cleanup
+
+**Fan-out** là việc một event được phân phối tới nhiều subscriber. **Backpressure** là cơ chế truyền nhu cầu hoặc áp chính sách khi Publisher phát nhanh hơn khả năng xử lý/gửi của subscriber. **Cleanup** là việc hủy đăng ký và giải phóng queue, timer, consumer, context hoặc handle khi stream không còn dùng.
+
+Ba vấn đề này liên quan trực tiếp: fan-out làm số queue tăng, subscriber chậm làm queue phình, còn thiếu cleanup làm các queue và consumer tồn tại sau khi client đã rời đi.
+
+### Publisher và event source
+
+Chọn event source theo semantics cần có:
+
+| Event source | Ưu điểm | Rủi ro cần xử lý |
+| --- | --- | --- |
+| `Flux`/sink trong một JVM | Đơn giản, latency thấp, phù hợp prototype hoặc một instance | Không tự chia sẻ giữa instance, mất event khi process restart, dễ leak nếu buffer vô hạn. |
+| Pub/sub broker | Fan-out nhiều instance và tách producer khỏi WebSocket server | Cần auth, topic/tenant isolation, consumer lifecycle, lag, duplicate và backpressure. |
+| Durable log/replay source | Có cursor, catch-up và khả năng xử lý reconnect | Cần retention, offset ownership, ordering và chi phí lưu trữ. |
+| Database/change feed | Gần dữ liệu nghiệp vụ | Cần xem transaction boundary, duplicate, latency, load database và cleanup listener. |
+
+Với một app nhiều instance, in-memory `Flux` chỉ nhìn thấy subscriber trên instance đó. Sticky connection giữ socket ở một instance trong thời gian sống nhưng không sao chép event sang instance khác. Nếu producer phát event ở instance A còn subscriber ở B, B sẽ không nhận được trừ khi có shared event source hoặc routing có chủ đích.
+
+Một pattern an toàn hơn là event source phát event có `eventId`, `tenantId`, `occurredAt` và sequence/cursor; service áp authorization rồi tạo Publisher cho từng subscriber. Nếu event được phát sau mutation, không emit vào sink trước khi transaction commit vì rollback có thể để client thấy trạng thái không tồn tại. Với delivery cần bền vững, cân nhắc transactional outbox (bản ghi event được lưu cùng transaction nghiệp vụ) hoặc cơ chế tương đương, rồi để worker/broker phát sau commit; chi tiết broker phải được kiểm chứng trong hệ thống thật. Không dùng một global sink unbounded cho mọi tenant. Nếu dùng shared multicast, lọc tenant trước khi đưa dữ liệu vào queue của subscriber và xác định rõ subscriber chậm sẽ bị drop hay disconnect.
+
+### Backpressure thực dụng
+
+Reactive Streams có cơ chế demand, nhưng không phải lúc nào demand cũng truyền nguyên vẹn qua GraphQL execution, WebSocket frame, proxy và browser. Vì vậy, cần policy rõ ở mỗi boundary.
+
+| Tình huống | Policy thực dụng | Không nên làm |
+| --- | --- | --- |
+| Event quan trọng, không được mất | Queue có giới hạn + durable broker/replay + cursor; ngắt subscriber chậm và cho catch-up | Dùng buffer vô hạn trong heap. |
+| UI chỉ cần trạng thái mới nhất | Coalesce, throttle hoặc giữ giá trị mới nhất theo contract | Áp dụng drop cho audit/payment mà không nói rõ. |
+| Producer có burst lớn | Giới hạn tốc độ, batch có kiểm soát, rate limit và giới hạn số subscription | Để mỗi connection tự tạo một consumer không giới hạn. |
+| Client chậm hoặc mất mạng | Theo dõi send queue; drop theo policy hoặc đóng operation; cleanup ngay | Giữ event vô hạn chờ browser quay lại. |
+| Payload lớn | Giới hạn kích thước event/selection và tách query chi tiết | Gửi object lớn cho mọi subscriber chỉ vì một field được chọn. |
+
+Với WebFlux, việc dùng `Flux`/Reactive Streams giúp transport có cơ sở truyền backpressure không đồng bộ. Tuy nhiên, ứng dụng vẫn phải giới hạn queue và xử lý event source; WebSocket hoặc proxy không biến một nguồn phát vô hạn thành an toàn. Với MVC/Servlet, càng cần đo thread, buffer và thời gian gửi thay vì giả định flow control đã đủ.
+
+Các metric nên có gồm active connections, active operations, event-to-send latency, queue depth, broker lag, dropped/coalesced events, cancellation, error và reconnect. Đặt giới hạn theo tenant hoặc client để một subscriber không chiếm toàn bộ memory.
+
+### Dọn tài nguyên
+
+Khi một subscription bị cancel, cancellation phải đi ngược qua các lớp:
+
+```text
+WebSocket complete/close
+        ▼
+GraphQL subscription Publisher
+        ▼
+Reactor subscription cancellation
+        ▼
+Broker consumer / listener / timer / queue
+        ▼
+Registry entry và context được giải phóng
+```
+
+Trong Reactor, `doFinally` là một điểm thường dùng để xử lý cả complete, error và cancel; `doOnCancel` chỉ bao phủ một nhánh. API dùng để đóng consumer hoặc listener phụ thuộc event source, nên đặt cleanup ở abstraction sở hữu resource thay vì hard-code trong controller. Nếu resource có vòng đời phức tạp, dùng cơ chế tương đương `using`/resource scope của thư viện đang dùng và kiểm tra cancellation thật.
+
+Checklist cleanup cho mỗi Publisher:
+
+- subscriber disconnect có làm consumer broker bị cancel không;
+- `complete`, error và timeout có cùng giải phóng registry không;
+- connection đóng có hủy **tất cả** operation còn lại không;
+- reconnect có tạo consumer mới trong khi consumer cũ vẫn sống không;
+- shutdown có drain hoặc đóng stream trong deadline không;
+- log/metric có cho biết cleanup đã chạy mà không ghi credential không.
+
+<Callout type="warn" title="Đừng coi socket close là cleanup tự động">
+  Framework có thể phát tín hiệu cancel, nhưng event source, queue hoặc listener của ứng dụng chỉ được giải phóng nếu Publisher truyền tín hiệu đó đúng cách. Hãy viết integration test cho client gửi `complete`, client mất socket và server shutdown; repository này không có backend để chạy các test đó.
 </Callout>
+
+## Proxy load balancer và production
+
+WebSocket subscription là stateful ở cấp connection. Hạ tầng biên phải giữ Upgrade, timeout, protocol và đường đi tới đúng service; hạ tầng không tự tạo fan-out hoặc replay.
+
+### Upgrade và timeout
+
+Một handshake trên wire có thể bắt đầu như sau:
+
+```http
+GET /graphql-ws HTTP/1.1
+Host: api.example.com
+Upgrade: websocket
+Connection: Upgrade
+Sec-WebSocket-Version: 13
+Sec-WebSocket-Key: <random-key>
+Sec-WebSocket-Protocol: graphql-transport-ws
+Origin: https://app.example.com
+```
+
+Reverse proxy/load balancer cần kiểm tra tối thiểu:
+
+- forward `Upgrade`, `Connection` và `Sec-WebSocket-Protocol` đúng cách;
+- route path WebSocket đến service có handler GraphQL, không route nhầm vào GraphiQL UI hoặc HTTP-only handler;
+- giữ TLS termination và `wss://` theo security policy;
+- allowlist `Origin` phù hợp, nhưng không dùng Origin thay authentication;
+- đặt idle/read/send timeout lớn hơn khoảng keepalive cùng jitter mạng;
+- giới hạn frame/message size, header size và số connection;
+- có health check và drain policy riêng cho instance đang có socket;
+- bảo đảm proxy không buffer hoặc cắt stream như một HTTP response ngắn.
+
+Tên directive/property trong Nginx, Envoy, ingress controller hoặc cloud load balancer khác nhau. Đừng sao chép một `proxy_read_timeout` hay annotation Kubernetes mà chưa đối chiếu sản phẩm đang dùng. Điều quan trọng là đo timeout nhỏ nhất trên toàn tuyến và đặt ping/pong thấp hơn ngưỡng đó.
+
+### Sticky connection và scale ngang
+
+Một WebSocket TCP connection thường đã được gắn vào một backend cho đến khi đóng. **Sticky session** (ghim phiên) có thể giúp connection hiện tại tiếp tục đến cùng instance, nhưng nó không giải quyết:
+
+- client reconnect sang instance khác;
+- producer và subscriber ở hai instance khác nhau;
+- pod restart hoặc rollout;
+- event replay sau khoảng mất kết nối;
+- chia sẻ auth revocation và subscription registry.
+
+Các lựa chọn thường gặp:
+
+| Lựa chọn | Khi phù hợp | Cảnh báo |
+| --- | --- | --- |
+| Sticky connection + in-memory stream | Prototype, một instance hoặc event không quan trọng | Dễ mất event và không chịu được failover. |
+| Shared pub/sub | Nhiều instance cần nhận cùng event | Phải lọc tenant, giới hạn consumer và xử lý duplicate. |
+| Durable broker + cursor | Cần reconnect/catch-up và delivery rõ | Tăng chi phí vận hành, offset và retention. |
+| Gateway/router chuyên dụng | Cần boundary WebSocket riêng | Phải thống nhất auth, protocol, timeout và observability xuyên lớp. |
+
+Khi drain instance, ngừng nhận subscription mới, báo/đóng connection hiện hữu trong thời gian ân hạn và để client reconnect có backoff. Nếu rollout đóng socket đột ngột, hãy coi đó là disconnect bình thường và dựa vào event ID/catch-up để phục hồi. Xem [Subscription WebSocket khi deploy](/docs/trien-khai/subscription-websocket-deployment), [Reverse proxy và gateway](/docs/trien-khai/reverse-proxy-va-gateway) và [Scale ngang](/docs/production/scale-ngang) khi đưa quyết định này vào hạ tầng thật.
+
+## Phân loại và xử lý lỗi
+
+Bắt đầu debug từ lớp thấp nhất mà bằng chứng chỉ ra. Không gọi mọi lỗi có `type: "error"` là HTTP error, và không gọi HTTP `101` hoặc `200` là subscription thành công.
+
+| Triệu chứng | Lớp nghi ngờ đầu tiên | Bằng chứng cần thu thập |
+| --- | --- | --- |
+| `404`, `400`, `426` hoặc không có `101` | URL, HTTP Upgrade, proxy hoặc route | URL thực tế, method, status, Upgrade headers, proxy log. |
+| `101` rồi đóng trước `connection_ack` | Protocol, auth handshake hoặc timeout init | Subprotocol đã negotiate, `connection_init` đã gửi chưa, close reason đã redaction. |
+| ACK thành công nhưng `subscribe` bị từ chối | GraphQL parse/validation, operation ID hoặc authorization | `operationName`, `id`, schema version, variables đã che secret, `error.payload`. |
+| ACK và subscribe thành công nhưng không có `next` | Event source/filter/tenant hoặc Publisher chưa được subscribe | Active operation, source lag, filter count, queue và resolver log. |
+| Có `next` rồi `error` | Publisher, broker hoặc execution | `payload.errors`, source exception mapping, `eventId`, `path` và cleanup. |
+| Nhận event trùng sau reconnect | Lifecycle hoặc delivery guarantee | Connection generation, operation ID, event ID/sequence và thời điểm close. |
+| Chỉ lỗi khi nhiều instance | Fan-out, routing hoặc local Publisher | Instance của producer/subscriber, broker topic, sticky policy và lag. |
+| Memory tăng sau nhiều disconnect | Backpressure hoặc cleanup | Active operation count, queue depth, consumer count và cancellation metric. |
+
+Lỗi parse/validation thường xảy ra trước resolver. Lỗi authorization có thể được trả ở HTTP Upgrade, `connection_init`, `subscribe` hoặc trong execution tùy boundary. Lỗi từ Publisher sau khi subscription đã tạo cần một `SubscriptionExceptionResolver` hoặc error mapping tương ứng nếu version Spring for GraphQL hỗ trợ; GraphQL `DataFetcherExceptionResolver` không nhất thiết nhận được error signal phát ra về sau từ Publisher.
+
+Khi ghi log, dùng `operationName`, protocol `id`, connection generation, tenant đã làm mờ, event ID và error code ổn định. Không ghi access token, nguyên payload `connection_init` hoặc toàn bộ event nhạy cảm. Xem [Mô hình request/response](/docs/nen-tang/mo-hinh-request-response) để phân biệt `data`, `errors`, `extensions` và lỗi transport, cùng [Xử lý lỗi trong mutation](/docs/query-mutation-subscription/xu-ly-loi-trong-mutation) để giữ error contract nhất quán giữa operation đọc/ghi.
+
+## Checklist triển khai an toàn
+
+- [ ] Schema có root `Subscription` và field subscription với nullability, argument, selection set được review.
+- [ ] Client và server thống nhất wire protocol `graphql-transport-ws`, không trộn `subscriptions-transport-ws`.
+- [ ] WebSocket endpoint khác biệt rõ với GraphiQL UI và HTTP `POST /graphql`.
+- [ ] Version Spring Boot/Spring for GraphQL, web stack, dependency và `spring.graphql.websocket.path` đã được đối chiếu bằng tài liệu/configuration metadata đúng version.
+- [ ] Production dùng `wss://`, TLS, Origin policy và giới hạn frame/message/connection phù hợp.
+- [ ] `connection_init` có timeout; server chỉ ACK sau authentication; token không nằm trong URL hoặc log.
+- [ ] Mỗi `subscribe` kiểm tra authorization của arguments và selection nhạy cảm.
+- [ ] Per-event authorization hoặc filtering xử lý membership/revocation thay đổi trong lúc stream sống.
+- [ ] Event có `eventId`; nếu cần không mất event thì có sequence/cursor, replay hoặc query catch-up.
+- [ ] Reconnect dùng backoff + jitter, gửi handshake mới và không retry mù lỗi auth/protocol.
+- [ ] Fan-out nhiều instance dùng shared source hoặc có giới hạn rõ; sticky connection không bị coi là replay/fan-out.
+- [ ] Backpressure có queue bounded, policy drop/coalesce/disconnect hoặc durable replay; không dùng buffer vô hạn.
+- [ ] `complete`, cancel, error, socket close và shutdown đều giải phóng Publisher/event consumer/registry.
+- [ ] Keepalive nhỏ hơn idle timeout biên; metric theo dõi active connection, operation, lag, queue, drop, error và cleanup.
+- [ ] Integration test bao phủ handshake sai protocol, auth fail, subscribe fail, event, complete, reconnect, duplicate, multi-instance và shutdown.
 
 ## Bước tiếp theo
 
-Sau khi trang được điền nội dung, đọc bài kế tiếp trong nhóm để tiếp tục lộ trình.
+Để nối trang này với các phần trước và sau trong lộ trình:
+
+- Ôn [Kiến trúc GraphQL](/docs/nen-tang/kien-truc-graphql) để phân biệt transport, schema, resolver, service và data source.
+- Xem [Mô hình request/response](/docs/nen-tang/mo-hinh-request-response) để đọc execution result, `errors`, `path` và `extensions`.
+- Luyện [Query, selection set và alias](/docs/query-mutation-subscription/query-selection-set-alias) và [Variables, arguments và fragments](/docs/query-mutation-subscription/variables-arguments-fragments) để viết operation subscription đúng contract.
+- Đọc [Mutation và input/payload](/docs/query-mutation-subscription/mutation-input-payload) nếu event được phát sau một mutation tạo hoặc cập nhật dữ liệu.
+- Đối chiếu [Query, mutation và subscription mapping](/docs/tich-hop-spring-for-graphql/query-mutation-subscription-mapping) cùng [Context, interceptor và request lifecycle](/docs/tich-hop-spring-for-graphql/context-interceptor-request-lifecycle) trước khi chọn API Spring cụ thể.
+- Khi triển khai, xem [Subscription WebSocket khi deploy](/docs/trien-khai/subscription-websocket-deployment), [Reverse proxy và gateway](/docs/trien-khai/reverse-proxy-va-gateway) và [Scale ngang](/docs/production/scale-ngang).
+
+<Accordions type="single">
+  <Accordion title="Có thể dùng một WebSocket cho query, mutation và subscription không?">
+    Có thể nếu server/client protocol hỗ trợ. Query hoặc mutation thường tạo một kết quả rồi `complete`, còn subscription giữ Publisher mở và gửi nhiều `next`. Đừng dùng cùng retry policy cho mutation có side effect và subscription chỉ đọc.
+  </Accordion>
+  <Accordion title="Có nên đóng connection khi một event bị từ chối quyền không?">
+    Không có câu trả lời chung. Nếu chỉ một record không còn thuộc phạm vi, có thể lọc event và giữ stream. Nếu credential bị thu hồi hoặc việc tiếp tục có thể làm lộ dữ liệu, kết thúc operation hoặc cả connection an toàn hơn. Hãy ghi policy cùng error contract và test trong backend thật.
+  </Accordion>
+</Accordions>
+
+<Cards>
+  <Card title="Request và response GraphQL" href="/docs/nen-tang/mo-hinh-request-response" description="Phân biệt transport envelope với execution result và errors." />
+  <Card title="Mapping trong Spring for GraphQL" href="/docs/tich-hop-spring-for-graphql/query-mutation-subscription-mapping" description="Nối root operation vào method controller theo version phù hợp." />
+  <Card title="Deploy WebSocket subscription" href="/docs/trien-khai/subscription-websocket-deployment" description="Kiểm tra Upgrade, timeout, sticky connection và rollout." />
+  <Card title="Reverse proxy và gateway" href="/docs/trien-khai/reverse-proxy-va-gateway" description="Đặt endpoint GraphQL sau proxy mà không nhầm route hoặc header." />
+</Cards>
