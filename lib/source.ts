@@ -1,5 +1,5 @@
 import { docs } from '@/.source';
-import { loader } from 'fumadocs-core/source';
+import { loader, type VirtualFile } from 'fumadocs-core/source';
 
 const generatedSource = docs.toFumadocsSource();
 
@@ -8,8 +8,8 @@ const generatedSource = docs.toFumadocsSource();
 const generatedFiles = generatedSource.files;
 const files =
   typeof generatedFiles === 'function'
-    ? (generatedFiles as unknown as () => any[])()
-    : (generatedFiles as unknown as any[]);
+    ? (generatedFiles as unknown as () => VirtualFile[])()
+    : (generatedFiles as unknown as VirtualFile[]);
 
 export const source = loader({
   baseUrl: '/docs',

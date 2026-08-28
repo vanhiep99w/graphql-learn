@@ -5,8 +5,17 @@ import {
   DocsDescription,
   DocsTitle,
 } from 'fumadocs-ui/page';
+import type { TableOfContents } from 'fumadocs-core/server';
+import type { ComponentType } from 'react';
+import type { MDXComponents } from 'mdx/types';
 import { notFound } from 'next/navigation';
 import { getMDXComponents } from '@/mdx-components';
+
+type MDXPageData = {
+  body: ComponentType<{ components?: MDXComponents }>;
+  toc?: TableOfContents;
+  full?: boolean;
+};
 
 export default async function Page(props: {
   params: Promise<{ slug?: string[] }>;
@@ -15,14 +24,15 @@ export default async function Page(props: {
   const page = source.getPage(params.slug);
   if (!page) notFound();
 
-  const MDXContent = page.data.body;
+  const pageData = page.data as typeof page.data & MDXPageData;
+  const MDXContent = pageData.body;
 
   // Keep the article wide; global.css supplies the same compact gutter as a
   // fallback for layout internals that are not exposed through this prop.
   return (
     <DocsPage
-      toc={page.data.toc}
-      full={page.data.full}
+      toc={pageData.toc}
+      full={pageData.full}
       article={{ className: 'max-w-none px-3 md:px-5' }}
     >
       <DocsTitle>{page.data.title}</DocsTitle>
