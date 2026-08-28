@@ -1,33 +1,97 @@
 ---
 title: "Bắt đầu"
-description: "Các bước dựng project Spring Boot đầu tiên và gửi request GraphQL chạy được."
+description: "Lộ trình từ project Spring Boot đầu tiên đến request GraphQL có thể kiểm thử local."
 ---
 
-Đây là trang khung của nhóm **Bắt đầu** trong lộ trình học GraphQL với Spring Boot. Nội dung chi tiết sẽ được bổ sung theo từng bài bên dưới.
+Nhóm **Bắt đầu** dành cho người muốn xây dựng GraphQL API đầu tiên bằng Spring Boot và Spring for GraphQL. Bạn sẽ đi từ một project chưa có GraphQL đến schema, resolver, GraphiQL và quy trình gửi request có thể lặp lại.
 
 <Callout type="info" title="Trạng thái nội dung">
-Các bài trong nhóm hiện là placeholder. Hãy đi theo thứ tự sidebar để giữ mạch học đề xuất.
+Cả sáu bài trong nhóm đã được viết hoàn chỉnh, từ khởi tạo project đến kiểm thử request bằng curl/Postman. Hãy đi theo thứ tự sidebar; mỗi bài bổ sung một bước thực hành cho bài kế tiếp. Các ví dụ trong nhóm được viết để áp dụng vào một backend Spring Boot thật; repository tài liệu này không chứa backend để chạy runtime.
 </Callout>
 
 ## Mục lục
 
-- [Phạm vi dự kiến](#phạm-vi-dự-kiến)
+- [Trang này dành cho ai?](#trang-này-dành-cho-ai)
+- [Điều kiện cần có](#điều-kiện-cần-có)
+- [Mục tiêu đầu ra](#mục-tiêu-đầu-ra)
+- [Thứ tự học đề xuất](#thứ-tự-học-đề-xuất)
 - [Các bài trong nhóm](#các-bài-trong-nhóm)
+- [Cách dùng các bài đã hoàn thiện](#cách-dùng-các-bài-đã-hoàn-thiện)
+- [Nhóm Nền tảng nên đọc trước](#nhóm-nền-tảng-nên-đọc-trước)
 - [Bước tiếp theo](#bước-tiếp-theo)
 
-## Phạm vi dự kiến
+## Trang này dành cho ai?
 
-Đi từ project Spring Boot trống đến một endpoint GraphQL có schema, query mẫu và quy trình kiểm thử local.
+Lộ trình này phù hợp với người đã có Java cơ bản và muốn hiểu cách một GraphQL request đi qua ứng dụng Spring Boot. Bạn không cần biết GraphQL trước. Nếu chưa quen với schema, operation hoặc execution result, hãy đọc nhóm [Nền tảng](/docs/nen-tang) trước khi bắt đầu.
+
+## Điều kiện cần có
+
+Khi thực hành trên một backend thật, hãy chuẩn bị:
+
+- **JDK 17** và một terminal. Các bài dùng dòng Spring Boot 3.x, trong đó JDK 17 là mốc chính.
+- Một project dùng Maven và Maven wrapper; các bài có đề cập lựa chọn Gradle ở nơi phù hợp.
+- Trình duyệt để mở Spring Initializr và GraphiQL.
+- Kết nối mạng cho lần tạo project hoặc lần build đầu tiên, khi Maven cần tải dependency.
+
+Nếu chỉ đọc để nắm flow, bạn có thể đi qua các bài mà chưa cần cài backend. Khi chạy lệnh, hãy đối chiếu version Spring Boot, port và endpoint trong project thực tế với giả định của từng bài.
+
+## Mục tiêu đầu ra
+
+Sau khi hoàn thành nhóm này, bạn có thể:
+
+- Tạo và kiểm tra một project Spring Boot tối thiểu.
+- Thêm Spring for GraphQL, đặt schema trên classpath và cấu hình HTTP endpoint local.
+- Viết schema SDL với query root, scalar, object và list.
+- Nối một query với resolver, gửi operation và đọc `data` cùng `errors` trong execution result.
+- Dùng GraphiQL để khám phá schema, chạy query, truyền variables và headers.
+- Gửi lại cùng request bằng `curl` hoặc Postman để tạo quy trình kiểm thử lặp lại được.
+
+## Thứ tự học đề xuất
+
+Đi theo thứ tự sidebar từ trên xuống dưới. Mỗi chặng tạo đầu vào cho chặng kế tiếp:
+
+1. **Khởi tạo project** để có bộ khung Spring Boot và kiểm tra JDK, Maven wrapper.
+2. **Thêm dependency và cấu hình** để ứng dụng có GraphQL runtime, schema location và HTTP endpoint.
+3. **Tạo schema đầu tiên** để định nghĩa contract mà client được phép yêu cầu.
+4. **Viết query đầu tiên** để nối field trong schema với resolver và dữ liệu trả về.
+5. **Khám phá API bằng GraphiQL** để đọc schema, chạy operation và phân loại lỗi.
+6. **Kiểm thử request bằng curl/Postman** để chuyển request đã chạy sang quy trình kiểm tra ngoài giao diện.
 
 ## Các bài trong nhóm
 
-- [Khởi tạo project Spring Boot](/docs/bat-dau/khoi-tao-spring-boot) — Tạo project nền với Spring Boot và các lựa chọn cần thiết cho một ứng dụng GraphQL.
-- [Thêm dependency và cấu hình](/docs/bat-dau/them-dependency-va-cau-hinh) — Cấu hình Spring for GraphQL, endpoint HTTP, schema locations và môi trường local.
-- [Tạo schema đầu tiên](/docs/bat-dau/tao-schema-dau-tien) — Định nghĩa type, query và dữ liệu mẫu bằng GraphQL SDL trong project Spring Boot.
-- [Viết query đầu tiên](/docs/bat-dau/viet-query-dau-tien) — Kết nối query với resolver và đọc kết quả từ endpoint GraphQL của ứng dụng.
-- [GraphiQL và công cụ khám phá API](/docs/bat-dau/graphiql-va-kham-pha-api) — Dùng GraphiQL để đọc schema, soạn query, truyền variables và xem execution result.
-- [Kiểm thử request bằng curl/Postman](/docs/bat-dau/kiem-thu-request-curl-postman) — Gửi GraphQL request qua curl và Postman để tạo quy trình kiểm thử lặp lại được.
+| Bài | Vai trò trong lộ trình | Trạng thái |
+| --- | --- | --- |
+| [Khởi tạo project Spring Boot](/docs/bat-dau/khoi-tao-spring-boot) | Tạo project Maven, chọn JDK và kiểm tra ứng dụng nền trước khi thêm GraphQL. | Đã viết |
+| [Thêm dependency và cấu hình](/docs/bat-dau/them-dependency-va-cau-hinh) | Nối Spring for GraphQL với web stack, schema location, endpoint và cấu hình local. | Đã viết |
+| [Tạo schema đầu tiên](/docs/bat-dau/tao-schema-dau-tien) | Viết SDL và hiểu query root, kiểu dữ liệu, list cùng nullability. | Đã viết |
+| [Viết query đầu tiên](/docs/bat-dau/viet-query-dau-tien) | Đăng ký resolver cho query scalar, sau đó mở rộng sang object và list. | Đã viết |
+| [GraphiQL và công cụ khám phá API](/docs/bat-dau/graphiql-va-kham-pha-api) | Khám phá schema, chạy query, truyền variables/headers và đọc execution result. | Đã viết |
+| [Kiểm thử request bằng curl/Postman](/docs/bat-dau/kiem-thu-request-curl-postman) | Gửi request HTTP bên ngoài GraphiQL để kiểm tra lặp lại bằng `curl` và Postman. | Đã hoàn thiện |
+
+## Cách dùng các bài đã hoàn thiện
+
+Đọc sáu bài đã hoàn thiện theo thứ tự trên và giữ lại kết quả của mỗi chặng trong project thực hành:
+
+1. Sau bài khởi tạo, xác nhận project có thể build test trước khi chuyển sang GraphQL.
+2. Sau bài cấu hình, kiểm tra dependency, vị trí schema và URL endpoint có thống nhất.
+3. Sau bài schema, xem SDL là contract độc lập với dữ liệu và resolver.
+4. Sau bài query, chạy một field nhỏ trước rồi mới mở rộng sang object hoặc list.
+5. Sau bài GraphiQL, đối chiếu schema, operation và execution result; đặc biệt phân biệt lỗi validation, resolver và HTTP.
+6. Sau bài curl/Postman, gửi lại cùng operation qua HTTP client và lưu request hoặc assertion để kiểm tra lặp lại.
+
+Ở chặng cuối, dùng bài [Kiểm thử request bằng curl/Postman](/docs/bat-dau/kiem-thu-request-curl-postman) để chuyển operation đã chạy trong GraphiQL thành smoke test có thể lặp lại. Như vậy, nhóm bao phủ cả đường đi trên UI lẫn kiểm tra request qua HTTP client.
+
+## Nhóm Nền tảng nên đọc trước
+
+Nếu đây là lần đầu bạn học GraphQL, hãy đọc [GraphQL là gì?](/docs/nen-tang/graphql-la-gi) và [Mô hình request/response](/docs/nen-tang/mo-hinh-request-response) trước. Hai bài này giúp bạn hiểu schema, operation, `data`, `errors` và execution result trước khi đi vào cấu hình Spring Boot. Bạn cũng có thể xem [Hệ sinh thái công cụ](/docs/nen-tang/he-sinh-thai-cong-cu) khi muốn đặt GraphiQL, client và công cụ kiểm thử vào đúng bối cảnh.
+
+Nếu đã nắm các khái niệm trên, có thể bắt đầu ngay từ [Khởi tạo project Spring Boot](/docs/bat-dau/khoi-tao-spring-boot).
 
 ## Bước tiếp theo
 
-Bắt đầu từ bài đầu tiên của nhóm hoặc yêu cầu viết chi tiết một trang cụ thể bằng skill `fumadocs-technical-writer`.
+Bắt đầu với [Khởi tạo project Spring Boot](/docs/bat-dau/khoi-tao-spring-boot). Khi đã hoàn thành các chặng trong nhóm này, tiếp tục sang nhóm thiết kế schema để mở rộng contract và các kiểu dữ liệu.
+
+<Cards>
+  <Card title="Nền tảng" href="/docs/nen-tang" description="Ôn lại các khái niệm GraphQL cốt lõi trước khi thực hành." />
+  <Card title="Schema và type system" href="/docs/schema-va-type-system" description="Mở rộng từ schema nhập môn sang thiết kế type system có hệ thống." />
+</Cards>

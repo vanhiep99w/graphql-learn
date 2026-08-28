@@ -1,23 +1,595 @@
 ---
 title: "Kiểm thử request bằng curl/Postman"
-description: "Gửi GraphQL request qua curl và Postman để tạo quy trình kiểm thử lặp lại được."
+description: "Gửi và lặp lại GraphQL request bằng curl và Postman trong ứng dụng Spring Boot."
 ---
 
-Trang này sẽ trình bày **Kiểm thử request bằng curl/Postman** trong bối cảnh xây dựng GraphQL API với Spring Boot.
+import { Step, Steps } from 'fumadocs-ui/components/steps';
+
+Một GraphQL request qua HTTP luôn có cùng nguyên tắc: client gửi một JSON envelope (vỏ JSON) đến endpoint GraphQL, server thực thi `query` và trả về execution result. Sau khi chạy được request trong GraphiQL, bạn có thể dùng đúng operation đó với `curl` hoặc Postman để debug, chia sẻ và lặp lại như một smoke test.
+
+<Callout type="info" title="Phiên bản và trạng thái ví dụ">
+  Các ví dụ giả định ứng dụng Spring Boot 3.5.x, JDK 17, chạy local ở cổng `8080`, không có context path và nhận `POST /graphql`. Response trong bài chỉ là ví dụ minh họa; repository này là docs-only, không có backend Spring Boot để chạy và không có runtime response đã được kiểm chứng. Nếu project dùng version Spring Boot, port, proxy hoặc security khác, hãy đối chiếu cấu hình thực tế trước khi kết luận.
+</Callout>
 
 ## Mục lục
 
-- [Nội dung dự kiến](#nội-dung-dự-kiến)
+- [Phạm vi và giả định](#phạm-vi-và-giả-định)
+- [Chuẩn bị endpoint và schema](#chuẩn-bị-endpoint-và-schema)
+  - [Phân biệt ba thành phần](#phân-biệt-ba-thành-phần)
+  - [Property endpoint theo version Spring Boot](#property-endpoint-theo-version-spring-boot)
+  - [Schema nhập môn dùng trong ví dụ](#schema-nhập-môn-dùng-trong-ví-dụ)
+- [Cấu trúc GraphQL request qua HTTP](#cấu-trúc-graphql-request-qua-http)
+  - [JSON envelope](#json-envelope)
+  - [Query scalar](#query-scalar)
+  - [Query object và list](#query-object-và-list)
+  - [Headers](#headers)
+- [Gửi request bằng curl trên Unix](#gửi-request-bằng-curl-trên-unix)
+  - [Request scalar đầu tiên](#request-scalar-đầu-tiên)
+  - [Request object và list](#request-object-và-list)
+  - [Lặp request với variables và operationName](#lặp-request-với-variables-và-operationname)
+  - [Shell escaping và secret](#shell-escaping-và-secret)
+- [Gửi và lặp request bằng Postman](#gửi-và-lặp-request-bằng-postman)
+  - [Tạo request](#tạo-request)
+  - [Body raw JSON và variables](#body-raw-json-và-variables)
+  - [Headers và environment](#headers-và-environment)
+  - [Lưu example và chạy lại](#lưu-example-và-chạy-lại)
+  - [Thêm assertion trong Postman](#thêm-assertion-trong-postman)
+- [Đọc response và phân loại lỗi](#đọc-response-và-phân-loại-lỗi)
+  - [Response thành công](#response-thành-công)
+  - [Lỗi GraphQL trong body](#lỗi-graphql-trong-body)
+  - [Lỗi HTTP hoặc network](#lỗi-http-hoặc-network)
+  - [Các negative case nên thử](#các-negative-case-nên-thử)
+- [Từ request thành smoke test lặp lại được](#từ-request-thành-smoke-test-lặp-lại-được)
+  - [Checklist chuẩn hóa](#checklist-chuẩn-hóa)
+  - [Bảo vệ secret và công cụ local](#bảo-vệ-secret-và-công-cụ-local)
 - [Bước tiếp theo](#bước-tiếp-theo)
 
-## Nội dung dự kiến
+## Phạm vi và giả định
 
-Nội dung chi tiết sẽ bao gồm khái niệm chính, ví dụ code và các lưu ý thực hành liên quan đến chủ đề này.
+Bài này bắt đầu sau khi bạn đã có schema và resolver cơ bản. Nếu chưa có endpoint, hãy đi theo [Thêm dependency và cấu hình](/docs/bat-dau/them-dependency-va-cau-hinh), [Tạo schema đầu tiên](/docs/bat-dau/tao-schema-dau-tien) và [Viết query đầu tiên](/docs/bat-dau/viet-query-dau-tien) trước. Bài [GraphiQL và công cụ khám phá API](/docs/bat-dau/graphiql-va-kham-pha-api) giải thích cách chạy cùng các operation trong giao diện.
 
-<Callout type="info" title="Trang placeholder">
-Đây là trang khung. Hãy dùng skill `fumadocs-technical-writer` để viết đầy đủ trang này trong bước tiếp theo.
+Mục tiêu thực hành của trang này là:
+
+- tạo một request JSON đúng contract GraphQL;
+- gửi query scalar, object và list;
+- giữ `query` ổn định nhưng thay `variables` hoặc environment để chạy lại;
+- đọc đồng thời HTTP status, `data` và `errors`;
+- ghi lại một positive case và các negative case có thể dùng làm smoke test.
+
+Các ví dụ dùng schema lời chào và sách của nhóm bài nhập môn. Schema thật của project luôn là nguồn sự thật cuối cùng.
+
+## Chuẩn bị endpoint và schema
+
+Trước khi mở `curl` hoặc Postman, xác định URL mà server Spring Boot thực sự đang lắng nghe. Đừng lấy URL của trang GraphiQL làm URL gửi request.
+
+### Phân biệt ba thành phần
+
+| Thành phần | Vai trò | URL minh họa |
+| --- | --- | --- |
+| Ứng dụng GraphQL server | Process Spring Boot đọc schema và gọi resolver | `http://localhost:8080` |
+| GraphQL HTTP endpoint | Route nhận body JSON, thường bằng `POST` | `http://localhost:8080/graphql` |
+| GraphiQL | UI trên trình duyệt để soạn request và xem kết quả | `http://localhost:8080/graphiql` |
+| `curl` hoặc Postman | HTTP client gửi request đến endpoint | Gửi đến `/graphql`, không gửi đến `/graphiql` |
+
+GraphiQL chỉ là một client có giao diện. Khi bấm **Run**, nó gửi request tới GraphQL endpoint đã cấu hình. Mở được `/graphiql` không chứng minh rằng `/graphql` đã nhận request, schema đã có resolver hoặc authentication đã hợp lệ.
+
+### Property endpoint theo version Spring Boot
+
+Trong các ví dụ của bộ tài liệu này, Spring Boot 3.5.x dùng property HTTP endpoint sau:
+
+```properties
+spring.graphql.http.path=/graphql
+spring.graphql.graphiql.enabled=true
+spring.graphql.graphiql.path=/graphiql
+```
+
+Với Spring Boot 3.4.x trở xuống, property endpoint HTTP trong ví dụ là:
+
+```properties
+spring.graphql.path=/graphql
+```
+
+Không cấu hình đồng thời `spring.graphql.path` và `spring.graphql.http.path` cho cùng một project. Nếu dùng dòng version khác, hãy kiểm tra reference documentation hoặc configuration metadata của đúng version thay vì đoán tên key. `server.port`, `server.servlet.context-path` và reverse proxy cũng có thể làm URL thực tế khác ví dụ này.
+
+Nói ngắn gọn: hãy lấy `base URL` và path từ cấu hình runtime của ứng dụng, sau đó dùng cùng URL đó trong `curl` và Postman. Property `spring.graphql.graphiql.path` chỉ quyết định trang UI, không quyết định nơi client HTTP gửi body GraphQL.
+
+### Schema nhập môn dùng trong ví dụ
+
+Các request bên dưới dựa trên schema sau, nhất quán với [Tạo schema đầu tiên](/docs/bat-dau/tao-schema-dau-tien) và [Viết query đầu tiên](/docs/bat-dau/viet-query-dau-tien):
+
+```graphql title="schema.graphqls"
+schema {
+  query: Query
+}
+
+type Query {
+  hello: String!
+  featuredBook: Book
+  books: [Book!]!
+}
+
+type Book {
+  id: ID!
+  title: String!
+  author: String!
+  publishedYear: Int!
+}
+```
+
+`hello` là scalar nên query chỉ cần viết tên field. `featuredBook` là một object có thể `null`. `books` là list không `null` gồm các object `Book` không `null`, nên query phải có selection set như `id`, `title` hoặc `author`.
+
+Schema trên không có argument `limit`, filter hay sort cho `books`. Không tự thêm những field hoặc argument đó vào request chỉ vì thấy chúng trong một API khác. Nếu schema project đã thay đổi, hãy dùng Docs explorer trong GraphiQL để đối chiếu tên và kiểu hiện tại.
+
+## Cấu trúc GraphQL request qua HTTP
+
+GraphQL không gửi một URL riêng cho từng field. Client thường gửi `POST` đến cùng một endpoint và đặt operation trong JSON body.
+
+### JSON envelope
+
+Một envelope có ba trường thường gặp:
+
+| Trường | Bắt buộc | Kiểu JSON | Ý nghĩa |
+| --- | --- | --- | --- |
+| `query` | Có | string | GraphQL document chứa operation và selection set. |
+| `variables` | Không, trừ khi operation khai báo biến bắt buộc | object | Giá trị runtime của các biến; key không có dấu `$`. |
+| `operationName` | Không nếu document chỉ có một operation | string hoặc `null` | Chọn operation có tên cần chạy khi document có nhiều operation; nên ghi rõ để log dễ đọc. |
+
+Envelope tối thiểu cho `hello` là:
+
+```json
+{
+  "query": "query FirstHello { hello }",
+  "variables": {},
+  "operationName": "FirstHello"
+}
+```
+
+`query` là một **string JSON**, không phải một object lồng có key `hello`. Nếu query nhiều dòng được viết trực tiếp trong JSON, dấu xuống dòng phải được biểu diễn bằng `\n`, hoặc bạn có thể dùng heredoc/file như các ví dụ `curl` phía dưới. Giá trị Boolean và số trong `variables` phải giữ đúng kiểu JSON; không đổi `true` thành chuỗi `"true"`.
+
+Nếu document có nhiều operation, `operationName` phải khớp chính xác tên operation được chọn:
+
+```json
+{
+  "query": "query FirstHello { hello }\n\nquery Books { books { id title } }",
+  "operationName": "Books"
+}
+```
+
+Tên biến trong operation có dấu `$`, còn key trong `variables` thì không. Ví dụ `$includeAuthor` đi với key `includeAuthor`.
+
+### Query scalar
+
+Operation scalar đầu tiên dùng cùng tên `FirstHello` trong GraphiQL, `curl` và Postman:
+
+```graphql
+query FirstHello {
+  hello
+}
+```
+
+Vì `hello` trả về `String!`, không được thêm selection set như `hello { value }`. Scalar là điểm kết thúc của selection set.
+
+### Query object và list
+
+Object và list object cần các field con. Query sau đọc cả sách nổi bật và danh sách sách:
+
+```graphql
+query Books {
+  featuredBook {
+    id
+    title
+    author
+    publishedYear
+  }
+  books {
+    id
+    title
+    author
+    publishedYear
+  }
+}
+```
+
+Nếu chỉ cần kiểm tra list, có thể giảm selection set xuống `books { id title }`. Server chỉ trả field mà request yêu cầu; nó không tự thêm `author` hoặc `publishedYear`.
+
+### Headers
+
+Headers thuộc lớp HTTP, không nằm trong JSON envelope. Với request JSON thông thường, dùng:
+
+```http
+Content-Type: application/json
+Accept: application/json
+```
+
+Khi ứng dụng đã cấu hình authentication, thêm header theo contract của lớp security:
+
+```http
+Authorization: Bearer <access-token>
+```
+
+`Content-Type` mô tả format của request body. `Accept` mô tả format response mong muốn. `Authorization` chỉ có tác dụng khi backend đã có cơ chế xác thực tương ứng; thêm header này không tự bật Spring Security và cũng không cấp quyền cho resolver. `X-Request-Id` hoặc header trace tương tự chỉ là tùy chọn nếu hệ thống có quy ước sử dụng.
+
+## Gửi request bằng curl trên Unix
+
+Các lệnh trong phần này dùng Bash hoặc Zsh trên macOS/Linux và thường cũng dùng được trong Git Bash. Đặt URL vào biến giúp đổi port hoặc endpoint mà không phải sửa từng body:
+
+```bash
+GRAPHQL_URL="${GRAPHQL_URL:-http://localhost:8080/graphql}"
+```
+
+Nếu project có context path hoặc dùng port khác, đặt lại `GRAPHQL_URL` theo URL thực tế. Dùng `--include` (`-i`) để nhìn cả HTTP status và headers; `--silent --show-error` ẩn progress nhưng vẫn hiện lỗi kết nối.
+
+### Request scalar đầu tiên
+
+```bash
+curl --silent --show-error --include \
+  --request POST "$GRAPHQL_URL" \
+  --header 'Content-Type: application/json' \
+  --header 'Accept: application/json' \
+  --data-raw '{"query":"query FirstHello { hello }","operationName":"FirstHello"}'
+```
+
+Body này có cùng operation với phần GraphQL ở trên. `variables` có thể bỏ qua vì operation không khai báo biến. Một response thành công minh họa có thể có dạng sau; giá trị chuỗi phụ thuộc resolver của ứng dụng:
+
+```json
+{
+  "data": {
+    "hello": "Xin chào từ Spring for GraphQL!"
+  }
+}
+```
+
+Lệnh trên có thể in thêm status line và response headers vì dùng `--include`. Khi lưu output để xử lý tự động, tách headers khỏi body theo cách phù hợp với script của bạn và luôn kiểm tra cả body GraphQL.
+
+### Request object và list
+
+Với body dài hơn, heredoc giúp giữ query dễ đọc mà không phải ghép nhiều đoạn shell:
+
+```bash
+curl --silent --show-error --include \
+  --request POST "$GRAPHQL_URL" \
+  --header 'Content-Type: application/json' \
+  --header 'Accept: application/json' \
+  --data @- <<'JSON'
+{
+  "query": "query Books {\n  featuredBook {\n    id\n    title\n    author\n    publishedYear\n  }\n  books {\n    id\n    title\n    author\n    publishedYear\n  }\n}",
+  "operationName": "Books"
+}
+JSON
+```
+
+Dấu `JSON` được đặt trong nháy đơn ở `<<'JSON'`, vì vậy shell không nội suy biến, dấu `$` hoặc backtick trong nội dung. `--data @-` bảo `curl` đọc body từ standard input. Cách tương đương là lưu envelope vào file không chứa secret rồi dùng:
+
+```bash
+curl --silent --show-error --include \
+  --request POST "$GRAPHQL_URL" \
+  --header 'Content-Type: application/json' \
+  --header 'Accept: application/json' \
+  --data-binary @requests/books.json
+```
+
+File `requests/books.json` vẫn phải là JSON hợp lệ và trường `query` vẫn là string JSON có `\n` nếu cần xuống dòng.
+
+### Lặp request với variables và operationName
+
+Schema nhập môn chưa có argument cho `books`, nhưng có thể minh họa variables bằng directive tích hợp `@include`. Query giữ nguyên; chỉ thay giá trị `includeAuthor` trong envelope:
+
+```graphql
+query BooksWithAuthor($includeAuthor: Boolean!) {
+  books {
+    id
+    title
+    author @include(if: $includeAuthor)
+    publishedYear
+  }
+}
+```
+
+Gửi operation bằng `curl`:
+
+```bash
+curl --silent --show-error --include \
+  --request POST "$GRAPHQL_URL" \
+  --header 'Content-Type: application/json' \
+  --header 'Accept: application/json' \
+  --data @- <<'JSON'
+{
+  "query": "query BooksWithAuthor($includeAuthor: Boolean!) {\n  books {\n    id\n    title\n    author @include(if: $includeAuthor)\n    publishedYear\n  }\n}",
+  "variables": {
+    "includeAuthor": true
+  },
+  "operationName": "BooksWithAuthor"
+}
+JSON
+```
+
+Chạy lại cùng lệnh với `"includeAuthor": false` sẽ giữ nguyên operation và kiểm tra một biến thể khác của response. `Boolean!` là biến bắt buộc; nếu bỏ key hoặc truyền `null`, GraphQL phải báo lỗi. Giá trị `true`/`false` là Boolean JSON, không đặt trong dấu ngoặc kép.
+
+### Shell escaping và secret
+
+Shell escaping là nguồn lỗi phổ biến khi biến một GraphQL document nhiều dòng thành JSON. Giữ các quy tắc sau:
+
+- Dùng nháy đơn quanh JSON một dòng khi query không chứa dấu nháy đơn. Các dấu nháy kép bên trong JSON khi đó không bị shell xử lý.
+- Dùng heredoc với delimiter được quote (`<<'JSON'`) hoặc dùng `--data-binary @file` cho query dài. Đây là lựa chọn dễ đọc và ít lỗi hơn việc escape thủ công.
+- Nếu dùng nháy kép ngoài cùng, phải xử lý mọi dấu `"`, `$`, backtick và một số ký tự đặc biệt của shell. Đừng dán JSON chưa escape vào một chuỗi shell nháy kép.
+- Dấu xuống dòng trong giá trị JSON của `query` phải là `\n`. Một heredoc vẫn truyền JSON, không biến chuỗi nhiều dòng chưa escape thành JSON hợp lệ.
+- Cú pháp Bash/Zsh không tự động giống PowerShell hoặc Command Prompt. Không copy nguyên lệnh Unix sang shell khác mà chưa đổi quoting.
+
+Không ghi access token thật trong lệnh, request file hoặc tài liệu. Có thể lấy token từ biến môi trường trong phiên local:
+
+```bash
+: "${ACCESS_TOKEN:?Hãy đặt ACCESS_TOKEN trong shell trước khi gửi request}"
+
+curl --silent --show-error --include \
+  --request POST "$GRAPHQL_URL" \
+  --header 'Content-Type: application/json' \
+  --header "Authorization: Bearer ${ACCESS_TOKEN}" \
+  --data-raw '{"query":"query FirstHello { hello }","operationName":"FirstHello"}'
+```
+
+Biến môi trường giảm việc dán secret vào body, nhưng shell history, process log và CI log vẫn cần được quản lý. Dùng cơ chế secret của môi trường thay vì coi biến môi trường là nơi lưu trữ an toàn tuyệt đối.
+
+## Gửi và lặp request bằng Postman
+
+Postman phù hợp khi bạn muốn lưu collection, đổi environment, xem headers/response và chạy lại cùng một request mà không sửa thủ công URL. Tên menu có thể thay đổi nhẹ theo version Postman; điều cần giữ ổn định là HTTP request cuối cùng trên wire.
+
+### Tạo request
+
+<Steps>
+<Step>
+
+**Tạo một HTTP request mới** trong collection, đặt tên chẳng hạn `GraphQL - FirstHello` hoặc `GraphQL - BooksWithAuthor`. Tên request không ảnh hưởng đến `operationName` trong body.
+
+</Step>
+<Step>
+
+**Chọn method `POST`** và đặt URL là `{{baseUrl}}{{graphqlPath}}`. Với giả định local, hai biến này lần lượt có giá trị `http://localhost:8080` và `/graphql`.
+
+</Step>
+<Step>
+
+**Mở Body → raw → JSON.** Dán JSON envelope vào editor. Việc chọn JSON giúp Postman gửi `Content-Type: application/json`; vẫn kiểm tra lại tab Headers trước khi bấm **Send**.
+
+</Step>
+<Step>
+
+**Chọn environment đúng** ở góc trên của Postman, sau đó bấm **Send**. Nếu response báo 404, trước hết xem URL đã trỏ đến `/graphql` hay vô tình trỏ đến `/graphiql`.
+
+</Step>
+</Steps>
+
+Postman có thể cung cấp chế độ GraphQL riêng với ô nhập query và variables. Chế độ đó cũng được, nhưng hãy kiểm tra request preview hoặc response để chắc rằng payload cuối cùng có các trường `query`, `variables` và `operationName` như contract. Body **raw JSON** là cách rõ ràng nhất để đối chiếu với request `curl`.
+
+### Body raw JSON và variables
+
+Trong Body → raw → JSON, dùng envelope sau để chạy operation có biến:
+
+```json
+{
+  "query": "query BooksWithAuthor($includeAuthor: Boolean!) {\n  books {\n    id\n    title\n    author @include(if: $includeAuthor)\n    publishedYear\n  }\n}",
+  "variables": {
+    "includeAuthor": true
+  },
+  "operationName": "BooksWithAuthor"
+}
+```
+
+Khi muốn lặp lại với selection behavior khác, chỉ đổi `variables.includeAuthor` thành `false`. Không đổi `$includeAuthor` thành `includeAuthor` trong GraphQL document; dấu `$` chỉ xuất hiện trong document, còn key JSON không có dấu đó.
+
+Với query scalar, body đơn giản hơn:
+
+```json
+{
+  "query": "query FirstHello { hello }",
+  "operationName": "FirstHello"
+}
+```
+
+Nếu Postman hiển thị một ô **Variables** riêng trong chế độ GraphQL, nhập object `{"includeAuthor":true}` ở đó, không nhập lại toàn bộ envelope. Nếu dùng Body raw JSON, giữ variables bên trong body như các ví dụ trên. Hai giao diện chỉ là hai cách tạo cùng một HTTP payload.
+
+### Headers và environment
+
+Trong tab **Headers**, đặt tối thiểu:
+
+| Key | Value | Khi nào dùng |
+| --- | --- | --- |
+| `Content-Type` | `application/json` | Gần như bắt buộc cho raw JSON request. |
+| `Accept` | `application/json` | Yêu cầu response JSON, nên ghi rõ trong smoke test. |
+| `Authorization` | `Bearer {{accessToken}}` | Chỉ khi backend yêu cầu bearer token. |
+| `X-Request-Id` | `postman-local` | Tùy chọn, nếu hệ thống có correlation ID. |
+
+Postman có thể tự thêm `Content-Type` khi chọn raw JSON, nhưng vẫn kiểm tra header thực tế. Header `Authorization` phải đúng format mà Spring Security hoặc gateway của project yêu cầu. Nếu endpoint không có authentication, bỏ header này thay vì gửi token giả.
+
+Tạo một environment local với các biến không nhạy cảm sau:
+
+| Variable | Initial value minh họa | Ghi chú |
+| --- | --- | --- |
+| `baseUrl` | `http://localhost:8080` | Có thể đổi sang staging mà không sửa request. |
+| `graphqlPath` | `/graphql` | Không dùng `/graphiql`. |
+| `accessToken` | để trống hoặc giá trị secret trong vault | Không commit giá trị thật vào collection/export. |
+
+URL dùng `{{baseUrl}}{{graphqlPath}}`, còn header dùng `Bearer {{accessToken}}`. Postman thay biến trước khi gửi request. Hãy kiểm tra environment đang active; một environment khác có thể trỏ sang port hoặc endpoint cũ.
+
+### Lưu example và chạy lại
+
+Lưu request vào collection cùng với operation name, body và mô tả ngắn về điều kiện thành công. Collection có thể được chia thành hai thư mục:
+
+- `positive`: `FirstHello` và `BooksWithAuthor` phải trả dữ liệu đúng shape;
+- `negative`: field sai, thiếu variable hoặc thiếu authentication phải bị từ chối theo contract của ứng dụng.
+
+Lưu **example response** chỉ để minh họa shape, không dùng dữ liệu hoặc token production. Khi dùng Collection Runner, thay đổi iteration data hoặc environment variables để gửi lại cùng request. Đừng biến một response thành công một lần thành bằng chứng rằng resolver luôn đúng; smoke test cần assertion ổn định về status, JSON shape và `errors`.
+
+### Thêm assertion trong Postman
+
+Trong tab **Tests** của request `BooksWithAuthor`, có thể thêm các assertion tối thiểu sau:
+
+```javascript
+pm.test("HTTP status là 200", function () {
+  pm.response.to.have.status(200);
+});
+
+const body = pm.response.json();
+
+pm.test("Response không có lỗi GraphQL", function () {
+  pm.expect(body.errors || []).to.have.length(0);
+});
+
+pm.test("Response có data.books", function () {
+  pm.expect(body).to.have.property("data");
+  pm.expect(body.data).to.have.property("books");
+});
+```
+
+`200` chỉ là giả định thường gặp cho request GraphQL hợp lệ, không phải quy tắc đủ để kết luận thành công. Assertion `errors` và `data.books` mới kiểm tra phần GraphQL của smoke test. Nếu server dùng policy HTTP khác, thay expected status theo contract đã thống nhất với backend.
+
+## Đọc response và phân loại lỗi
+
+Khi debug, đọc response theo thứ tự: HTTP status và headers, JSON envelope, rồi chi tiết trong `errors`. GraphQL có thể trả HTTP `200` nhưng body vẫn có lỗi thực thi, nên chỉ nhìn status sẽ bỏ sót failure.
+
+### Response thành công
+
+Với query `FirstHello`, body thành công minh họa là:
+
+```json
+{
+  "data": {
+    "hello": "Xin chào từ Spring for GraphQL!"
+  }
+}
+```
+
+Với query `Books`, shape có thể là:
+
+```json
+{
+  "data": {
+    "featuredBook": {
+      "id": "book-1",
+      "title": "Effective Java",
+      "author": "Joshua Bloch",
+      "publishedYear": 2018
+    },
+    "books": [
+      {
+        "id": "book-1",
+        "title": "Effective Java",
+        "author": "Joshua Bloch",
+        "publishedYear": 2018
+      }
+    ]
+  }
+}
+```
+
+Đây là response minh họa dựa trên dữ liệu in-memory của bài trước, không phải output đã chạy trong repository. Resolver thật có thể trả danh sách khác. `featuredBook` hợp lệ khi là `null` vì schema khai báo nullable; `books` phải là list theo schema `[Book!]!`. Field không nằm trong selection set sẽ không xuất hiện trong `data`.
+
+### Lỗi GraphQL trong body
+
+Lỗi parse, validation hoặc execution thường được biểu diễn bằng mảng `errors`. Ví dụ query gõ nhầm field `helo`:
+
+```json
+{
+  "errors": [
+    {
+      "message": "Cannot query field \"helo\" on type \"Query\".",
+      "locations": [
+        {
+          "line": 2,
+          "column": 3
+        }
+      ]
+    }
+  ]
+}
+```
+
+Message, `locations` và `extensions` có thể khác theo version `graphql-java` và error handler. Điểm quan trọng là resolver `hello()` không được gọi khi query fail validation.
+
+Lỗi execution có thể đi cùng `data` một phần:
+
+```json
+{
+  "data": {
+    "featuredBook": null,
+    "books": []
+  },
+  "errors": [
+    {
+      "message": "Không thể đọc sách nổi bật.",
+      "path": ["featuredBook"]
+    }
+  ]
+}
+```
+
+Đây cũng chỉ là shape minh họa. `path` cho biết field nào gặp lỗi; quy tắc nullable của schema quyết định lỗi có lan lên parent hay không. Vì vậy, client và smoke test phải xem `errors` ngay cả khi `data` tồn tại.
+
+### Lỗi HTTP hoặc network
+
+Các lỗi sau xảy ra ở lớp HTTP hoặc network, trước khi có execution result GraphQL hoàn chỉnh. Status thực tế phụ thuộc Spring Security, gateway, proxy và cấu hình handler của project:
+
+| Dấu hiệu | Nơi kiểm tra đầu tiên |
+| --- | --- |
+| Connection refused hoặc timeout | Process Spring Boot, port, firewall và `GRAPHQL_URL`. |
+| `404 Not Found` | Path endpoint, context path, reverse proxy; có thể đã dùng `/graphiql` thay vì `/graphql`. |
+| `405 Method Not Allowed` | HTTP method; tutorial này dùng `POST`. Kiểm tra không gửi POST vào trang GraphiQL. |
+| `400` hoặc `415` | JSON malformed, thiếu `Content-Type` hoặc body không phải envelope hợp lệ. |
+| `401 Unauthorized` | Thiếu, hết hạn hoặc sai format `Authorization`. |
+| `403 Forbidden` | Token được xác thực nhưng không đủ quyền, hoặc policy gateway từ chối. |
+| `Failed to fetch` trong browser | CORS, URL, proxy hoặc lỗi kết nối; với `curl`/Postman hãy đọc status và body trực tiếp. |
+
+Dùng `curl --include` hoặc mở Postman Console để thấy request URL, method, headers và response body. Không gọi mọi `errors` là lỗi HTTP, và cũng không gọi mọi HTTP `200` là request GraphQL thành công.
+
+### Các negative case nên thử
+
+Thử từng case riêng giúp xác nhận smoke test không chỉ kiểm tra đường dẫn tồn tại:
+
+1. **Field không tồn tại:** gửi `query InvalidField { helo }`. Kỳ vọng body có `errors`; message cụ thể phụ thuộc `graphql-java`.
+2. **Object thiếu selection set:** gửi `query Books { books }`. GraphQL phải từ chối vì `books` trả object list nhưng chưa chọn field con.
+3. **Thiếu biến bắt buộc:** giữ `$includeAuthor: Boolean!` nhưng gửi `"variables": {}`. Kỳ vọng lỗi validation/input, không phải một response dữ liệu hợp lệ.
+4. **JSON hỏng hoặc sai content type:** gửi body thiếu dấu `}` hoặc bỏ `Content-Type`. Kỳ vọng lỗi HTTP hoặc lỗi parse theo server; ghi nhận status thực tế trong contract của project.
+5. **Sai URL hoặc method:** gửi đến `/graphiql` hoặc dùng method không được route hỗ trợ. Đây là lỗi transport, không phải lỗi resolver.
+6. **Authentication không hợp lệ:** bỏ `Authorization`, dùng token hết hạn hoặc token thiếu scope. Kỳ vọng `401`/`403` hoặc error shape mà lớp security của ứng dụng quy định.
+
+Với negative test, failure được mong đợi phải trở thành **pass của test** khi hệ thống từ chối đúng cách. Đừng dùng cùng assertion `errors` rỗng cho cả positive và negative collection.
+
+## Từ request thành smoke test lặp lại được
+
+Smoke test là phép kiểm tra nhỏ, nhanh, chạy lại được để phát hiện các lỗi lớn như server không lên, endpoint sai, schema không nạp, resolver không trả shape mong đợi hoặc auth bị hỏng. Nó không thay thế unit test, integration test hay contract test.
+
+### Checklist chuẩn hóa
+
+Dùng checklist này cho mỗi request muốn đưa vào collection hoặc script:
+
+- [ ] Xác định URL từ `spring.graphql.http.path` hoặc `spring.graphql.path` đúng với version, cùng `server.port` và context path thực tế.
+- [ ] Dùng `POST` đến `/graphql`, không dùng URL `/graphiql` của UI.
+- [ ] Ghi rõ `Content-Type: application/json` và `Accept: application/json`.
+- [ ] Đặt query trong trường `query`; nếu có biến, đặt object trong `variables` và giữ kiểu JSON đúng.
+- [ ] Đặt `operationName` cho operation có tên, đặc biệt khi document có nhiều operation.
+- [ ] Lưu body trong file/collection có version control nhưng không chứa secret.
+- [ ] Lấy bearer token từ environment hoặc secret store; không hard-code token trong Markdown, curl history, Postman collection hay CI log.
+- [ ] Kiểm tra HTTP status theo contract của ứng dụng.
+- [ ] Parse JSON và fail khi `errors` có phần tử trong positive case.
+- [ ] Assert một giá trị hoặc shape ổn định, chẳng hạn `data.hello` là string hoặc `data.books` là list. Không assert text dữ liệu biến động nếu không cần.
+- [ ] Chạy ít nhất một negative case riêng để chắc rằng field sai, thiếu variable và auth sai không bị coi là thành công.
+- [ ] Chạy lại cùng request sau khi restart app hoặc đổi environment để kiểm tra nó không phụ thuộc vào state của UI GraphiQL.
+
+Một smoke test `FirstHello` tối thiểu nên xác nhận ba điểm: server trả HTTP status theo contract, body là JSON không có `errors`, và `data.hello` tồn tại. Smoke test `Books` nên xác nhận `data.books` là list; `data.featuredBook` có thể `null` vì schema cho phép.
+
+### Bảo vệ secret và công cụ local
+
+<Callout type="warn" title="Không mang cấu hình local thiếu an toàn vào production">
+  Không commit access token, refresh token, cookie, Postman environment export có giá trị thật hoặc request file chứa credentials. Collection có thể commit nếu chỉ chứa placeholder như `{{accessToken}}`; giá trị thật nên nằm trong secret manager hoặc environment được kiểm soát. `spring.graphql.graphiql.enabled=true` và các công cụ introspection/GraphiQL nên giới hạn ở local hoặc development. Nếu production cần giữ lại, hãy bảo vệ cả `/graphiql` và `/graphql` bằng authentication, authorization và network policy phù hợp; ẩn UI không tự bảo vệ endpoint API.
 </Callout>
+
+`curl` và Postman là client HTTP, không phải lớp bảo mật. Token được gửi ở header vẫn phải được TLS, log redaction và chính sách lưu trữ bảo vệ khi chạy ngoài local. Khi chia sẻ bug report, giữ lại method, URL đã che secret, body không nhạy cảm, status và `errors` cần thiết; không chụp nguyên header authorization.
 
 ## Bước tiếp theo
 
-Sau khi trang được điền nội dung, đọc bài kế tiếp trong nhóm để tiếp tục lộ trình.
+Bạn đã có thể gửi cùng một GraphQL request từ UI, terminal và collection. Quay lại [GraphiQL và công cụ khám phá API](/docs/bat-dau/graphiql-va-kham-pha-api) nếu cần kiểm tra schema trước khi viết request. Khi cần truyền argument thực tế thay vì directive minh họa, đọc [Variables, arguments và fragments](/docs/query-mutation-subscription/variables-arguments-fragments). Phần authentication chi tiết nằm ở [Authentication với JWT/OAuth2](/docs/bao-mat-va-quan-sat/authentication-jwt-oauth2), còn chiến lược test rộng hơn nằm ở [Chiến lược kiểm thử](/docs/production/chien-luoc-kiem-thu).
+
+<Cards>
+  <Card title="GraphiQL và công cụ khám phá API" href="/docs/bat-dau/graphiql-va-kham-pha-api" description="Đối chiếu schema, operation và execution result trong giao diện." />
+  <Card title="Variables, arguments và fragments" href="/docs/query-mutation-subscription/variables-arguments-fragments" description="Mở rộng request với biến, argument và fragment theo schema thực tế." />
+  <Card title="Chiến lược kiểm thử" href="/docs/production/chien-luoc-kiem-thu" description="Đặt smoke test curl/Postman vào bức tranh kiểm thử GraphQL rộng hơn." />
+</Cards>

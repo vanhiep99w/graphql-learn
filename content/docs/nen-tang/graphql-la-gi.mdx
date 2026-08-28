@@ -3,21 +3,625 @@ title: "GraphQL là gì?"
 description: "Giải thích GraphQL, schema, operation và lý do GraphQL phù hợp với API có nhiều loại client."
 ---
 
-Trang này sẽ trình bày **GraphQL là gì?** trong bối cảnh xây dựng GraphQL API với Spring Boot.
+GraphQL là một ngôn ngữ truy vấn cho API (giao diện để các phần mềm giao tiếp) và một runtime thực thi request theo schema. Thay vì nhận một payload cố định rồi tự bỏ đi những field không dùng, client mô tả những field mình cần. GraphQL server kiểm tra mô tả đó với schema, lấy dữ liệu qua resolver và tạo execution result theo đúng hình dạng client đã chọn.
+
+<Callout type="info" title="Phạm vi của bài">
+  Bài này xây dựng mental model (mô hình tư duy) từ schema đến response. Các SDL, query, resolver và JSON bên dưới là ví dụ minh họa độc lập; chúng không giả định một backend, framework hoặc endpoint runtime cụ thể. Phần tích hợp Spring for GraphQL sẽ dùng lại các khái niệm này ở những bài sau.
+</Callout>
 
 ## Mục lục
 
-- [Nội dung dự kiến](#nội-dung-dự-kiến)
+- [GraphQL là gì?](#graphql-là-gì)
+- [Mental model: client hỏi schema](#mental-model-client-hỏi-schema)
+  - [Một request đi qua những đâu?](#một-request-đi-qua-những-đâu)
+  - [Schema là contract, không phải database](#schema-là-contract-không-phải-database)
+- [Đọc schema: type, field và SDL](#đọc-schema-type-field-và-sdl)
+  - [Ví dụ schema nhỏ](#ví-dụ-schema-nhỏ)
+  - [Object type và field](#object-type-và-field)
+  - [Scalar, list và nullable](#scalar-list-và-nullable)
+- [Client dùng schema để yêu cầu dữ liệu](#client-dùng-schema-để-yêu-cầu-dữ-liệu)
+  - [Selection set quyết định shape của response](#selection-set-quyết-định-shape-của-response)
+  - [Một query từ field đến JSON](#một-query-từ-field-đến-json)
+  - [Truyền argument bằng variables](#truyền-argument-bằng-variables)
+  - [Khi query không khớp schema](#khi-query-không-khớp-schema)
+- [Operation: query, mutation và subscription](#operation-query-mutation-và-subscription)
+  - [Query đọc dữ liệu](#query-đọc-dữ-liệu)
+  - [Mutation thay đổi dữ liệu](#mutation-thay-đổi-dữ-liệu)
+  - [Subscription nhận sự kiện](#subscription-nhận-sự-kiện)
+- [Resolver và quá trình thực thi](#resolver-và-quá-trình-thực-thi)
+  - [Resolver làm gì?](#resolver-làm-gì)
+  - [Các bước execution](#các-bước-execution)
+  - [Execution result gồm data và errors](#execution-result-gồm-data-và-errors)
+- [Introspection: client khám phá schema](#introspection-client-khám-phá-schema)
+- [Vì sao nhiều loại client hưởng lợi?](#vì-sao-nhiều-loại-client-hưởng-lợi)
+  - [Mobile, web và tool nội bộ](#mobile-web-và-tool-nội-bộ)
+  - [Lợi ích có điều kiện](#lợi-ích-có-điều-kiện)
+- [GraphQL và REST: nhìn nhanh](#graphql-và-rest-nhìn-nhanh)
+- [Điểm cần nhớ](#điểm-cần-nhớ)
 - [Bước tiếp theo](#bước-tiếp-theo)
 
-## Nội dung dự kiến
+## GraphQL là gì?
 
-Nội dung chi tiết sẽ bao gồm khái niệm chính, ví dụ code và các lưu ý thực hành liên quan đến chủ đề này.
+GraphQL có hai phần liên quan chặt chẽ:
 
-<Callout type="info" title="Trang placeholder">
-Đây là trang khung. Hãy dùng skill `fumadocs-technical-writer` để viết đầy đủ trang này trong bước tiếp theo.
+- **Ngôn ngữ truy vấn:** cú pháp để client viết operation và chọn field trong schema.
+- **Runtime thực thi:** phần mềm phía server parse (đọc cú pháp), validate (kiểm tra hợp lệ) rồi thực thi operation bằng các resolver.
+
+GraphQL không phải database, ORM hay một kiểu lưu trữ dữ liệu. Schema không tự tạo bảng, bản ghi hoặc service. Một resolver có thể đọc từ database, gọi REST service khác, lấy dữ liệu từ bộ nhớ hoặc kết hợp nhiều nguồn. GraphQL cung cấp contract và quy tắc thực thi; ứng dụng quyết định dữ liệu nằm ở đâu.
+
+Điểm cốt lõi là client không yêu cầu “một màn hình” hay “một DTO cố định”. Client yêu cầu các field cụ thể. Ví dụ, một màn hình thẻ sách có thể chỉ cần `id` và `title`, trong khi màn hình chi tiết cần thêm `author` và `publishedYear`. Cả hai request có thể đi qua cùng schema nếu schema công khai các field đó.
+
+## Mental model: client hỏi schema
+
+Hãy hình dung schema như menu có kiểu của một API. Client chỉ được chọn món có trong menu, và kiểu của món đó cho biết client phải tiếp tục chọn như thế nào. Nếu một field trả về scalar, client dừng ở field đó. Nếu field trả về object, client phải chọn các field con.
+
+Luồng khái quát có thể viết ngắn như sau:
+
+```text
+Client viết operation và chọn field
+                │
+                ▼
+Schema kiểm tra tên field, argument và kiểu dữ liệu
+                │
+                ▼
+GraphQL runtime gọi resolver cho các field đã chọn
+                │
+                ▼
+Resolver lấy dữ liệu từ service, database hoặc nguồn khác
+                │
+                ▼
+Execution result phản ánh selection set của client
+```
+
+### Một request đi qua những đâu?
+
+Lấy field `books` trả về danh sách `Book` làm ví dụ. Client không cần biết resolver gọi repository hay một service từ xa. Client chỉ cần đọc schema để viết operation hợp lệ:
+
+1. Client viết `query BookCards` và chọn `books`.
+2. Vì `books` trả về object `Book`, client chọn tiếp `id` và `title` bên trong cặp dấu `{ ... }`.
+3. GraphQL runtime parse operation và đối chiếu từng field với schema.
+4. Nếu hợp lệ, runtime gọi resolver của `Query.books`. Sau đó, nó đọc các field `id` và `title` của từng `Book` theo selection set.
+5. Runtime đặt các giá trị đã chọn vào `data` của execution result. Field `author` không xuất hiện nếu client không yêu cầu nó.
+
+Validation xảy ra trước khi resolver của một field không hợp lệ được gọi. Vì vậy, lỗi gõ `titel` thay vì `title` là lỗi contract/query, không phải lỗi database.
+
+### Schema là contract, không phải database
+
+**Schema** là contract (hợp đồng) có kiểu của GraphQL API. Nó mô tả operation nào tồn tại, field nào được chọn, argument nào nhận vào và kết quả có kiểu gì. Schema không nói chi tiết mọi câu SQL hoặc mọi HTTP call phía sau field.
+
+| Thành phần | Câu hỏi nó trả lời | Ví dụ |
+| --- | --- | --- |
+| Schema | Client được yêu cầu điều gì? | `books: [Book!]!` |
+| Type và field | Kết quả có hình dạng nào? | `Book.title: String!` |
+| Resolver | Lấy giá trị bằng cách nào? | Gọi `catalogService.findAll()` |
+| Data source | Dữ liệu thật ở đâu? | Database, service khác hoặc bộ nhớ |
+| Client | Muốn nhận field nào? | `books { id title }` |
+
+Tách các vai trò này giúp tránh một nhầm lẫn phổ biến: thêm `title` vào SDL không tự làm xuất hiện title trong database. Field đó chỉ trở thành một phần contract; resolver vẫn phải cung cấp giá trị phù hợp khi field được yêu cầu.
+
+## Đọc schema: type, field và SDL
+
+SDL (*Schema Definition Language*, ngôn ngữ định nghĩa schema) là dạng văn bản thường dùng để khai báo GraphQL schema. Đọc SDL theo hướng từ root operation đến các object type giúp client biết nên bắt đầu query ở đâu.
+
+### Ví dụ schema nhỏ
+
+Ví dụ xuyên suốt bài dùng một catalog sách. Schema công khai ba root operation type: `Query` để đọc, `Mutation` để thay đổi và `Subscription` để nhận sự kiện.
+
+```graphql
+schema {
+  query: Query
+  mutation: Mutation
+  subscription: Subscription
+}
+
+type Query {
+  books: [Book!]!
+  book(id: ID!): Book
+}
+
+type Mutation {
+  addBook(input: AddBookInput!): Book!
+}
+
+input AddBookInput {
+  title: String!
+  author: String!
+  publishedYear: Int!
+}
+
+type Subscription {
+  bookAdded: Book!
+}
+
+type Book {
+  id: ID!
+  title: String!
+  author: String!
+  publishedYear: Int!
+  summary: String
+}
+```
+
+Khối `schema` nối từng loại operation với một root type. Vì tên `Query`, `Mutation` và `Subscription` là tên quy ước, nhiều schema có thể bỏ khối này; viết tường minh giúp thấy rõ điểm bắt đầu của từng operation.
+
+### Object type và field
+
+`Book` là một **object type** (kiểu object). Nó gồm các field mà client có thể chọn. Mỗi field có tên và kiểu trả về:
+
+```graphql
+type Book {
+  id: ID!
+  title: String!
+  author: String!
+  publishedYear: Int!
+  summary: String
+}
+```
+
+`id`, `title`, `author` và `publishedYear` là field của `Book`. `ID!`, `String!` và `Int!` là kiểu của các field đó. Dấu `!` sẽ được giải thích ở phần nullable.
+
+`Query` cũng là một object type đặc biệt. Các field trực tiếp dưới `Query` là nơi query bắt đầu. Trong schema trên, `books` không nhận argument, còn `book` nhận argument `id` có kiểu `ID!`:
+
+```graphql
+book(id: ID!): Book
+```
+
+Cách đọc dòng này là: client có thể gọi field `book` với một `id` bắt buộc và nhận về một `Book` hoặc `null`. `AddBookInput` là **input object type** (kiểu object dành cho dữ liệu đầu vào), dùng để truyền nhiều giá trị vào mutation. Input type và object type có vai trò khác nhau dù đều có các field.
+
+### Scalar, list và nullable
+
+**Scalar** là kiểu giá trị ở lá của response. GraphQL có các scalar tích hợp như `String`, `Int`, `Float`, `Boolean` và `ID`. Client không thể chọn field con bên trong scalar. Vì vậy, `title` kết thúc selection set, còn `books` cần mở selection set vì nó trả về `Book`.
+
+Dấu `!` nghĩa là **non-null** (không được `null`). Trong ví dụ:
+
+- `title: String!` yêu cầu resolver cung cấp một chuỗi khác `null`.
+- `book(id: ID!): Book` yêu cầu argument `id`, nhưng kết quả `Book` có thể `null` nếu không tìm thấy.
+- `books: [Book!]!` nghĩa là bản thân list không `null`, và từng phần tử `Book` trong list cũng không `null`.
+- `summary: String` cho phép một cuốn sách không có phần tóm tắt.
+
+List rỗng vẫn là một list hợp lệ. Nó khác với `null`. Nullability là một phần contract, nên phải phản ánh quy tắc dữ liệu thật thay vì thêm `!` chỉ để schema chặt hơn. Xem thêm [Scalar, object và field](/docs/schema-va-type-system/scalar-object-field) và [List và nullable](/docs/schema-va-type-system/list-va-nullable) để đi sâu vào type system.
+
+## Client dùng schema để yêu cầu dữ liệu
+
+Client thường nhận schema qua tài liệu, code generation hoặc introspection. Sau đó, client viết operation dựa trên đúng tên field và kiểu mà schema công khai. Điều quan trọng không phải là nhớ một URL cụ thể, mà là hiểu quan hệ giữa operation, selection set và schema.
+
+### Selection set quyết định shape của response
+
+**Selection set** là tập các field nằm trong cặp dấu `{ ... }` của operation. Nó nói chính xác client muốn server trả về phần nào của object. Ví dụ, selection set sau chỉ chọn hai field:
+
+```graphql
+query BookCards {
+  books {
+    id
+    title
+  }
+}
+```
+
+`books` là một field trả về list của object `Book`, nên nó có selection set con. `id` và `title` là scalar nên dừng ở đó. Dù `Book` còn có `author`, `publishedYear` và `summary`, chúng không nằm trong response này vì client không chọn chúng.
+
+Nếu client thêm `author`, shape cũng thay đổi ngay tại vị trí đó:
+
+```graphql
+query BookCardsWithAuthor {
+  books {
+    id
+    title
+    author
+  }
+}
+```
+
+GraphQL không tự thêm toàn bộ field của `Book` vào response. Đây là cách client thể hiện nhu cầu dữ liệu bằng field cụ thể, thay vì mô tả nhu cầu bằng một câu chung như “lấy thông tin sách”.
+
+### Một query từ field đến JSON
+
+Hãy yêu cầu đủ bốn field không-null của `Book`:
+
+```graphql
+query BookCatalog {
+  books {
+    id
+    title
+    author
+    publishedYear
+  }
+}
+```
+
+Với dữ liệu minh họa gồm hai sách, execution result có thể có dạng:
+
+```json
+{
+  "data": {
+    "books": [
+      {
+        "id": "book-1",
+        "title": "Effective Java",
+        "author": "Joshua Bloch",
+        "publishedYear": 2018
+      },
+      {
+        "id": "book-2",
+        "title": "Designing Data-Intensive Applications",
+        "author": "Martin Kleppmann",
+        "publishedYear": 2017
+      }
+    ]
+  }
+}
+```
+
+Tên và cấu trúc bên trong `data` đi theo selection set: query chọn `books`, rồi chọn bốn field của mỗi `Book`. `summary` không xuất hiện vì không được chọn. Giá trị, thứ tự và số lượng sách chỉ là dữ liệu minh họa do resolver giả định cung cấp; schema không tự tạo các bản ghi này.
+
+### Truyền argument bằng variables
+
+Schema cho phép tìm một sách theo `id`:
+
+```graphql
+book(id: ID!): Book
+```
+
+Client có thể truyền giá trị trực tiếp, nhưng **variables** (biến của operation) giúp tách dữ liệu đầu vào khỏi query document. Operation sau khai báo `$bookId` có kiểu `ID!` rồi dùng biến đó ở argument `id`:
+
+```graphql
+query BookDetail($bookId: ID!) {
+  book(id: $bookId) {
+    id
+    title
+    author
+    publishedYear
+  }
+}
+```
+
+Giá trị variables tương ứng là JSON:
+
+```json
+{
+  "bookId": "book-1"
+}
+```
+
+Một client gửi GraphQL qua transport bất kỳ thường đóng gói operation, tên operation và variables theo một request envelope (vỏ request) tương tự:
+
+```json
+{
+  "query": "query BookDetail($bookId: ID!) { book(id: $bookId) { id title author publishedYear } }",
+  "operationName": "BookDetail",
+  "variables": {
+    "bookId": "book-1"
+  }
+}
+```
+
+`operationName` giúp chọn operation khi một document chứa nhiều operation. Cấu trúc transport và địa chỉ nhận request phụ thuộc server; phần GraphQL cốt lõi ở đây là document, operation và variables. Với dữ liệu minh họa, kết quả có thể là:
+
+```json
+{
+  "data": {
+    "book": {
+      "id": "book-1",
+      "title": "Effective Java",
+      "author": "Joshua Bloch",
+      "publishedYear": 2018
+    }
+  }
+}
+```
+
+Tên biến, kiểu `ID!` và argument `id` phải khớp schema. Khi schema có argument khác, client cũng phải đọc đúng tên và kiểu đó thay vì tự thêm field vào query.
+
+### Khi query không khớp schema
+
+Giả sử client yêu cầu `name`, nhưng `Book` trong schema chỉ có `title`:
+
+```graphql
+query InvalidBook {
+  book(id: "book-1") {
+    id
+    name
+  }
+}
+```
+
+GraphQL có thể trả lỗi validation trước khi gọi resolver:
+
+```json
+{
+  "errors": [
+    {
+      "message": "Cannot query field \"name\" on type \"Book\"."
+    }
+  ]
+}
+```
+
+Thông điệp và các metadata đi kèm có thể thay đổi theo implementation. Ý nghĩa không đổi: client phải sửa operation theo schema, không phải chờ resolver “đoán” field gần giống. Lỗi tương tự xảy ra khi bỏ selection set của một object, truyền argument sai kiểu hoặc dùng variable bắt buộc nhưng không cung cấp giá trị.
+
+## Operation: query, mutation và subscription
+
+**Operation** là một yêu cầu thực thi có loại và selection set. Ba loại chuẩn là `query`, `mutation` và `subscription`. Chúng là khái niệm của GraphQL; cách một ứng dụng ánh xạ chúng vào HTTP, WebSocket hoặc transport khác là quyết định riêng của server.
+
+### Query đọc dữ liệu
+
+`query` dùng cho việc đọc dữ liệu. Ví dụ `BookCatalog` ở trên bắt đầu tại root type `Query`, đi vào field `books` rồi chọn các field của `Book`.
+
+Một query có thể chọn nhiều field root trong cùng operation nếu schema cho phép:
+
+```graphql
+query CatalogAndBook {
+  books {
+    id
+    title
+  }
+  book(id: "book-1") {
+    id
+    title
+    author
+  }
+}
+```
+
+Tên `books` và `book` trong response vẫn giữ nguyên tên field đã chọn. Query không có nghĩa là server phải truy vấn một database cụ thể; resolver của từng field quyết định cách lấy dữ liệu. Theo ngữ nghĩa thông thường, query dành cho đọc và không được dùng để thay đổi trạng thái ứng dụng.
+
+### Mutation thay đổi dữ liệu
+
+`mutation` biểu diễn thao tác làm thay đổi trạng thái phía server, chẳng hạn thêm sách. Client vẫn phải chọn các field muốn nhận lại từ kết quả mutation:
+
+```graphql
+mutation AddBook($input: AddBookInput!) {
+  addBook(input: $input) {
+    id
+    title
+    author
+    publishedYear
+  }
+}
+```
+
+Variables của operation này là:
+
+```json
+{
+  "input": {
+    "title": "GraphQL in Action",
+    "author": "Samer Buna",
+    "publishedYear": 2022
+  }
+}
+```
+
+Response minh họa:
+
+```json
+{
+  "data": {
+    "addBook": {
+      "id": "book-3",
+      "title": "GraphQL in Action",
+      "author": "Samer Buna",
+      "publishedYear": 2022
+    }
+  }
+}
+```
+
+Schema chỉ mô tả mutation nhận input gì và trả về kiểu gì. Việc có lưu bền vững, kiểm tra trùng lặp, mở transaction hay gọi service khác là trách nhiệm của resolver và lớp ứng dụng phía sau.
+
+### Subscription nhận sự kiện
+
+`subscription` dùng cho một luồng kết quả dài hơn một request đọc thông thường. Client đăng ký các field được schema công khai, rồi server gửi execution result mới khi có sự kiện phù hợp:
+
+```graphql
+subscription OnBookAdded {
+  bookAdded {
+    id
+    title
+    author
+  }
+}
+```
+
+Mỗi sự kiện có thể tạo một payload như sau:
+
+```json
+{
+  "data": {
+    "bookAdded": {
+      "id": "book-3",
+      "title": "GraphQL in Action",
+      "author": "Samer Buna"
+    }
+  }
+}
+```
+
+Subscription cần cơ chế truyền dữ liệu dài hạn mà server và client cùng hỗ trợ, thường là một dạng kết nối realtime. GraphQL không tự bật WebSocket, tự phát sự kiện hoặc bảo đảm server có subscription. Nếu schema không khai báo root `Subscription` và field tương ứng, operation này không hợp lệ.
+
+<Callout type="idea" title="Đừng đồng nhất operation với HTTP method">
+  `query`, `mutation` và `subscription` mô tả ý nghĩa của operation GraphQL. Chúng không tự quy định một URL hoặc một HTTP method cụ thể. Khi học Spring for GraphQL, hãy tách phần contract/execution của GraphQL khỏi phần transport và cấu hình ứng dụng.
 </Callout>
+
+## Resolver và quá trình thực thi
+
+### Resolver làm gì?
+
+**Resolver** là hàm hoặc thành phần cung cấp giá trị cho một field khi field đó được chọn. Resolver nhận context cần thiết như argument và object cha, rồi lấy hoặc tính dữ liệu từ nguồn phía sau. GraphQL không biết resolver sẽ gọi database, service khác hay bộ nhớ; nó chỉ biết kết quả cần phù hợp với kiểu trong schema.
+
+Có thể hình dung wiring của schema catalog như sau:
+
+```text
+Query.books(id?)       → catalogService.findAll()
+Query.book(id)         → catalogService.findById(id)
+Mutation.addBook(input)→ catalogService.add(input)
+Book.title             → đọc title từ Book cha
+Subscription.bookAdded → nhận sự kiện sách mới
+```
+
+Đây là sơ đồ khái niệm, không phải code chạy độc lập. `Query.books` và `Query.book` là resolver ở root. Khi một resolver root trả về `Book`, runtime tiếp tục xử lý selection set bên trong `Book`. Một field đơn giản như `title` thường có thể được đọc từ property của object cha; field phức tạp hơn có thể cần resolver riêng.
+
+Resolver chỉ cần phục vụ field được chọn về mặt GraphQL. Tuy nhiên, implementation có thể vẫn lấy thừa dữ liệu ở phía dưới nếu code/service không tận dụng selection set. GraphQL giúp client diễn đạt nhu cầu chính xác; nó không tự tối ưu mọi truy vấn database.
+
+### Các bước execution
+
+**Execution** (quá trình thực thi) là lúc runtime biến operation hợp lệ thành execution result. Với ví dụ `BookDetail`, có thể theo dõi các bước chính:
+
+1. **Parse:** đọc document và xây dựng cấu trúc operation.
+2. **Validate:** đối chiếu root type, field, argument, variable và selection set với schema.
+3. **Coerce input:** chuyển và kiểm tra variables/argument theo kiểu như `ID!` hoặc `AddBookInput!`.
+4. **Resolve root field:** gọi resolver của `Query.book` với `bookId` tương ứng.
+5. **Resolve selection lồng nhau:** lấy `id`, `title`, `author` và `publishedYear` từ `Book` trả về.
+6. **Serialize và assemble:** chuyển scalar về dạng response rồi đặt kết quả dưới `data`, đồng thời ghi lỗi vào `errors` nếu cần.
+
+Đây là mental model theo thứ tự, không phải cam kết rằng mọi implementation gọi mọi resolver tuần tự. Runtime có thể tối ưu cách lấy dữ liệu, nhưng phải giữ đúng contract và shape mà operation yêu cầu.
+
+### Execution result gồm data và errors
+
+**Execution result** là kết quả GraphQL trả về ở cấp ứng dụng. Trường `data` chứa các field đã thực thi theo selection set. Trường `errors` chứa lỗi parse, validation hoặc execution khi có lỗi. Một result có thể có `data` và `errors` cùng lúc.
+
+Ví dụ, field `book` trong schema là nullable. Nếu resolver không tìm thấy sách hoặc gặp lỗi được xử lý ở field đó, result minh họa có thể là:
+
+```json
+{
+  "data": {
+    "book": null,
+    "books": [
+      {
+        "id": "book-1",
+        "title": "Effective Java"
+      }
+    ]
+  },
+  "errors": [
+    {
+      "message": "Không thể đọc sách book-9.",
+      "path": ["book"]
+    }
+  ]
+}
+```
+
+`path` giúp client biết field nào gây lỗi. Nếu field lỗi là non-null, lỗi có thể lan lên object cha theo quy tắc null propagation (lan truyền `null`); hình dạng `data` khi đó phụ thuộc vị trí field và nullability của schema. Lỗi validation như field `name` không tồn tại thường xảy ra trước execution và có thể không có `data`.
+
+Response cụ thể còn có thể chứa `locations` hoặc `extensions`. HTTP status và format lỗi ở lớp transport/server cũng có thể phụ thuộc implementation. Xem [Mô hình request/response](/docs/nen-tang/mo-hinh-request-response) để phân tích request envelope, `data`, `errors` và `extensions` chi tiết hơn.
+
+## Introspection: client khám phá schema
+
+**Introspection** là cơ chế GraphQL cho phép client hỏi metadata (siêu dữ liệu) của schema, như tên type, field, argument, mô tả và trạng thái deprecated. GraphiQL, IDE và công cụ code generation thường dùng introspection để tạo Docs explorer, autocomplete hoặc kiểu dữ liệu cho client.
+
+Ví dụ, client có thể hỏi các field trực tiếp dưới `Query` bằng meta-field `__type`:
+
+```graphql
+query QueryFields {
+  __type(name: "Query") {
+    fields {
+      name
+    }
+  }
+}
+```
+
+Kết quả rút gọn có thể là:
+
+```json
+{
+  "data": {
+    "__type": {
+      "fields": [
+        { "name": "books" },
+        { "name": "book" }
+      ]
+    }
+  }
+}
+```
+
+Từ metadata này, client biết phải viết `books` hay `book`, biết `book` nhận argument nào và biết `books` cần selection set của `Book`. Introspection không lấy dữ liệu sách và không thay thế resolver.
+
+<Callout type="warn" title="Introspection không phải authorization">
+  Nhìn thấy schema không đồng nghĩa với được phép đọc mọi dữ liệu. Authentication và authorization vẫn phải được thực hiện ở server/resolver theo chính sách ứng dụng. Một môi trường có thể giới hạn introspection hoặc tắt một số công cụ khám phá, nhưng việc đó không thay thế kiểm tra quyền trên request thật.
+</Callout>
+
+## Vì sao nhiều loại client hưởng lợi?
+
+Một schema chung cho phép nhiều client dùng cùng vocabulary (bộ tên type/field) nhưng chọn shape phù hợp với từng màn hình. Lợi ích nằm ở contract có kiểu và selection set rõ ràng, không nằm ở lời hứa rằng mọi backend query sẽ tự động tối ưu.
+
+### Mobile, web và tool nội bộ
+
+Ứng dụng mobile thường cần payload nhỏ để giảm dữ liệu truyền và chi phí xử lý. Màn hình web có thể cần thêm field để hiển thị chi tiết. Hai client có thể dùng cùng `Query.books`:
+
+```graphql
+query MobileBookCards {
+  books {
+    id
+    title
+  }
+}
+```
+
+```graphql
+query WebBookDetails {
+  books {
+    id
+    title
+    author
+    publishedYear
+  }
+}
+```
+
+Response của mobile chỉ có `id` và `title`. Response của web có thêm `author` và `publishedYear`. Client không cần yêu cầu server tạo hai contract hoàn toàn khác chỉ vì hai màn hình cần hai shape khác nhau.
+
+Một tool nội bộ, ứng dụng desktop hoặc client viết bằng ngôn ngữ khác cũng có thể đọc cùng schema. Introspection và type system giúp công cụ gợi ý field, báo lỗi sớm và sinh kiểu client nếu team chọn quy trình code generation phù hợp.
+
+### Lợi ích có điều kiện
+
+GraphQL đặc biệt hữu ích khi nhiều client có nhu cầu dữ liệu khác nhau hoặc khi dữ liệu có quan hệ lồng nhau. Tuy nhiên, lợi ích thực tế phụ thuộc vào cách thiết kế schema và resolver:
+
+- Selection set có thể giảm payload trả về và làm response sát với màn hình hơn.
+- Schema có kiểu giúp client phát hiện sai field, sai argument và sai kiểu trước khi execution.
+- Một operation có thể mô tả nhiều field liên quan trong cùng một document, thay vì để mỗi client tự ghép nhiều response. Resolver phía server vẫn phải xử lý các field đó đúng cách.
+- Introspection giúp công cụ và team khám phá contract, nhưng team vẫn cần quy trình review và kiểm thử schema.
+
+<Callout type="warn" title="Không có tính năng vận hành tự động">
+  GraphQL không tự cung cấp caching, authentication, authorization, pagination, rate limit, query complexity limit hoặc versioning. Những khả năng này cần được thiết kế ở schema, resolver, transport và hạ tầng phù hợp. Việc client được chọn field cũng không có nghĩa mọi field đều an toàn hoặc rẻ để gọi.
+</Callout>
+
+## GraphQL và REST: nhìn nhanh
+
+REST và GraphQL đều có thể dùng để xây dựng API cho web, mobile và service nội bộ. Khác biệt chính là nơi client diễn tả nhu cầu dữ liệu:
+
+| Góc nhìn | REST | GraphQL |
+| --- | --- | --- |
+| Cách định hình API | Thường tổ chức quanh resource, URL và HTTP method | Tổ chức quanh schema, type, field và operation |
+| Shape response | Server thường định nghĩa representation của resource; có thể hỗ trợ tham số chọn field | Client chọn field trong selection set; response phản chiếu lựa chọn đó |
+| Kiểm tra request | Có thể dựa vào code, tài liệu hoặc OpenAPI và validation của server | GraphQL runtime validate document trực tiếp với schema trước execution |
+| Lỗi | Thường kết hợp HTTP status với body lỗi | Execution result có thể chứa `data`, `errors` hoặc cả hai; transport vẫn có quy tắc riêng |
+| Evolution và caching | Có convention HTTP và công cụ sẵn, nhưng vẫn cần thiết kế | Có schema/deprecation và chiến lược riêng; không tự giải quyết versioning hay caching |
+
+Bảng này là so sánh mental model, không phải tuyên bố REST luôn trả payload thừa hoặc GraphQL luôn chỉ dùng một request. REST có thể hỗ trợ sparse fieldset, batching hoặc gateway; GraphQL cũng có thể chạy qua nhiều transport. Chọn mô hình dựa trên nhu cầu contract, client, vận hành và hệ sinh thái của hệ thống.
+
+Đọc [GraphQL và REST](/docs/nen-tang/graphql-va-rest) để xem thêm so sánh về resource, fetching, lỗi và versioning. Khi muốn học cách payload GraphQL được đóng gói, xem [Mô hình request/response](/docs/nen-tang/mo-hinh-request-response). Khi muốn thiết kế SDL chặt chẽ hơn, xem [SDL và nguyên tắc thiết kế schema](/docs/schema-va-type-system/sdl-va-thiet-ke-schema).
+
+## Điểm cần nhớ
+
+- GraphQL là ngôn ngữ truy vấn cho API và runtime thực thi theo schema; nó không phải database hay ORM.
+- Schema là contract có kiểu. Type mô tả hình dạng, field là đơn vị client chọn, còn resolver cung cấp giá trị.
+- Operation có thể là `query`, `mutation` hoặc `subscription`. Loại operation thể hiện ý nghĩa đọc, thay đổi hoặc nhận sự kiện.
+- Selection set cho biết client muốn field nào. Object cần field con; scalar là field lá.
+- Execution result phản ánh selection set qua `data` và báo lỗi qua `errors`. Schema và nullability ảnh hưởng đến việc `null` lan truyền thế nào.
+- Introspection giúp client và công cụ khám phá schema. Nó không cấp quyền truy cập dữ liệu.
+- Nhiều client có thể dùng cùng schema nhưng chọn shape khác nhau. Caching, bảo mật, giới hạn truy vấn và versioning vẫn là trách nhiệm của thiết kế hệ thống.
 
 ## Bước tiếp theo
 
-Sau khi trang được điền nội dung, đọc bài kế tiếp trong nhóm để tiếp tục lộ trình.
+Nếu muốn xem các khái niệm này trong project Spring for GraphQL, hãy đi theo các bài sau:
+
+<Cards>
+  <Card title="Tạo schema đầu tiên" href="/docs/bat-dau/tao-schema-dau-tien" description="Đọc SDL, object type, scalar, list và nullable trong một schema nhỏ." />
+  <Card title="Viết query đầu tiên" href="/docs/bat-dau/viet-query-dau-tien" description="Theo dõi field trong schema được nối với resolver và tạo execution result." />
+  <Card title="Mô hình request/response" href="/docs/nen-tang/mo-hinh-request-response" description="Phân tích request envelope, data, errors và extensions." />
+</Cards>
+
+Bạn cũng có thể xem [Selection set, alias và query](/docs/query-mutation-subscription/query-selection-set-alias) để luyện cách chọn field, hoặc [Variables, arguments và fragments](/docs/query-mutation-subscription/variables-arguments-fragments) để tổ chức operation lớn hơn.

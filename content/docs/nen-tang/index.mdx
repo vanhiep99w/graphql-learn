@@ -3,30 +3,126 @@ title: "Nền tảng"
 description: "Các khái niệm cốt lõi cần nắm trước khi xây dựng API GraphQL với Spring Boot."
 ---
 
-Đây là trang khung của nhóm **Nền tảng** trong lộ trình học GraphQL với Spring Boot. Nội dung chi tiết sẽ được bổ sung theo từng bài bên dưới.
+Nhóm **Nền tảng** giúp bạn xây dựng vốn từ vựng và mental model (mô hình tư duy) về GraphQL trước khi chạm vào cấu hình Spring Boot. Thay vì bắt đầu bằng dependency (gói thư viện ứng dụng cần) hoặc annotation (chỉ dẫn gắn vào code), hãy bắt đầu bằng câu hỏi: client yêu cầu dữ liệu như thế nào, schema mô tả hợp đồng gì, resolver lấy dữ liệu ở đâu và server tạo response ra sao.
 
-<Callout type="info" title="Trạng thái nội dung">
-Các bài trong nhóm hiện là placeholder. Hãy đi theo thứ tự sidebar để giữ mạch học đề xuất.
+<Callout type="info" title="Phạm vi và trạng thái">
+Nội dung nhóm đang được hoàn thiện theo thứ tự sidebar; một số bài đã có nội dung chi tiết, các bài còn lại đang được bổ sung. Trang này là bản đồ học tổng thể: mỗi mục chỉ giữ lại ý chính và vai trò trong lộ trình, còn ví dụ chi tiết sẽ nằm ở bài tương ứng.
 </Callout>
 
 ## Mục lục
 
-- [Phạm vi dự kiến](#phạm-vi-dự-kiến)
-- [Các bài trong nhóm](#các-bài-trong-nhóm)
-- [Bước tiếp theo](#bước-tiếp-theo)
+- [Kết quả học tập](#kết-quả-học-tập)
+- [Điều kiện tiên quyết và cách bắt đầu](#điều-kiện-tiên-quyết-và-cách-bắt-đầu)
+- [Mental model từ client đến data source](#mental-model-từ-client-đến-data-source)
+- [Thứ tự đọc trong nhóm Nền tảng](#thứ-tự-đọc-trong-nhóm-nền-tảng)
+- [Từ Nền tảng đến Bắt đầu](#từ-nền-tảng-đến-bắt-đầu)
+- [Sau khi hoàn thành hai nhóm đầu](#sau-khi-hoàn-thành-hai-nhóm-đầu)
 
-## Phạm vi dự kiến
+## Kết quả học tập
 
-Xây dựng mental model về GraphQL, cách một request được thực thi và vị trí của Spring Boot trong toàn bộ hệ thống.
+Sau khi hoàn thành nhóm này, bạn có thể:
 
-## Các bài trong nhóm
+- Giải thích GraphQL là gì và phân biệt **operation** (yêu cầu mà client gửi, gồm `query`, `mutation` hoặc `subscription`) với endpoint HTTP (địa chỉ server nhận request).
+- Đọc schema GraphQL như một contract (hợp đồng): biết field nào được phép yêu cầu, field trả về kiểu gì và selection set (tập field client chọn) ảnh hưởng đến response thế nào.
+- Phân biệt schema, resolver (đoạn code lấy hoặc tính giá trị cho một field) và data source (nguồn dữ liệu như service, repository, database hoặc API khác).
+- Đọc cấu trúc request và execution result (kết quả sau khi server thực thi operation), gồm `data`, `errors` và `extensions`, thay vì chỉ nhìn vào HTTP status.
+- Nhận diện vai trò của Spring for GraphQL, GraphiQL và các công cụ gọi API để biết phần nào thuộc server, phần nào thuộc client và phần nào thuộc quy trình kiểm thử.
 
-- [GraphQL là gì?](/docs/nen-tang/graphql-la-gi) — Giải thích GraphQL, schema, operation và lý do GraphQL phù hợp với API có nhiều loại client.
-- [GraphQL và REST](/docs/nen-tang/graphql-va-rest) — So sánh hai mô hình API qua cách định hình resource, fetching dữ liệu, lỗi và versioning.
-- [Mô hình request/response](/docs/nen-tang/mo-hinh-request-response) — Mô tả cấu trúc request GraphQL, execution result, data, errors và extensions.
-- [Kiến trúc GraphQL](/docs/nen-tang/kien-truc-graphql) — Phân biệt client, server, schema, resolver, data source và các lớp trong một hệ thống GraphQL.
-- [Hệ sinh thái công cụ](/docs/nen-tang/he-sinh-thai-cong-cu) — Tổng quan Spring for GraphQL, GraphiQL, client library, gateway và công cụ kiểm thử.
+## Điều kiện tiên quyết và cách bắt đầu
 
-## Bước tiếp theo
+Bạn không cần biết Spring Boot để đọc nhóm Nền tảng. Nên có một vài kiến thức cơ bản:
 
-Bắt đầu từ bài đầu tiên của nhóm hoặc yêu cầu viết chi tiết một trang cụ thể bằng skill `fumadocs-technical-writer`.
+- Biết HTTP là giao thức trao đổi request/response và JSON là định dạng dữ liệu thường dùng trong body của request.
+- Có nền tảng lập trình đủ để hiểu hàm, object và dữ liệu dạng danh sách. Chưa từng viết GraphQL vẫn có thể bắt đầu từ bài đầu tiên.
+- Sẵn sàng phân biệt **contract** với **implementation**: schema mô tả API cho phép gì, còn code server quyết định lấy dữ liệu và xử lý việc đó như thế nào.
+
+Đọc trọn nhóm Nền tảng nếu bạn muốn hiểu bức tranh trước khi viết code. Nếu cần đi nhanh đến một ứng dụng chạy local, hãy ít nhất đọc [GraphQL là gì?](/docs/nen-tang/graphql-la-gi), [Mô hình request/response](/docs/nen-tang/mo-hinh-request-response) rồi chuyển sang [Bắt đầu](/docs/bat-dau); sau đó quay lại các bài so sánh, kiến trúc và công cụ để củng cố mental model.
+
+Khi chuyển sang nhóm Bắt đầu, hãy chuẩn bị JDK 17, một terminal, IDE và kết nối mạng cho lần tải dependency đầu tiên. Các bài nhập môn dùng Spring Boot 3.x và ưu tiên Maven Wrapper; không cần cài Maven toàn cục nếu project đã có wrapper. Chi tiết version, build tool và cấu hình được nêu lại ở đúng bài để bạn không phải ghi nhớ từ trang này.
+
+## Mental model từ client đến data source
+
+Hãy xem một request GraphQL như một đường đi qua nhiều trách nhiệm, không phải một lời gọi thẳng vào database:
+
+```text
+Client
+  │ operation + variables
+  ▼
+GraphQL endpoint và execution engine
+  │ parse, validate và đối chiếu với schema
+  ▼
+Resolver của các field được chọn
+  │ gọi service, repository hoặc nguồn dữ liệu khác
+  ▼
+Data source
+  │ trả về dữ liệu
+  ▼
+Execution engine tạo response: data, errors, extensions
+  │
+  ▼
+Client
+```
+
+- **Client** có thể là trình duyệt, ứng dụng mobile, frontend hoặc một service khác. Client gửi operation và có thể gửi thêm variables (giá trị đầu vào tách khỏi query document).
+- **Schema** là contract của API, thường được viết bằng SDL (*Schema Definition Language*). Schema mô tả type, field, argument và kiểu trả về. Server dùng nó để kiểm tra operation trước khi gọi code lấy dữ liệu.
+- **Resolver** là logic gắn với một field. Resolver có thể trả dữ liệu tĩnh, gọi service nghiệp vụ hoặc phối hợp nhiều nguồn. Resolver không phải là schema và cũng không nhất thiết truy cập database trực tiếp.
+- **Data source** là nơi dữ liệu thực sự đến từ đó. Với ví dụ nhỏ, đó có thể là list in-memory; trong ứng dụng thật, thường là repository, database, REST service hoặc một hệ thống downstream khác.
+- **Execution engine** (bộ máy thực thi operation) ghép các giá trị theo selection set mà client đã chọn. Vì vậy response có thể chỉ có `id` và `title` dù object trong schema còn có `author`. Nếu validation hoặc execution gặp lỗi, response có thể có `errors`, và `extensions` có thể chứa metadata do server bổ sung.
+
+Trong ứng dụng Spring Boot, **Spring for GraphQL** nằm ở lớp tích hợp giữa endpoint, GraphQL engine và code Java. Nó hỗ trợ nạp schema và ánh xạ resolver vào ứng dụng; nó không thay thế schema, resolver hoặc data source.
+
+Ví dụ rút gọn dưới đây cho thấy schema và query phối hợp với nhau:
+
+```graphql
+query Books {
+  books {
+    id
+    title
+  }
+}
+```
+
+Schema quyết định `books` có hợp lệ và cần selection set hay không. Resolver của `books` quyết định cách tìm danh sách. Data source cung cấp các bản ghi. Cuối cùng, GraphQL chỉ trả các field `id` và `title` mà operation yêu cầu. Những chi tiết về nullability, lỗi một phần và cách viết resolver sẽ được triển khai ở các bài sau, không cần giải quyết hết trong overview này.
+
+## Thứ tự đọc trong nhóm Nền tảng
+
+Đọc theo thứ tự dưới đây để đi từ khái niệm đến flow thực thi, rồi kết thúc bằng công cụ. Các bài có mức độ hoàn thiện khác nhau; mô tả trong bảng cho biết bạn nên đọc bài để đạt mục tiêu nào trong lộ trình.
+
+| Bước | Bài | Mô tả và vai trò trong lộ trình |
+| --- | --- | --- |
+| 1 | [GraphQL là gì?](/docs/nen-tang/graphql-la-gi) | Làm rõ GraphQL, schema, operation và cách client chọn dữ liệu. Đây là nền từ vựng để đọc các bài còn lại. |
+| 2 | [GraphQL và REST](/docs/nen-tang/graphql-va-rest) | Đặt GraphQL cạnh REST qua resource, fetching dữ liệu, lỗi và versioning. Bài này giúp bạn hiểu trade-off thay vì xem GraphQL là lựa chọn luôn tốt hơn. |
+| 3 | [Mô hình request/response](/docs/nen-tang/mo-hinh-request-response) | Theo dõi request GraphQL, execution result, `data`, `errors` và `extensions`. Đây là cầu nối từ operation trên giấy sang JSON mà client nhận được. |
+| 4 | [Kiến trúc GraphQL](/docs/nen-tang/kien-truc-graphql) | Ghép các vai trò client, server, schema, resolver và data source thành một flow hoàn chỉnh. Hãy dùng bài này để kiểm tra lại mental model trước khi học Spring. |
+| 5 | [Hệ sinh thái công cụ](/docs/nen-tang/he-sinh-thai-cong-cu) | Định vị Spring for GraphQL, GraphiQL, client library, gateway và công cụ kiểm thử. Bài này chuẩn bị cho việc chọn đúng công cụ trong nhóm Bắt đầu. |
+
+Không cần học thuộc tên thư viện sau bài công cụ. Mục tiêu là biết mỗi công cụ đứng ở đâu trong flow và câu hỏi nào nó giúp bạn trả lời.
+
+## Từ Nền tảng đến Bắt đầu
+
+Nhóm Nền tảng trả lời **GraphQL hoạt động theo nguyên lý nào**. Nhóm [Bắt đầu](/docs/bat-dau) trả lời **làm thế nào biến nguyên lý đó thành một ứng dụng Spring Boot có endpoint để gửi request**. Hai nhóm bổ sung cho nhau:
+
+| Điều đã hiểu ở Nền tảng | Bài áp dụng trong nhóm Bắt đầu |
+| --- | --- |
+| Server cần một project và một HTTP runtime | [Khởi tạo project Spring Boot](/docs/bat-dau/khoi-tao-spring-boot) tạo bộ khung project, JDK và build tool ban đầu. |
+| GraphQL runtime cần dependency, schema location và endpoint | [Thêm dependency và cấu hình](/docs/bat-dau/them-dependency-va-cau-hinh) nối các mảnh ghép để ứng dụng nhận request. |
+| Schema là contract độc lập với dữ liệu | [Tạo schema đầu tiên](/docs/bat-dau/tao-schema-dau-tien) viết SDL, type, field, scalar, list và nullability. |
+| Resolver thực thi field mà client chọn | [Viết query đầu tiên](/docs/bat-dau/viet-query-dau-tien) map query vào method Java và đọc execution result. |
+| Client cần công cụ để khám phá và gửi operation | [GraphiQL và công cụ khám phá API](/docs/bat-dau/graphiql-va-kham-pha-api) dùng Docs explorer, autocomplete, variables và headers. |
+| Request cần được kiểm tra lặp lại ngoài giao diện | [Kiểm thử request bằng curl/Postman](/docs/bat-dau/kiem-thu-request-curl-postman) đưa cùng flow vào curl hoặc Postman để dễ tái hiện. |
+
+Lộ trình thực hành vì thế nên là: đọc hết Nền tảng, đi qua [Khởi tạo project Spring Boot](/docs/bat-dau/khoi-tao-spring-boot), thêm cấu hình, viết schema, nối resolver, rồi dùng GraphiQL và curl/Postman. Bạn sẽ gặp lại các thuật ngữ của trang này trong từng bước, nhưng mỗi bài Bắt đầu tập trung vào một thay đổi cụ thể trong project thay vì giải thích lại toàn bộ GraphQL.
+
+<Callout type="idea" title="Đừng nhầm schema với endpoint">
+Schema mô tả các operation và field hợp lệ; endpoint là địa chỉ transport nhận request. Việc tạo schema chưa tự tạo dữ liệu, còn việc mở được GraphiQL chưa chứng minh resolver đã hoạt động. Giữ ba lớp này tách biệt sẽ giúp bạn chẩn đoán lỗi đúng chỗ khi thực hành.
+</Callout>
+
+## Sau khi hoàn thành hai nhóm đầu
+
+Sau khi endpoint, schema, resolver và quy trình gửi request đã rõ, tiếp tục theo nhu cầu:
+
+- [Schema và type system](/docs/schema-va-type-system) để thiết kế SDL, scalar, object, enum, interface, union, list và nullability có hệ thống.
+- [Query, mutation và subscription](/docs/query-mutation-subscription) để đi sâu vào selection set, variables, filtering, pagination và các loại operation.
+- [Tích hợp Spring for GraphQL](/docs/tich-hop-spring-for-graphql) để học mapping annotation, nested field, context và request lifecycle trong Spring Boot.
+
+Đây là lúc mental model ban đầu trở thành tiêu chí kiểm tra: mỗi tính năng mới nên trả lời được client yêu cầu gì, schema cam kết gì, resolver chịu trách nhiệm gì và data source nào cung cấp dữ liệu.

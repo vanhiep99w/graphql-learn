@@ -1,23 +1,590 @@
 ---
 title: "GraphQL và REST"
-description: "So sánh hai mô hình API qua cách định hình resource, fetching dữ liệu, lỗi và versioning."
+description: "So sánh cách hai mô hình API định hình dữ liệu, request, lỗi và vòng đời thay đổi."
 ---
 
-Trang này sẽ trình bày **GraphQL và REST** trong bối cảnh xây dựng GraphQL API với Spring Boot.
+REST và GraphQL đều có thể cung cấp dữ liệu cho web, mobile và các hệ thống tích hợp. Điểm khác nhau nằm ở cách mỗi mô hình định nghĩa contract (hợp đồng giữa client và server), định hình request và phân chia trách nhiệm. Bài này dùng cùng một màn hình chi tiết sách để so sánh, sau đó chuyển sang các trade-off (đánh đổi) về dữ liệu, lỗi, khả năng thay đổi, công cụ và vận hành.
+
+<Callout type="info" title="Phạm vi của bài">
+Đây là so sánh ở mức mô hình API, không phải hướng dẫn một framework cụ thể. Các ví dụ dùng cùng một màn hình sách để dễ đối chiếu giữa hai mô hình. Khi áp dụng vào hệ thống thật, hãy đo traffic, kích thước payload, độ trễ và năng lực sở hữu của team thay vì chọn theo khẩu hiệu.
+</Callout>
 
 ## Mục lục
 
-- [Nội dung dự kiến](#nội-dung-dự-kiến)
-- [Bước tiếp theo](#bước-tiếp-theo)
+- [Hai cách mô hình hóa cùng một màn hình](#hai-cách-mô-hình-hóa-cùng-một-màn-hình)
+  - [REST: resource và endpoint](#rest-resource-và-endpoint)
+  - [GraphQL: graph, schema và field selection](#graphql-graph-schema-và-field-selection)
+- [Dữ liệu và số lần gọi mạng](#dữ-liệu-và-số-lần-gọi-mạng)
+  - [Over-fetching: nhận thừa dữ liệu](#over-fetching-nhận-thừa-dữ-liệu)
+  - [Under-fetching: thiếu dữ liệu và nhiều round-trip](#under-fetching-thiếu-dữ-liệu-và-nhiều-round-trip)
+  - [Field selection không miễn phí](#field-selection-không-miễn-phí)
+- [HTTP cache và hiệu năng](#http-cache-và-hiệu-năng)
+  - [REST tận dụng semantics HTTP](#rest-tận-dụng-semantics-http)
+  - [GraphQL cần chiến lược cache rõ ràng](#graphql-cần-chiến-lược-cache-rõ-ràng)
+- [Request, response và mô hình lỗi](#request-response-và-mô-hình-lỗi)
+  - [Điểm giống nhau](#điểm-giống-nhau)
+  - [REST dùng status HTTP làm tín hiệu chính](#rest-dùng-status-http-làm-tín-hiệu-chính)
+  - [GraphQL tách transport error và execution error](#graphql-tách-transport-error-và-execution-error)
+- [Versioning và tiến hóa contract](#versioning-và-tiến-hóa-contract)
+  - [REST versioning](#rest-versioning)
+  - [GraphQL evolution](#graphql-evolution)
+- [Tooling và ownership của team](#tooling-và-ownership-của-team)
+  - [Tooling và workflow](#tooling-và-workflow)
+  - [Team ownership](#team-ownership)
+- [Chi phí GraphQL cần xử lý](#chi-phí-graphql-cần-xử-lý)
+  - [Complexity và giới hạn query](#complexity-và-giới-hạn-query)
+  - [Caching và invalidation](#caching-và-invalidation)
+  - [Authorization theo field](#authorization-theo-field)
+  - [Observability và debugging](#observability-và-debugging)
+- [Khi nào chọn REST, GraphQL hoặc hybrid](#khi-nào-chọn-rest-graphql-hoặc-hybrid)
+  - [REST phù hợp khi](#rest-phù-hợp-khi)
+  - [GraphQL phù hợp khi](#graphql-phù-hợp-khi)
+  - [Hybrid phù hợp khi](#hybrid-phù-hợp-khi)
+- [Bảng so sánh cân bằng](#bảng-so-sánh-cân-bằng)
+- [Quy trình ra quyết định](#quy-trình-ra-quyết-định)
+- [Kết luận thực hành](#kết-luận-thực-hành)
 
-## Nội dung dự kiến
+## Hai cách mô hình hóa cùng một màn hình
 
-Nội dung chi tiết sẽ bao gồm khái niệm chính, ví dụ code và các lưu ý thực hành liên quan đến chủ đề này.
+Hãy tưởng tượng màn hình cần hiển thị tiêu đề một cuốn sách, tên tác giả và điểm của vài đánh giá. Cả REST lẫn GraphQL đều có thể đáp ứng màn hình này. Cách chúng mô tả dữ liệu và quyền chọn dữ liệu khác nhau.
 
-<Callout type="info" title="Trang placeholder">
-Đây là trang khung. Hãy dùng skill `fumadocs-technical-writer` để viết đầy đủ trang này trong bước tiếp theo.
+### REST: resource và endpoint
+
+Trong REST, **resource** là tài nguyên mà API quản lý, chẳng hạn một cuốn sách hoặc một tác giả. **Endpoint** là URL nhận request cho resource đó. URL và HTTP method cùng tạo nên ngữ nghĩa của thao tác.
+
+Một endpoint đọc sách có thể là:
+
+```http
+GET /api/books/42 HTTP/1.1
+Host: api.example.com
+Accept: application/json
+```
+
+Server chọn một representation (dạng biểu diễn) cố định cho resource `book` và trả về:
+
+```json
+{
+  "id": "42",
+  "title": "Designing Data-Intensive Applications",
+  "authorId": "7",
+  "description": "Thiết kế hệ thống dữ liệu có khả năng mở rộng.",
+  "isbn": "978-1449373320"
+}
+```
+
+`GET /api/books/42` định danh một resource cụ thể. `POST /api/books` thường tạo resource mới, còn `PATCH /api/books/42` cập nhật một phần resource. Những quy ước này giúp proxy, trình duyệt và người vận hành hiểu request mà không cần biết toàn bộ code phía server.
+
+REST không bắt buộc mọi endpoint phải trả đúng một DTO (đối tượng dữ liệu trả về) cố định. API có thể hỗ trợ `?fields=id,title`, tham số `include=author` hoặc thêm một endpoint tổng hợp. Tuy nhiên, mỗi biến thể cần được thiết kế, tài liệu hóa và kiểm thử riêng. Nếu không có cơ chế như vậy, client nhận toàn bộ representation do server định nghĩa.
+
+### GraphQL: graph, schema và field selection
+
+GraphQL mô hình hóa dữ liệu như một **graph** logic gồm các type và quan hệ giữa chúng. Graph này không đồng nghĩa với một graph database. Resolver là logic phía server dùng để lấy hoặc tính giá trị cho field; resolver có thể lấy các node và quan hệ từ nhiều database hoặc service khác nhau.
+
+**Schema** là contract (hợp đồng) khai báo type, field, argument và kiểu dữ liệu mà client được phép yêu cầu. **Field selection** hay selection set là danh sách field client chọn trong operation. Ví dụ schema nhỏ sau mô tả sách, tác giả và đánh giá:
+
+```graphql
+schema {
+  query: Query
+}
+
+type Query {
+  book(id: ID!): Book
+}
+
+type Book {
+  id: ID!
+  title: String!
+  description: String
+  author: Author!
+  reviews: [Review!]
+}
+
+type Author {
+  id: ID!
+  name: String!
+  books(limit: Int!): [Book!]!
+}
+
+type Review {
+  id: ID!
+  rating: Int!
+}
+```
+
+Trong schema này, `Query.book` là điểm bắt đầu của graph. `Book.author` nối tới `Author`, còn `Book.reviews` nối tới danh sách `Review`. Dấu `!` biểu thị giá trị không được `null`; `reviews` có thể `null` để minh họa lỗi một field mà không làm mất toàn bộ `book`.
+
+Client gửi một operation tới GraphQL endpoint, thường là `POST /graphql`, rồi chọn chính xác dữ liệu cần hiển thị:
+
+```graphql
+query BookScreen($id: ID!) {
+  book(id: $id) {
+    id
+    title
+    author {
+      id
+      name
+    }
+    reviews {
+      id
+      rating
+    }
+  }
+}
+```
+
+Request HTTP tương ứng có thể là:
+
+```http
+POST /graphql HTTP/1.1
+Host: api.example.com
+Content-Type: application/json
+
+{
+  "query": "query BookScreen($id: ID!) { book(id: $id) { id title author { id name } reviews { id rating } } }",
+  "variables": {
+    "id": "42"
+  },
+  "operationName": "BookScreen"
+}
+```
+
+Execution result chỉ chứa các field đã chọn:
+
+```json
+{
+  "data": {
+    "book": {
+      "id": "42",
+      "title": "Designing Data-Intensive Applications",
+      "author": {
+        "id": "7",
+        "name": "Martin Kleppmann"
+      },
+      "reviews": [
+        {
+          "id": "r-100",
+          "rating": 5
+        },
+        {
+          "id": "r-101",
+          "rating": 4
+        }
+      ]
+    }
+  }
+}
+```
+
+`description` tồn tại trong schema nhưng không xuất hiện trong response vì operation không chọn field đó. Đây là khác biệt cốt lõi: REST thường bắt đầu từ representation của resource, còn GraphQL bắt đầu từ schema graph và selection set của từng client. Đọc thêm [GraphQL là gì?](/docs/nen-tang/graphql-la-gi), [Scalar, object và field](/docs/schema-va-type-system/scalar-object-field) và [SDL và nguyên tắc thiết kế schema](/docs/schema-va-type-system/sdl-va-thiet-ke-schema) để củng cố các khái niệm này.
+
+**Takeaway thực hành:** Nếu representation của resource ổn định và đủ cho hầu hết client, REST là điểm bắt đầu đơn giản. Nếu nhiều client cần các lát dữ liệu khác nhau trên cùng một quan hệ, GraphQL có thể diễn tả nhu cầu đó rõ hơn, nhưng schema trở thành một tài sản dùng chung cần được quản lý.
+
+## Dữ liệu và số lần gọi mạng
+
+### Over-fetching: nhận thừa dữ liệu
+
+**Over-fetching** là khi client nhận nhiều field hơn số field nó sử dụng. Ví dụ màn hình card chỉ cần `id` và `title`, nhưng endpoint REST ở trên còn trả `description`, `isbn` và `authorId`. Payload (phần dữ liệu truyền trong request hoặc response) lớn hơn làm tăng băng thông và chi phí parse, đặc biệt trên mạng di động.
+
+Với GraphQL, client có thể chọn một response nhỏ:
+
+```graphql
+query BookCard($id: ID!) {
+  book(id: $id) {
+    id
+    title
+  }
+}
+```
+
+```json
+{
+  "data": {
+    "book": {
+      "id": "42",
+      "title": "Designing Data-Intensive Applications"
+    }
+  }
+}
+```
+
+REST cũng có thể giải quyết over-fetching bằng endpoint riêng cho card, query projection hoặc tham số field. Vì vậy, đây là lợi thế mặc định của field selection trong GraphQL, không phải khả năng GraphQL độc quyền.
+
+### Under-fetching: thiếu dữ liệu và nhiều round-trip
+
+**Under-fetching** là khi một response chưa đủ dữ liệu cho một màn hình. **Round-trip** là một vòng request đi từ client đến server rồi response quay lại. Nếu endpoint `/api/books/42` chỉ có `authorId`, màn hình có thể cần thêm hai request:
+
+```http
+GET /api/authors/7 HTTP/1.1
+Host: api.example.com
+Accept: application/json
+```
+
+```http
+GET /api/books/42/reviews HTTP/1.1
+Host: api.example.com
+Accept: application/json
+```
+
+Cùng với request lấy sách, client phải thực hiện ba round-trip tuần tự hoặc song song. Mỗi vòng có latency (độ trễ), lỗi mạng và trạng thái loading riêng. REST có thể thêm endpoint tổng hợp, nhúng author vào representation hoặc dùng BFF (Backend for Frontend, lớp backend chuyên phục vụ một nhóm client) để giảm số vòng gọi. Những cách đó hiệu quả, nhưng cần thêm contract và mã vận hành.
+
+Operation `BookScreen` ở phần trước gom nhu cầu sách, tác giả và đánh giá vào một request GraphQL. Tuy nhiên, một HTTP request không có nghĩa server chỉ thực hiện một truy vấn nội bộ. Resolver có thể gọi ba service, hoặc truy vấn nhiều bảng. GraphQL giảm round-trip giữa client và lớp GraphQL; nó không tự giảm mọi round-trip giữa lớp đó với backend.
+
+### Field selection không miễn phí
+
+Field selection giúp client tránh dữ liệu thừa, nhưng nó cũng cho client quyền tạo nhiều hình dạng query. Một query lấy một cuốn sách với hai field khác với query lấy một danh sách lớn cùng nhiều quan hệ lồng nhau. Server phải đặt pagination, giới hạn kích thước list, timeout và giới hạn độ sâu hoặc chi phí query phù hợp.
+
+Với REST, shape của response thường được kiểm soát chặt hơn ở từng endpoint. Điều đó làm việc dự đoán chi phí và cache dễ hơn trong một số hệ thống. Đổi lại, client có thể phải gọi endpoint tổng hợp hoặc chấp nhận representation lớn hơn.
+
+**Takeaway thực hành:** Đo cả hai phía của bài toán. Hãy ghi lại payload không dùng, số round-trip và thời gian backend của một màn hình thật. Đừng kết luận rằng một request GraphQL luôn nhanh hơn ba request REST, hoặc rằng nhiều endpoint REST luôn tạo over-fetching.
+
+## HTTP cache và hiệu năng
+
+### REST tận dụng semantics HTTP
+
+**Cache** (bộ nhớ đệm) là nơi giữ tạm response để lần gọi sau không phải thực hiện lại công việc giống hệt. HTTP đã có semantics (ngữ nghĩa giao thức) cho cache GET, validator và thời hạn. Một response REST có thể khai báo:
+
+```http
+HTTP/1.1 200 OK
+Content-Type: application/json
+Cache-Control: public, max-age=60
+ETag: "book-42-v3"
+
+{
+  "id": "42",
+  "title": "Designing Data-Intensive Applications"
+}
+```
+
+Client hoặc CDN (mạng phân phối nội dung) có thể gửi request có điều kiện ở lần sau:
+
+```http
+GET /api/books/42 HTTP/1.1
+Host: api.example.com
+If-None-Match: "book-42-v3"
+```
+
+Nếu resource chưa đổi, server trả:
+
+```http
+HTTP/1.1 304 Not Modified
+ETag: "book-42-v3"
+```
+
+Không phải response REST nào cũng nên cache công khai. Dữ liệu theo user cần `private` hoặc policy phù hợp. Mutation cũng cần invalidation (loại response cũ khỏi cache) rõ ràng. Dù vậy, URL resource, method GET, `ETag`, `Cache-Control` và proxy/CDN tạo ra một đường đi chuẩn hóa mà nhiều hạ tầng HTTP đã hỗ trợ.
+
+### GraphQL cần chiến lược cache rõ ràng
+
+Nhiều GraphQL request dùng cùng URL `/graphql` nhưng body khác nhau. Vì vậy, shared HTTP cache không thể chỉ dùng URL làm cache key. Cache key có thể phải bao gồm query hoặc hash của query, variables, operation, authorization context và các header ảnh hưởng đến dữ liệu.
+
+GraphQL vẫn có thể cache tốt, nhưng team phải chọn chiến lược cụ thể:
+
+- Dùng persisted operation (operation đã đăng ký trước) để có một định danh ổn định và có thể phục vụ query an toàn qua GET khi hạ tầng cho phép.
+- Dùng cache ở client theo `id` và type để tái sử dụng object giữa các màn hình. Đây là normalized client cache, không phải HTTP cache ở CDN.
+- Gắn policy cache theo loại dữ liệu và xử lý invalidation khi mutation thay đổi sách, tác giả hoặc đánh giá.
+- Tách response public và response phụ thuộc user; không để cache dùng chung trả dữ liệu của user này cho user khác.
+
+REST cũng có thể cần cache client tùy biến, còn GraphQL cũng có thể đặt phía sau CDN. Khác biệt là REST được hưởng nhiều mặc định từ semantics HTTP hơn, trong khi GraphQL cần làm rõ cache key và policy sớm hơn.
+
+**Takeaway thực hành:** Nếu cache HTTP và CDN là yêu cầu chính, hãy thử thiết kế cache key và invalidation trước khi chọn GraphQL. Nếu dùng GraphQL, coi cache là một phần của contract vận hành, không phải việc sẽ tự được giải quyết bởi client library.
+
+## Request, response và mô hình lỗi
+
+### Điểm giống nhau
+
+Cả hai mô hình đều cần xử lý các lớp giống nhau:
+
+- Transport bảo vệ bằng TLS, authentication và authorization.
+- Request có headers, correlation ID, timeout và giới hạn kích thước.
+- Response có dữ liệu, metadata và thông tin lỗi đủ để client hành động.
+- Pagination, retry, rate limit và idempotency phải được quy định cho từng use case.
+
+JSON không làm hai mô hình giống nhau. REST thường dùng HTTP method và URL để diễn tả thao tác. GraphQL đặt operation, variables và selection set trong body, còn HTTP thường chỉ vận chuyển request tới một endpoint.
+
+### REST dùng status HTTP làm tín hiệu chính
+
+Với REST, status HTTP thường cho biết kết quả ở cấp endpoint. Một resource không tồn tại có thể trả `404` với problem detail:
+
+```http
+HTTP/1.1 404 Not Found
+Content-Type: application/problem+json
+
+{
+  "type": "https://api.example.com/problems/book-not-found",
+  "title": "Book not found",
+  "status": 404,
+  "detail": "Không tìm thấy book 42."
+}
+```
+
+Client có thể dùng `2xx` cho thành công, `4xx` cho lỗi request hoặc quyền, và `5xx` cho lỗi server hoặc upstream. Đây không phải quy tắc tự động của mọi API; team vẫn phải thống nhất mapping, body lỗi và retry. Một endpoint REST tổng hợp có thể gặp lỗi một phần, nhưng HTTP status không tự mô tả field nào thành công và field nào thất bại. API phải chọn trả lỗi toàn endpoint hoặc thiết kế một partial response riêng.
+
+### GraphQL tách transport error và execution error
+
+GraphQL có execution result với `data` và `errors`. Lỗi parse hoặc validation thường làm operation không được thực thi. Ví dụ client gõ `titel` thay vì `title`:
+
+```http
+HTTP/1.1 400 Bad Request
+Content-Type: application/json
+
+{
+  "errors": [
+    {
+      "message": "Cannot query field \"titel\" on type \"Book\"."
+    }
+  ]
+}
+```
+
+Khi query hợp lệ nhưng một field lồng nhau lỗi lúc thực thi, GraphQL có thể trả dữ liệu một phần. Schema ở trên cho phép `reviews` là nullable, nên response minh họa sau vẫn hợp lệ:
+
+```http
+HTTP/1.1 200 OK
+Content-Type: application/json
+
+{
+  "data": {
+    "book": {
+      "id": "42",
+      "title": "Designing Data-Intensive Applications",
+      "author": {
+        "id": "7",
+        "name": "Martin Kleppmann"
+      },
+      "reviews": null
+    }
+  },
+  "errors": [
+    {
+      "message": "Review service unavailable",
+      "path": ["book", "reviews"],
+      "extensions": {
+        "code": "UPSTREAM_UNAVAILABLE"
+      }
+    }
+  ]
+}
+```
+
+`200` ở đây chỉ cho biết HTTP request đã nhận được một execution result. Nó không có nghĩa mọi field thành công. Mã `extensions.code` là quy ước do server đặt ra, không phải mã lỗi chung mà mọi GraphQL implementation đều dùng. Một server có thể chọn status khác cho một số lỗi transport hoặc policy, nên client không được chỉ nhìn status mà bỏ qua body. Ngược lại, `401`, `403`, `404`, `429` hoặc `503` vẫn có ý nghĩa ở lớp HTTP khi request bị chặn, sai route, vượt hạn mức hoặc upstream không sẵn sàng.
+
+Khi field non-null bị lỗi, `null` có thể lan lên parent theo quy tắc null bubbling. Client GraphQL vì thế phải xử lý đồng thời `data` một phần, `errors`, `path` và nullability. Bài [Mô hình request/response](/docs/nen-tang/mo-hinh-request-response) đi sâu hơn vào execution result, `data`, `errors` và `extensions`.
+
+**Takeaway thực hành:** Viết client theo một error contract rõ ràng. REST cần mapping status và problem body nhất quán; GraphQL cần đọc cả HTTP status, `data`, `errors`, `path` và mã lỗi trong `extensions` khi có.
+
+## Versioning và tiến hóa contract
+
+### REST versioning
+
+REST có thể versioning (quản lý nhiều phiên bản contract) bằng nhiều cách. Cách dễ nhìn thấy là đưa phiên bản vào URL:
+
+```http
+GET /api/v1/books/42 HTTP/1.1
+Host: api.example.com
+
+GET /api/v2/books/42 HTTP/1.1
+Host: api.example.com
+```
+
+Cũng có thể dùng media type hoặc header, chẳng hạn `Accept: application/vnd.example.book-v2+json`. URL version rõ ràng giúp client và gateway chọn contract, nhưng team phải duy trì hai đường đi, hai bộ tài liệu, test tương thích và kế hoạch sunset (ngừng hỗ trợ) cho `v1`.
+
+REST không bắt buộc version mọi thay đổi. Thêm một field không phá client thường có thể là thay đổi additive. Đổi ý nghĩa field, xóa field hoặc đổi kiểu dữ liệu vẫn cần chiến lược tương thích, dù URL không đổi.
+
+### GraphQL evolution
+
+GraphQL thường giữ một schema endpoint và tiến hóa theo kiểu additive: thêm field hoặc type, rồi đánh dấu field cũ là deprecated. Ví dụ một schema có thể thông báo hướng thay thế:
+
+```graphql
+type Book {
+  name: String!
+  title: String @deprecated(reason: "Dùng name thay thế.")
+}
+```
+
+GraphiQL, introspection và công cụ kiểm tra schema có thể giúp phát hiện field deprecated. Client mới chuyển sang `name`, còn client cũ vẫn có thời gian dùng `title`. Nhưng deprecation không tự cập nhật client và cũng không giải quyết việc server duy trì logic cũ.
+
+Một endpoint không có `/v2` không có nghĩa GraphQL không có version. Thay đổi nullability, xóa field, đổi ý nghĩa business hoặc trả dữ liệu khác với cam kết đều có thể phá client. GraphQL cần schema registry hoặc kiểm tra compatibility trong CI, thời hạn deprecation, thông báo migration và telemetry (dữ liệu đo usage) để biết còn client nào dùng field cũ.
+
+REST cũng có thể tiến hóa additive, còn GraphQL cũng có thể chạy song song nhiều schema khi cần. Khác biệt phổ biến là REST làm version boundary dễ thấy ở endpoint hoặc media type, còn GraphQL gom nhiều client vào một schema dùng chung và dựa nhiều hơn vào deprecation.
+
+**Takeaway thực hành:** Chọn cách versioning dựa trên khả năng migration và thời gian hỗ trợ, không dựa vào câu “GraphQL không cần version”. Mọi contract công khai đều cần quy tắc thay đổi tương thích.
+
+## Tooling và ownership của team
+
+### Tooling và workflow
+
+Tooling (bộ công cụ hỗ trợ thiết kế, gọi, kiểm thử và quan sát API) của REST thường xoay quanh HTTP. OpenAPI có thể mô tả endpoint, schema request/response và sinh client. Swagger UI, curl, Postman, browser DevTools, gateway và CDN đều quen thuộc với nhiều team. Điểm yếu là OpenAPI không tự xuất hiện từ REST; nếu spec không được cập nhật, tài liệu và implementation sẽ lệch nhau.
+
+GraphQL có schema làm nguồn metadata trung tâm. GraphiQL có thể đọc introspection để gợi ý field, hiển thị type và kiểm tra selection set trước khi gửi. Code generation có thể sinh type client từ schema và operation. Persisted operation, query validation và schema checks giúp kiểm soát client, nhưng cũng tạo thêm pipeline và quy ước cần duy trì.
+
+Cả hai đều có thể kiểm thử bằng curl hoặc Postman. Với GraphQL, body request có thể là:
+
+```json
+{
+  "query": "query BookCard($id: ID!) { book(id: $id) { id title } }",
+  "variables": {
+    "id": "42"
+  },
+  "operationName": "BookCard"
+}
+```
+
+`operationName` giúp log và dashboard gom các request cùng mục đích. Xem [GraphiQL và công cụ khám phá API](/docs/bat-dau/graphiql-va-kham-pha-api) và [Kiểm thử request bằng curl/Postman](/docs/bat-dau/kiem-thu-request-curl-postman) để nối phần so sánh này với quy trình học thực hành.
+
+### Team ownership
+
+**Ownership** là trách nhiệm rõ ràng về contract, dữ liệu, quyền truy cập, chất lượng và vòng đời thay đổi. Trong REST, team Catalog có thể sở hữu `/api/books`, còn team Review sở hữu `/api/books/{id}/reviews`. Boundary của team thường nhìn thấy qua URL và service. Mỗi owner nên công bố SLO (mục tiêu mức dịch vụ) và quy tắc thay đổi cho boundary của mình.
+
+Trong GraphQL, nhiều team cùng đóng góp vào một schema và một graph. Team Catalog có thể sở hữu `Book.title`, team Identity sở hữu `Author.name`, còn một team API hoặc BFF điều phối query. Cách này giúp client có một contract thống nhất, nhưng cần quy định ai review field mới, ai chịu latency, ai xử lý authorization và ai deprecate field.
+
+Nếu một team trung tâm phải hiểu và phê duyệt mọi field, GraphQL có thể trở thành bottleneck (điểm nghẽn). Nếu không có owner cho từng type và field, lỗi resolver hoặc thay đổi breaking dễ bị đẩy qua lại giữa các team. REST không tự loại bỏ các vấn đề này, nhưng boundary endpoint thường làm trách nhiệm ban đầu rõ hơn.
+
+**Takeaway thực hành:** Trước khi chọn GraphQL, viết owner và SLO cho từng nhóm type hoặc field. Trước khi chọn REST, viết owner cho từng endpoint và representation. Công cụ chỉ giúp workflow; nó không thay thế trách nhiệm.
+
+## Chi phí GraphQL cần xử lý
+
+Sự linh hoạt của field selection chuyển một phần công việc từ client sang platform và server. Bốn chi phí dưới đây cần được tính ngay trong thiết kế, không đợi đến khi production gặp sự cố.
+
+### Complexity và giới hạn query
+
+**Query complexity** là ước lượng lượng CPU, I/O, bộ nhớ hoặc số record mà một operation có thể tiêu tốn. Query hợp lệ theo schema vẫn có thể quá đắt. Với schema minh họa ở trên, operation sau hợp lệ về cú pháp và kiểu, nhưng lồng quan hệ `Author.books` nhiều tầng:
+
+```graphql
+query PotentiallyExpensive {
+  book(id: "42") {
+    author {
+      books(limit: 50) {
+        author {
+          books(limit: 50) {
+            id
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+Server cần giới hạn depth (độ sâu), cost theo field, kích thước page, tổng node, timeout và rate limit. Các query đọc danh sách nên có pagination bắt buộc. Persisted operation có thể giới hạn client chỉ gọi những operation đã kiểm duyệt khi use case cho phép. Không nên chỉ giới hạn số HTTP request, vì một request GraphQL vẫn có thể mở rộng thành công việc rất lớn.
+
+### Caching và invalidation
+
+Một object `Book` có thể xuất hiện trong nhiều selection set: màn hình card chỉ lấy `id` và `title`, màn hình chi tiết lấy thêm `description`, `author` và `reviews`. Khi mutation đổi title, hệ thống phải biết những response, object cache và CDN entry nào bị ảnh hưởng. Quan hệ lồng nhau làm invalidation khó hơn cache một resource REST đơn lẻ.
+
+Có thể giảm chi phí bằng normalized cache theo ID, persisted operation, cache policy theo field hoặc theo operation và event invalidation. Mỗi lựa chọn có trade-off về độ tươi dữ liệu, memory và độ phức tạp. Nếu dữ liệu cần `ETag` và cache công khai đơn giản, REST thường có đường đi ngắn hơn.
+
+### Authorization theo field
+
+GraphQL cho phép client yêu cầu nhiều nhánh trong một operation. Authorization (kiểm soát client được phép làm gì và đọc gì) vì vậy không nên chỉ kiểm tra ở root `book`. Một user có thể được đọc `Book.title` nhưng không được đọc một field nhạy cảm của `Review` hoặc một quan hệ của `Author`.
+
+Server cần kiểm tra quyền ở ranh giới phù hợp: object, field, tenant và data source. Không trả dữ liệu rồi hy vọng client bỏ field. Cũng không xem introspection hoặc việc ẩn field trong Docs explorer là authorization. Khi nhiều team sở hữu field, policy phải có owner và test riêng.
+
+### Observability và debugging
+
+**Observability** (khả năng quan sát trạng thái bên trong qua log, metric và trace) của REST thường bắt đầu dễ hơn vì method và URL đã phân biệt resource. GraphQL có thể đưa mọi operation qua `/graphql`, nên log chỉ endpoint này sẽ không cho biết request đang làm gì.
+
+Một GraphQL service nên ghi nhận operation name hoặc query hash, user hoặc tenant đã được làm mờ phù hợp, complexity, thời gian tổng, lỗi và path lỗi. Trace nên cho thấy resolver nào gọi backend nào và field nào chậm. Không log token, dữ liệu cá nhân hoặc toàn bộ variables một cách vô điều kiện. Query text chưa chuẩn hóa có thể tạo cardinality (số lượng nhãn khác nhau) rất lớn trong metrics; hash hoặc normalize operation giúp dashboard ổn định hơn.
+
+REST cũng cần correlation ID, trace, metrics và redaction. GraphQL chỉ làm cho nhu cầu phân loại theo operation, field và resolver rõ ràng hơn.
+
+**Takeaway thực hành:** Chỉ chọn GraphQL khi team sẵn sàng vận hành guardrail (cơ chế bảo vệ) cho complexity, cache, authorization và observability. Nếu chưa có bốn lớp này, sự linh hoạt của client có thể biến thành chi phí và rủi ro production.
+
+## Khi nào chọn REST, GraphQL hoặc hybrid
+
+### REST phù hợp khi
+
+REST thường là lựa chọn hợp lý khi:
+
+- Domain chủ yếu là CRUD theo resource, với representation và workflow khá ổn định.
+- Client và đối tác cần semantics HTTP rõ ràng: method, status, conditional GET, CDN hoặc download file.
+- API công khai cần dễ tích hợp bằng curl, Postman, OpenAPI và các gateway HTTP phổ biến.
+- Dữ liệu nhạy cảm hoặc policy đơn giản hơn khi boundary authorization trùng với endpoint.
+- Team muốn một hệ thống ít lớp platform hơn và có thể kiểm soát response shape ở từng endpoint.
+
+REST không đồng nghĩa với nhiều request chậm. Một endpoint tổng hợp tốt, cache đúng và query backend hiệu quả có thể phù hợp hơn GraphQL cho cùng màn hình.
+
+### GraphQL phù hợp khi
+
+GraphQL thường đáng cân nhắc khi:
+
+- Web, mobile và các client khác cần các field khác nhau từ cùng domain.
+- Một màn hình thường xuyên gom dữ liệu từ nhiều resource hoặc service.
+- Frontend cần schema typed, autocomplete và khả năng tiến hóa additive mà không tạo nhiều URL version.
+- Một BFF cần phục vụ nhiều màn hình read model và muốn client mô tả selection của mình.
+- Team có thể đầu tư vào query limits, cache policy, authorization theo field và telemetry.
+
+GraphQL không tự giải quyết data modeling, N+1 (mẫu gọi lặp một nguồn dữ liệu cho từng phần tử), transaction, quyền truy cập hay dữ liệu stale. Những vấn đề đó vẫn thuộc server và data source.
+
+### Hybrid phù hợp khi
+
+**Hybrid** là cách dùng cả hai mô hình ở những boundary khác nhau. Ví dụ, GraphQL BFF phục vụ màn hình web/mobile và gọi các REST service nội bộ; API đối tác, upload file, webhook hoặc download lớn vẫn dùng REST.
+
+```text
+Web/mobile ───────► GraphQL BFF ───────► REST Catalog
+                                      └──► REST Reviews
+Partner/integration ──────────────────► REST public API
+```
+
+BFF có thể làm composition (tổng hợp dữ liệu cho một client), nhưng không nên trở thành nơi sao chép toàn bộ business logic. Hybrid cần thống nhất authentication, authorization, correlation ID, timeout, retry, error mapping và cache ownership giữa các lớp.
+
+Một hybrid tốt phân chia theo nhu cầu, không tạo hai contract khác nhau cho cùng một client chỉ vì mỗi team thích một công cụ. Hãy xác định API nào là public contract, API nào là internal implementation và ai chịu trách nhiệm khi dữ liệu khác nhau.
+
+**Takeaway thực hành:** Chọn REST cho boundary cần HTTP semantics và representation ổn định, GraphQL cho read composition có nhiều hình dạng, và hybrid khi hệ thống thật có cả hai nhu cầu. Hãy quyết định theo use case và boundary ownership, không theo tên công nghệ.
+
+## Bảng so sánh cân bằng
+
+| Tiêu chí | REST | GraphQL | Trade-off cần cân nhắc |
+| --- | --- | --- | --- |
+| Mô hình | Resource, URL và HTTP method | Graph type, schema và field selection | REST dễ định vị qua URL; GraphQL mô tả quan hệ và nhu cầu client linh hoạt hơn. |
+| Shape response | Thường do từng endpoint định nghĩa | Do operation chọn trong schema | REST dễ dự đoán; GraphQL giảm field thừa nhưng có nhiều query shape cần kiểm soát. |
+| Nhiều resource | Có thể cần nhiều endpoint hoặc endpoint tổng hợp | Một operation có thể chọn nhiều nhánh | GraphQL giảm round-trip client; server phải xử lý composition và chi phí resolver. |
+| Cache HTTP | Hưởng nhiều semantics GET, `ETag`, CDN và proxy | Cần cache key theo query, variables và context; có thể dùng persisted GET | REST dễ bắt đầu hơn; GraphQL vẫn cache được nhưng policy thường phức tạp hơn. |
+| Status và lỗi | HTTP status thường là tín hiệu chính, body lỗi theo endpoint | HTTP status cho transport, `data` và `errors` cho execution | GraphQL hỗ trợ partial data; client phải xử lý kết quả không chỉ dựa trên `200`. |
+| Versioning | URL, media type hoặc tiến hóa additive | Thường additive và deprecation trong một schema | REST làm version boundary rõ; GraphQL tránh nhiều URL nhưng schema chung cần governance chặt. |
+| Tooling | OpenAPI, Swagger, curl, Postman và gateway HTTP | Introspection, GraphiQL, typed codegen và query validation | REST có ecosystem HTTP rộng; GraphQL cần pipeline schema và operation phù hợp. |
+| Authorization | Thường gắn với endpoint hoặc resource | Cần kiểm tra object, field, relation và tenant | GraphQL tinh vi hơn cho field-level policy; REST có boundary dễ hình dung hơn. |
+| Observability | Method và URL cung cấp nhãn tự nhiên | Cần operation name, query hash, resolver trace và cost | GraphQL cho insight theo field nhưng phải đầu tư chuẩn hóa telemetry. |
+| Ownership | Thường phân chia theo endpoint hoặc service | Một schema chung cần owner theo type và field | GraphQL tạo contract thống nhất; thiếu governance dễ thành bottleneck. |
+| Phù hợp ban đầu | CRUD, public integration, file, webhook, cache HTTP | Nhiều client, read composition, selection đa dạng | Có thể dùng hybrid thay vì ép toàn hệ thống theo một mô hình. |
+
+Không có hàng nào chứng minh một mô hình luôn thắng. Hãy đọc cột trade-off cùng cột lợi ích, rồi đối chiếu với yêu cầu thật của hệ thống.
+
+**Takeaway thực hành:** Dùng bảng này để mở cuộc review kiến trúc, nhưng chốt bằng số liệu của một use case đại diện: payload, round-trip, cache hit, latency, lỗi và effort vận hành.
+
+## Quy trình ra quyết định
+
+Có thể dùng quy trình ngắn sau trước khi tạo API mới:
+
+1. **Chọn một use case đại diện.** Vẽ màn hình hoặc workflow cụ thể, chẳng hạn `BookScreen`, thay vì tranh luận ở mức “REST hay GraphQL tốt hơn”.
+2. **Liệt kê dữ liệu cần đọc và dữ liệu có thể cache.** Đánh dấu field nào client dùng, resource nào cần gọi và response nào phụ thuộc user.
+3. **Đo baseline REST nếu đã có endpoint.** Ghi payload, số round-trip, p95 latency (độ trễ ở phân vị 95), status lỗi và cache hit. Nếu chưa có API, thiết kế một endpoint REST đơn giản để làm mốc so sánh.
+4. **Thử selection GraphQL tương đương.** Kiểm tra query cost, depth, số backend call, nullability và authorization. Đừng chỉ đo thời gian HTTP tổng.
+5. **Đánh giá năng lực team.** Xác định owner của schema hoặc endpoint, quy trình deprecation, dashboard, alert, giới hạn query và kế hoạch incident.
+6. **Chọn boundary, không nhất thiết chọn toàn hệ thống.** Có thể giữ REST cho public API và file, dùng GraphQL cho BFF read model, hoặc ngược lại.
+7. **Đặt tiêu chí dừng và kế hoạch thay đổi.** Một pilot nên có giới hạn traffic, contract test, rollback và cách chuyển client nếu trade-off không đạt.
+
+<Callout type="idea" title="Một câu hỏi kiểm tra nhanh">
+Nếu bỏ chữ GraphQL hoặc REST khỏi đề xuất, bạn có mô tả được resource, field, cache, error contract, authorization và owner bằng ví dụ cụ thể không? Nếu chưa, quyết định đang dựa trên công nghệ hơn là nhu cầu.
 </Callout>
 
-## Bước tiếp theo
+**Takeaway thực hành:** Hãy biến lựa chọn API thành một thử nghiệm có số đo và owner. Một pilot nhỏ với contract rõ ràng có giá trị hơn việc áp dụng GraphQL hoặc REST cho mọi route ngay từ đầu.
 
-Sau khi trang được điền nội dung, đọc bài kế tiếp trong nhóm để tiếp tục lộ trình.
+## Kết luận thực hành
+
+REST và GraphQL giải quyết cùng bài toán phân phối dữ liệu nhưng tối ưu các điểm khác nhau. REST tận dụng resource, endpoint và semantics HTTP để tạo boundary dễ cache, dễ debug và dễ tích hợp. GraphQL dùng schema graph và field selection để phục vụ nhiều hình dạng dữ liệu qua một contract typed, đổi lại server phải quản lý query cost, cache, authorization và observability kỹ hơn.
+
+Quy tắc kết luận có thể ngắn gọn như sau:
+
+- Chọn REST khi representation ổn định, HTTP cache/status là yêu cầu lớn hoặc API hướng tới nhiều đối tác.
+- Chọn GraphQL khi nhiều client cần selection khác nhau, màn hình thường composition nhiều resource và team đủ năng lực vận hành guardrail.
+- Chọn hybrid khi public/integration boundary cần REST nhưng read model của web/mobile cần một lớp GraphQL.
+
+Để học tiếp phần GraphQL, đọc [Mô hình request/response](/docs/nen-tang/mo-hinh-request-response), [SDL và nguyên tắc thiết kế schema](/docs/schema-va-type-system/sdl-va-thiet-ke-schema), [Tạo schema đầu tiên](/docs/bat-dau/tao-schema-dau-tien) và [Viết query đầu tiên](/docs/bat-dau/viet-query-dau-tien). Khi muốn gửi và kiểm tra request, tiếp tục với [GraphiQL và công cụ khám phá API](/docs/bat-dau/graphiql-va-kham-pha-api) và [Kiểm thử request bằng curl/Postman](/docs/bat-dau/kiem-thu-request-curl-postman).
+
+<Cards>
+  <Card title="GraphQL là gì?" href="/docs/nen-tang/graphql-la-gi" description="Ôn lại schema, operation và cách GraphQL mô tả API." />
+  <Card title="Mô hình request/response" href="/docs/nen-tang/mo-hinh-request-response" description="Đọc sâu hơn về data, errors và execution result." />
+  <Card title="Schema và type system" href="/docs/schema-va-type-system" description="Học cách thiết kế type, field, list và nullability." />
+  <Card title="GraphiQL và kiểm thử" href="/docs/bat-dau/graphiql-va-kham-pha-api" description="Khám phá schema và chạy operation trong môi trường local." />
+</Cards>
+
+**Takeaway thực hành:** Không có “người thắng” tuyệt đối. Hãy chọn mô hình mà team có thể giải thích bằng request/response cụ thể, bảo vệ bằng authorization, quan sát trong production và thay đổi mà không làm client bất ngờ.
