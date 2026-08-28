@@ -1,23 +1,439 @@
 ---
 title: "Viết query đầu tiên"
-description: "Kết nối query với resolver và đọc kết quả từ endpoint GraphQL của ứng dụng."
+description: "Kết nối query GraphQL với resolver trong Spring for GraphQL và đọc execution result đầu tiên."
 ---
 
-Trang này sẽ trình bày **Viết query đầu tiên** trong bối cảnh xây dựng GraphQL API với Spring Boot.
+Một query GraphQL chỉ trả về dữ liệu khi ba phần khớp nhau: schema khai báo field, resolver cung cấp giá trị và engine thực thi query theo selection mà client yêu cầu. Bài này nối các phần đó bằng một field scalar đơn giản, sau đó mở rộng sang object và list.
+
+<Callout type="info" title="Giả định của ví dụ">
+  Các trang lân cận hiện mới là khung nội dung, vì vậy SDL dưới đây là schema tối thiểu để minh họa. Tên package `com.example.graphql`, port `8080` và endpoint `POST /graphql` cũng là giả định. Khi schema thực tế khác, hãy đổi đồng thời tên field, kiểu trả về và query kiểm tra.
+</Callout>
 
 ## Mục lục
 
-- [Nội dung dự kiến](#nội-dung-dự-kiến)
+- [Từ schema đến execution](#từ-schema-đến-execution)
+- [Schema tối thiểu](#schema-tối-thiểu)
+- [Đặt class và package](#đặt-class-và-package)
+- [Tạo resolver cho field đơn giản](#tạo-resolver-cho-field-đơn-giản)
+  - [Resolver mặc định theo tên method](#resolver-mặc-định-theo-tên-method)
+  - [Mapping tường minh khi tên khác](#mapping-tường-minh-khi-tên-khác)
+- [Gửi query và đọc kết quả](#gửi-query-và-đọc-kết-quả)
+  - [Request GraphQL](#request-graphql)
+  - [Response thành công](#response-thành-công)
+  - [Khi response có errors](#khi-response-có-errors)
+- [Chạy và kiểm tra local](#chạy-và-kiểm-tra-local)
+- [Mở rộng sang object và list](#mở-rộng-sang-object-và-list)
+  - [Schema cho object và list](#schema-cho-object-và-list)
+  - [Dữ liệu in-memory và resolver](#dữ-liệu-in-memory-và-resolver)
+  - [Query và response cho object](#query-và-response-cho-object)
+- [Lỗi thường gặp](#lỗi-thường-gặp)
+  - [Field không tồn tại hoặc sai tên](#field-không-tồn-tại-hoặc-sai-tên)
+  - [Resolver không được đăng ký](#resolver-không-được-đăng-ký)
+  - [Nullability không khớp](#nullability-không-khớp)
 - [Bước tiếp theo](#bước-tiếp-theo)
 
-## Nội dung dự kiến
+## Từ schema đến execution
 
-Nội dung chi tiết sẽ bao gồm khái niệm chính, ví dụ code và các lưu ý thực hành liên quan đến chủ đề này.
+[Schema](/docs/bat-dau/tao-schema-dau-tien) là contract của API. Nó nói query root có field nào và mỗi field trả về kiểu gì. Resolver là phần code tính hoặc lấy giá trị cho một field. Trong Spring for GraphQL, một method trong `@Controller` được đăng ký thành handler của field thông qua annotation mapping.
 
-<Callout type="info" title="Trang placeholder">
-Đây là trang khung. Hãy dùng skill `fumadocs-technical-writer` để viết đầy đủ trang này trong bước tiếp theo.
+Khi client gửi query, GraphQL xử lý theo chuỗi sau:
+
+```text
+Client gửi query
+      │
+      ▼
+Schema kiểm tra field và kiểu dữ liệu
+      │
+      ▼
+Spring for GraphQL tìm handler của field
+      │
+      ▼
+Method resolver trả về giá trị Java
+      │
+      ▼
+GraphQL chọn field được yêu cầu và tạo JSON response
+```
+
+Với query root `hello`, có thể hình dung như sau:
+
+1. Schema khai báo `hello: String!`.
+2. `@QueryMapping` nối field `hello` với method Java tương ứng.
+3. Method trả về một `String`.
+4. Execution engine đặt chuỗi đó vào `data.hello`.
+
+Annotation mapping không tự tạo field mới trong schema. Nếu schema không có `hello`, việc thêm method `hello()` vẫn không làm query hợp lệ.
+
+## Schema tối thiểu
+
+Đặt schema minh họa tại `src/main/resources/graphql/schema.graphqls`:
+
+```graphql
+type Query {
+  hello: String!
+}
+```
+
+Khoảng trắng đầu dòng trong SDL không có ý nghĩa; phần quan trọng là `Query`, `hello` và `String!`. Dấu `!` nghĩa là field này không được trả về `null`. Vì vậy resolver phải luôn trả về một chuỗi hợp lệ.
+
+Spring Boot thường quét schema trong `classpath:graphql/**/`. Nếu bài [Thêm dependency và cấu hình](/docs/bat-dau/them-dependency-va-cau-hinh) đã đổi `spring.graphql.schema.locations`, hãy đặt file theo cấu hình thực tế thay vì chỉ dựa vào đường dẫn minh họa này.
+
+## Đặt class và package
+
+Một cấu trúc nhỏ có thể bắt đầu như sau:
+
+```text
+src/
+└── main/
+    ├── java/
+    │   └── com/example/graphql/
+    │       ├── GraphqlApplication.java
+    │       └── GreetingController.java
+    └── resources/
+        └── graphql/
+            └── schema.graphqls
+```
+
+`GreetingController` nằm trong package con của class có `@SpringBootApplication` để component scan phát hiện bean. Nếu package ứng dụng thực tế là `com.acme.catalog`, hãy thay toàn bộ `com.example.graphql` bằng package đó hoặc cấu hình component scan phù hợp.
+
+Trong Spring for GraphQL, dùng `@Controller` cho controller GraphQL. Endpoint HTTP `/graphql` đã nhận request; method bên dưới không phải một REST endpoint riêng và không cần `@GetMapping`.
+
+## Tạo resolver cho field đơn giản
+
+### Resolver mặc định theo tên method
+
+Tạo file `src/main/java/com/example/graphql/GreetingController.java`:
+
+```java
+package com.example.graphql;
+
+import org.springframework.graphql.data.method.annotation.QueryMapping;
+import org.springframework.stereotype.Controller;
+
+@Controller
+public class GreetingController {
+
+    @QueryMapping
+    public String hello() {
+        return "Xin chào từ Spring for GraphQL!";
+    }
+}
+```
+
+`@QueryMapping` là shortcut cho mapping vào root type `Query`. Khi không chỉ rõ tên, Spring dùng tên method làm tên field. Vì vậy `hello()` khớp với `hello` trong schema và Java `String` được chuyển thành giá trị GraphQL kiểu `String`. Dấu `!` là cam kết resolver không trả về `null`, nên method phải giữ cam kết đó.
+
+Giữ method này nhỏ giúp nhìn rõ trách nhiệm của resolver. Trong ứng dụng thật, method thường gọi service hoặc repository thay vì giữ dữ liệu trực tiếp. Phần [@QueryMapping, @MutationMapping, @SubscriptionMapping](/docs/tich-hop-spring-for-graphql/query-mutation-subscription-mapping) sẽ đi sâu hơn vào các loại operation mapping.
+
+### Mapping tường minh khi tên khác
+
+Tên method không bắt buộc phải giống tên field nếu mapping được chỉ rõ. Ví dụ sau thay thế method `hello()` ở trên:
+
+```java
+package com.example.graphql;
+
+import org.springframework.graphql.data.method.annotation.SchemaMapping;
+import org.springframework.stereotype.Controller;
+
+@Controller
+public class GreetingController {
+
+    @SchemaMapping(typeName = "Query", field = "hello")
+    public String greeting() {
+        return "Xin chào từ Spring for GraphQL!";
+    }
+}
+```
+
+Ở đây method là `greeting()` nhưng field GraphQL vẫn là `hello`. Không cần đặt cả `@QueryMapping` và `@SchemaMapping` lên cùng một method. Với query root đơn giản, ưu tiên `@QueryMapping`; dùng mapping tường minh khi tên Java và tên schema cần tách biệt.
+
+## Gửi query và đọc kết quả
+
+### Request GraphQL
+
+Query GraphQL chỉ yêu cầu field mà client muốn đọc:
+
+```graphql
+query FirstHello {
+  hello
+}
+```
+
+Nếu gửi qua HTTP, body là một GraphQL request JSON. Với giả định endpoint mặc định, request có thể là:
+
+```json
+{
+  "query": "query FirstHello { hello }",
+  "operationName": "FirstHello"
+}
+```
+
+`operationName` hữu ích khi một document có nhiều operation. Với document chỉ có một operation, trường này có thể bỏ qua.
+
+### Response thành công
+
+Resolver trả về chuỗi nên execution result có dạng:
+
+```json
+{
+  "data": {
+    "hello": "Xin chào từ Spring for GraphQL!"
+  }
+}
+```
+
+`data` phản ánh selection set của query. Nếu query chỉ chọn `hello`, response không tự thêm các field khác. Đây là điểm khác với một endpoint REST thường trả về một DTO cố định.
+
+### Khi response có errors
+
+GraphQL có thể trả `errors` khi query không hợp lệ hoặc resolver gặp lỗi. Ví dụ client gõ sai tên field:
+
+```graphql
+query FirstHello {
+  helo
+}
+```
+
+Hình dạng response minh họa:
+
+```json
+{
+  "errors": [
+    {
+      "message": "Cannot query field \"helo\" on type \"Query\"."
+    }
+  ]
+}
+```
+
+Thông báo và dấu câu có thể khác theo phiên bản `graphql-java`. Lỗi validation này xảy ra trước khi `hello()` được gọi, vì `helo` không có trong schema. Với lỗi phát sinh trong lúc resolve, response có thể có cả `data` một phần và `errors`; field lỗi thường trở thành `null` nếu schema cho phép.
+
+## Chạy và kiểm tra local
+
+Bài này giả định project đã có dependency và cấu hình theo [Thêm dependency và cấu hình](/docs/bat-dau/them-dependency-va-cau-hinh). Trong project Spring Boot thật, chọn lệnh tương ứng với build tool:
+
+```bash
+# Maven Wrapper
+./mvnw spring-boot:run
+
+# Hoặc Gradle Wrapper
+./gradlew bootRun
+```
+
+Sau khi ứng dụng khởi động:
+
+1. Kiểm tra log không có lỗi đọc `schema.graphqls`.
+2. Mở GraphiQL nếu ứng dụng đã bật giao diện này, thường tại `http://localhost:8080/graphiql`.
+3. Chạy query `FirstHello` trong GraphiQL và đối chiếu `data.hello` với giá trị method trả về.
+4. Nếu không dùng GraphiQL, gửi request bằng `curl`:
+
+```bash
+curl http://localhost:8080/graphql \
+  -H 'Content-Type: application/json' \
+  --data '{"query":"query FirstHello { hello }","operationName":"FirstHello"}'
+```
+
+Đường dẫn và port chỉ đúng khi ứng dụng dùng cấu hình giả định ở đầu bài. Với Spring Boot 3.5+, cấu hình endpoint bằng `spring.graphql.http.path`; với Spring Boot 3.4 trở xuống, dùng `spring.graphql.path`. Nếu đã đổi key tương ứng, `server.port` hoặc bật bảo mật, hãy dùng giá trị thực tế. Xem [GraphiQL và công cụ khám phá API](/docs/bat-dau/graphiql-va-kham-pha-api) để tìm hiểu thêm về schema documentation và execution result.
+
+## Mở rộng sang object và list
+
+Field scalar `hello` là bước đầu để kiểm tra mapping. Dữ liệu ứng dụng thường là object hoặc danh sách object. Khi đó schema mô tả cả kiểu object, còn query phải chọn các subfield của object.
+
+### Schema cho object và list
+
+Mở rộng `schema.graphqls` thành phiên bản sau:
+
+```graphql
+type Query {
+  hello: String!
+  featuredBook: Book
+  books: [Book!]!
+}
+
+type Book {
+  id: ID!
+  title: String!
+  author: String!
+  publishedYear: Int!
+}
+```
+
+Trong schema này:
+
+- `featuredBook: Book` là một object có thể `null`, chẳng hạn khi chưa có sách nổi bật.
+- `[Book!]!` là một list không `null`, và mỗi phần tử trong list cũng không `null`.
+- Các field `id`, `title`, `author` và `publishedYear` đều bắt buộc có giá trị.
+
+Đây là contract của ví dụ, không phải yêu cầu mọi domain đều dùng các field này. Hãy đổi `Book` và các field theo schema thực tế của bạn.
+
+### Dữ liệu in-memory và resolver
+
+Tạo model minh họa tại `src/main/java/com/example/graphql/book/Book.java`:
+
+```java
+package com.example.graphql.book;
+
+public class Book {
+    private final String id;
+    private final String title;
+    private final String author;
+    private final int publishedYear;
+
+    public Book(String id, String title, String author, int publishedYear) {
+        this.id = id;
+        this.title = title;
+        this.author = author;
+        this.publishedYear = publishedYear;
+    }
+
+    public String getId() {
+        return id;
+    }
+
+    public String getTitle() {
+        return title;
+    }
+
+    public String getAuthor() {
+        return author;
+    }
+
+    public int getPublishedYear() {
+        return publishedYear;
+    }
+}
+```
+
+Sau đó tạo `src/main/java/com/example/graphql/book/BookController.java`:
+
+```java
+package com.example.graphql.book;
+
+import java.util.List;
+
+import org.springframework.graphql.data.method.annotation.QueryMapping;
+import org.springframework.stereotype.Controller;
+
+@Controller
+public class BookController {
+
+    private final List<Book> books = List.of(
+        new Book("book-1", "Effective Java", "Joshua Bloch", 2018),
+        new Book("book-2", "Designing Data-Intensive Applications", "Martin Kleppmann", 2017)
+    );
+
+    @QueryMapping
+    public Book featuredBook() {
+        return books.isEmpty() ? null : books.get(0);
+    }
+
+    @QueryMapping
+    public List<Book> books() {
+        return books;
+    }
+}
+```
+
+Tên method `featuredBook()` và `books()` lần lượt ánh xạ vào hai field cùng tên trong `Query`. Getter của `Book` cung cấp các property `id`, `title`, `author` và `publishedYear` cho việc đọc subfield. `List.of(...)` chỉ là dữ liệu in-memory để học flow; mỗi lần khởi động ứng dụng, dữ liệu lại được tạo từ đầu.
+
+Trong ứng dụng thật, thay list bằng service hoặc repository. Kiểu trả về của controller vẫn cần phù hợp với schema: `Book` cho một object và `List<Book>` cho list. Nếu repository có thể trả `null`, cần quyết định rõ nên đổi schema thành nullable hay chuẩn hóa giá trị trước khi trả về.
+
+### Query và response cho object
+
+Object và list phải có selection set. Query sau đọc cả object nổi bật và danh sách sách:
+
+```graphql
+query Books {
+  featuredBook {
+    id
+    title
+    author
+    publishedYear
+  }
+  books {
+    id
+    title
+    author
+    publishedYear
+  }
+}
+```
+
+Với dữ liệu in-memory ở trên, response tương ứng là:
+
+```json
+{
+  "data": {
+    "featuredBook": {
+      "id": "book-1",
+      "title": "Effective Java",
+      "author": "Joshua Bloch",
+      "publishedYear": 2018
+    },
+    "books": [
+      {
+        "id": "book-1",
+        "title": "Effective Java",
+        "author": "Joshua Bloch",
+        "publishedYear": 2018
+      },
+      {
+        "id": "book-2",
+        "title": "Designing Data-Intensive Applications",
+        "author": "Martin Kleppmann",
+        "publishedYear": 2017
+      }
+    ]
+  }
+}
+```
+
+Nếu chỉ viết `books` mà không có `{ id title }`, GraphQL sẽ báo object field cần subfield. Ngược lại, scalar như `hello` không được viết kèm subfield.
+
+## Lỗi thường gặp
+
+<Callout type="error" title="Lỗi mapping thường gặp">
+  Nếu query đã hợp lệ theo schema nhưng method không được gọi, kiểm tra lần lượt `@Controller`, package component scan, annotation `@QueryMapping` và tên field. Thông báo cụ thể có thể khác theo phiên bản Spring for GraphQL, nhưng nguyên nhân thường nằm ở bước đăng ký handler chứ không phải ở JSON response.
 </Callout>
+
+### Field không tồn tại hoặc sai tên
+
+GraphQL phân biệt chữ hoa, chữ thường và không tự đoán tên gần giống. Các cặp sau là khác nhau:
+
+- `hello` và `Hello`.
+- `publishedYear` và `published_year`.
+- `featuredBook` và `featured_book`.
+
+Lỗi `Cannot query field ... on type "Query"` thường cho biết field chưa được khai báo trong schema đang được load, query gõ sai, hoặc schema thực tế không phải file bạn vừa sửa. Hãy kiểm tra schema trong GraphiQL trước khi debug Java resolver.
+
+### Resolver không được đăng ký
+
+Các nguyên nhân phổ biến:
+
+- Class thiếu `@Controller`.
+- Method thiếu `@QueryMapping`, hoặc dùng annotation của loại operation khác.
+- Package controller nằm ngoài vùng component scan.
+- Method có tên khác field nhưng không dùng mapping tường minh.
+- File SDL nằm ngoài `spring.graphql.schema.locations`.
+
+Sửa từng điểm một rồi khởi động lại ứng dụng. Một method Java đúng kiểu nhưng không được Spring đăng ký vẫn không thể resolve field.
+
+### Nullability không khớp
+
+<Callout type="warn" title="Nullability là một phần của contract">
+  `String!` và `[Book!]!` không cho phép giá trị `null`. Nếu resolver trả `null`, GraphQL sẽ thêm lỗi vào response và có thể làm `data` bị null theo quy tắc null bubbling. Nếu dữ liệu hợp lệ có thể vắng mặt, khai báo field nullable như `featuredBook: Book` hoặc xử lý trường hợp thiếu dữ liệu trước khi trả về.
+</Callout>
+
+Đừng chỉ sửa lỗi bằng cách đổi mọi field thành nullable. Hãy chọn nullability dựa trên domain: `books` thường có thể là list rỗng nhưng vẫn là list hợp lệ, còn `featuredBook` có thể không tồn tại. Sau đó kiểm tra lại Java return type, query và response cùng lúc.
 
 ## Bước tiếp theo
 
-Sau khi trang được điền nội dung, đọc bài kế tiếp trong nhóm để tiếp tục lộ trình.
+Bạn đã nối một field trong `Query` với controller method và đọc execution result đầu tiên. Từ đây có thể đi tiếp theo các hướng:
+
+- [GraphiQL và công cụ khám phá API](/docs/bat-dau/graphiql-va-kham-pha-api) để chạy query, xem documentation và thử selection set.
+- [@QueryMapping, @MutationMapping, @SubscriptionMapping](/docs/tich-hop-spring-for-graphql/query-mutation-subscription-mapping) để phân biệt các root operation.
+- [@SchemaMapping và nested field](/docs/tich-hop-spring-for-graphql/schema-mapping-va-nested-field) để resolve field lồng trong `Book` hoặc object khác.
+- [Binding arguments và input](/docs/tich-hop-spring-for-graphql/binding-arguments-input) để truyền argument và variables thay vì trả toàn bộ dữ liệu mẫu.
+
+<Cards>
+  <Card title="GraphiQL và công cụ khám phá API" href="/docs/bat-dau/graphiql-va-kham-pha-api" description="Chạy query và đọc execution result trực tiếp trong giao diện khám phá API." />
+  <Card title="Schema mapping và nested field" href="/docs/tich-hop-spring-for-graphql/schema-mapping-va-nested-field" description="Mở rộng resolver từ query root sang field của object." />
+</Cards>

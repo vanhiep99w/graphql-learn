@@ -3,21 +3,329 @@ title: "Khởi tạo project Spring Boot"
 description: "Tạo project nền với Spring Boot và các lựa chọn cần thiết cho một ứng dụng GraphQL."
 ---
 
-Trang này sẽ trình bày **Khởi tạo project Spring Boot** trong bối cảnh xây dựng GraphQL API với Spring Boot.
+import { File, Files, Folder } from 'fumadocs-ui/components/files';
+import { Step, Steps } from 'fumadocs-ui/components/steps';
+
+Bài này đưa bạn từ một thư mục trống đến một project Spring Boot có thể build và chạy local. Đây mới là phần khung của ứng dụng. Schema GraphQL (hợp đồng mô tả các type và field) và resolver (hàm xử lý query) sẽ được thêm ở các bài sau.
+
+<Callout type="info" title="Phiên bản giả định">
+Các lệnh trong bài dùng Maven và giả định JDK 17 cùng Spring Boot 3.x, ví dụ dòng 3.5.x. Bạn có thể dùng một patch version (bản sửa lỗi) 3.x mới hơn nếu Spring Initializr hiển thị phiên bản đó. Không trộn Spring Boot 2.x với các dependency dành cho Spring Boot 3.x.
+</Callout>
 
 ## Mục lục
 
-- [Nội dung dự kiến](#nội-dung-dự-kiến)
+- [Điều kiện cần có](#điều-kiện-cần-có)
+- [Thông số khởi tạo đề xuất](#thông-số-khởi-tạo-đề-xuất)
+  - [Phiên bản và công cụ](#phiên-bản-và-công-cụ)
+  - [Dependency nên chọn ở bước này](#dependency-nên-chọn-ở-bước-này)
+- [Tạo project bằng Spring Initializr](#tạo-project-bằng-spring-initializr)
+  - [Cách 1: Dùng giao diện web](#cách-1-dùng-giao-diện-web)
+  - [Cách 2: Dùng API bằng curl](#cách-2-dùng-api-bằng-curl)
+- [Cấu trúc project sau khi tạo](#cấu-trúc-project-sau-khi-tạo)
+  - [Vai trò của các file chính](#vai-trò-của-các-file-chính)
+- [Kiểm tra project khởi tạo](#kiểm-tra-project-khởi-tạo)
+  - [Kiểm tra JDK và Maven wrapper](#kiểm-tra-jdk-và-maven-wrapper)
+  - [Build test trước khi chạy](#build-test-trước-khi-chạy)
+  - [Chạy ứng dụng local](#chạy-ứng-dụng-local)
+- [Các lỗi thường gặp](#các-lỗi-thường-gặp)
+  - [JDK không tương thích](#jdk-không-tương-thích)
+  - [Maven wrapper không chạy được](#maven-wrapper-không-chạy-được)
+  - [Không tải được Maven hoặc dependency](#không-tải-được-maven-hoặc-dependency)
+  - [Chạy lệnh ở sai thư mục](#chạy-lệnh-ở-sai-thư-mục)
+  - [Cổng 8080 đã được sử dụng](#cổng-8080-đã-được-sử-dụng)
+  - [Đã thêm GraphQL starter nhưng chưa có schema](#đã-thêm-graphql-starter-nhưng-chưa-có-schema)
 - [Bước tiếp theo](#bước-tiếp-theo)
 
-## Nội dung dự kiến
+## Điều kiện cần có
 
-Nội dung chi tiết sẽ bao gồm khái niệm chính, ví dụ code và các lưu ý thực hành liên quan đến chủ đề này.
+Bạn cần chuẩn bị:
 
-<Callout type="info" title="Trang placeholder">
-Đây là trang khung. Hãy dùng skill `fumadocs-technical-writer` để viết đầy đủ trang này trong bước tiếp theo.
+- **JDK 17** (bộ công cụ phát triển Java), không chỉ là JRE. Kiểm tra bằng `java -version`.
+- Một terminal và kết nối mạng. Lần build đầu có thể cần tải Maven và các dependency từ internet.
+- Trình duyệt để mở [Spring Initializr](https://start.spring.io/), hoặc `curl` và `unzip` nếu muốn tạo project bằng lệnh.
+- Một IDE (môi trường phát triển) bất kỳ có hỗ trợ Java. IntelliJ IDEA, Eclipse và VS Code đều có thể mở project Maven.
+
+Không bắt buộc phải cài Maven toàn cục. Project do Initializr tạo có **Maven wrapper**: các script `mvnw` và `mvnw.cmd` tự gọi đúng Maven cho project.
+
+## Thông số khởi tạo đề xuất
+
+Chọn cùng một bộ giá trị giúp tên package, lệnh và cấu trúc trong các bài sau nhất quán.
+
+### Phiên bản và công cụ
+
+| Trường | Giá trị đề xuất | Ý nghĩa |
+| --- | --- | --- |
+| Project | Maven | Maven là công cụ quản lý dependency và quy trình build trong ví dụ này. |
+| Language | Java | Các ví dụ của lộ trình dùng Spring Boot với Java. |
+| Spring Boot | 3.5.x hoặc patch 3.x mới nhất | Dòng 3.x yêu cầu tối thiểu Java 17. |
+| Group | `com.example` | Không gian tên (namespace) của tổ chức hoặc nhóm sở hữu project. |
+| Artifact | `graphql-spring-boot` | Tên project và tên artifact (gói đầu ra) khi build. |
+| Name | `graphql-spring-boot` | Tên hiển thị của ứng dụng. |
+| Package name | `com.example.graphql` | Package Java; không dùng dấu gạch ngang. |
+| Packaging | `Jar` | Gói ứng dụng Java có thể chạy bằng `java -jar`. |
+| Java | `17` | Phiên bản JDK được dùng để biên dịch và chạy ví dụ. |
+
+Nếu Initializr không còn hiển thị đúng patch version trong bảng, hãy chọn patch version 3.x mới nhất được đánh dấu ổn định. Giữ Java 17 để loại bỏ khác biệt không cần thiết trong lúc học. Nếu chọn Gradle thay cho Maven, cấu trúc `src` gần như giữ nguyên nhưng dùng `./gradlew test` và `./gradlew bootRun` thay cho các lệnh `./mvnw` trong bài này.
+
+### Dependency nên chọn ở bước này
+
+Ở bước khởi tạo, chọn **Spring Web**. Dependency (gói thư viện mà project cần) này tạo máy chủ HTTP nhúng, nhờ đó bạn có thể kiểm tra project khởi động trước khi thêm GraphQL. Trong Spring Boot, starter là một dependency gộp sẵn các thư viện thường đi cùng nhau.
+
+| Dependency | Chọn ở bài này? | Lý do |
+| --- | --- | --- |
+| Spring Web | Có | Cung cấp nền HTTP tối thiểu qua `spring-boot-starter-web`. |
+| Spring for GraphQL | Chưa cần | Starter `spring-boot-starter-graphql` sẽ được thêm và cấu hình ở bài [Thêm dependency và cấu hình](/docs/bat-dau/them-dependency-va-cau-hinh). |
+| Database, JPA hoặc Security | Không | Chưa thuộc phạm vi ví dụ `hello` và sẽ làm project có thêm cấu hình ngoài mục tiêu. |
+
+<Callout type="idea" title="Vì sao chưa chọn Spring for GraphQL?">
+Nếu thêm GraphQL starter ngay nhưng chưa có file schema, một số phiên bản Spring Boot có thể dừng lúc khởi động vì chưa tìm thấy schema. Tách việc kiểm tra project nền khỏi việc cấu hình GraphQL giúp biết chính xác lỗi nằm ở bước nào. Bạn vẫn có thể chọn Spring for GraphQL ngay trên Initializr, nhưng hãy chuyển sang bài dependency và schema trước khi chạy ứng dụng.
 </Callout>
+
+## Tạo project bằng Spring Initializr
+
+Spring Initializr là trình tạo project của Spring. Nó sinh sẵn `pom.xml`, Maven wrapper, class khởi động và test mẫu theo các lựa chọn bạn đã chọn.
+
+### Cách 1: Dùng giao diện web
+
+<Steps>
+<Step>
+
+**Mở [start.spring.io](https://start.spring.io/).** Chọn `Maven`, `Java`, một patch version ổn định thuộc Spring Boot 3.x và `Java 17`.
+
+</Step>
+<Step>
+
+**Điền thông tin project.** Dùng các giá trị trong bảng ở trên, đặc biệt là `Artifact` `graphql-spring-boot` và `Package name` `com.example.graphql`. Tên package không được chứa `-`.
+
+</Step>
+<Step>
+
+**Thêm `Spring Web`.** Chưa cần thêm database, security hay `Spring for GraphQL` nếu bạn muốn chạy kiểm tra ngay sau khi giải nén.
+
+</Step>
+<Step>
+
+**Bấm `Generate`.** Giải nén file ZIP rồi mở thư mục có `pom.xml` làm thư mục gốc của project. Không mở riêng thư mục `src` trong IDE.
+
+</Step>
+</Steps>
+
+Sau bước này, project đã có lớp khởi động do Initializr sinh ra nhưng chưa có GraphQL schema hoặc resolver. Đừng kỳ vọng `/graphql` trả về dữ liệu ở thời điểm này.
+
+### Cách 2: Dùng API bằng curl
+
+Cách này tạo project tương đương mà không cần thao tác trên giao diện. Lệnh dưới đây dùng macOS, Linux hoặc Git Bash; tham số `bootVersion` được khóa ở `3.5.0` để khớp với ví dụ. Nếu Initializr đã thay đổi danh sách phiên bản, thay giá trị này bằng một patch version 3.x còn được hỗ trợ.
+
+```bash
+curl -L https://start.spring.io/starter.zip \
+  -d type=maven-project \
+  -d language=java \
+  -d bootVersion=3.5.0 \
+  -d javaVersion=17 \
+  -d groupId=com.example \
+  -d artifactId=graphql-spring-boot \
+  -d name=graphql-spring-boot \
+  -d packageName=com.example.graphql \
+  -d packaging=jar \
+  -d dependencies=web \
+  -o graphql-spring-boot.zip
+
+mkdir -p graphql-spring-boot
+unzip -q graphql-spring-boot.zip -d graphql-spring-boot
+cd graphql-spring-boot
+```
+
+Nếu file `pom.xml` nằm trong một thư mục con sau khi giải nén, hãy `cd` vào đúng thư mục chứa file đó trước khi chạy Maven. Trên Windows, bạn có thể dùng giao diện web hoặc một công cụ giải nén ZIP tương đương; các lệnh kiểm tra sau đó dùng `mvnw.cmd`.
+
+## Cấu trúc project sau khi tạo
+
+Với các lựa chọn trên, những file quan trọng thường có dạng sau. Tên class có thể thay đổi nếu bạn đổi `Name` hoặc `Package name`.
+
+<Files>
+  <Folder name="graphql-spring-boot" defaultOpen>
+    <Folder name=".mvn">
+      <Folder name="wrapper">
+        <File name="maven-wrapper.properties" />
+      </Folder>
+    </Folder>
+    <Folder name="src" defaultOpen>
+      <Folder name="main" defaultOpen>
+        <Folder name="java" defaultOpen>
+          <Folder name="com">
+            <Folder name="example">
+              <Folder name="graphql">
+                <File name="GraphqlSpringBootApplication.java" />
+              </Folder>
+            </Folder>
+          </Folder>
+        </Folder>
+        <Folder name="resources">
+          <File name="application.properties" />
+        </Folder>
+      </Folder>
+      <Folder name="test">
+        <Folder name="java">
+          <Folder name="com">
+            <Folder name="example">
+              <Folder name="graphql">
+                <File name="GraphqlSpringBootApplicationTests.java" />
+              </Folder>
+            </Folder>
+          </Folder>
+        </Folder>
+      </Folder>
+    </Folder>
+    <File name="pom.xml" />
+    <File name="mvnw" />
+    <File name="mvnw.cmd" />
+  </Folder>
+</Files>
+
+### Vai trò của các file chính
+
+- `pom.xml` khai báo version Spring Boot, dependency và plugin Maven. Ở bài này nó mới có nền Spring Web; bài kế tiếp sẽ bổ sung Spring for GraphQL.
+- `src/main/java/.../GraphqlSpringBootApplication.java` là class khởi động do Initializr tạo. Nó là điểm bắt đầu của ứng dụng, chưa phải resolver GraphQL.
+- `src/main/resources/application.properties` là nơi đặt cấu hình local. File có thể đang trống.
+- `src/test/java/.../GraphqlSpringBootApplicationTests.java` là test context tối thiểu để kiểm tra Spring có tạo được application context (môi trường chứa các thành phần Spring) hay không.
+- `mvnw` và `mvnw.cmd` là wrapper cho macOS/Linux và Windows. `.mvn/wrapper/` chứa thông tin để wrapper tải Maven khi cần.
+- Chưa có `src/main/resources/graphql/schema.graphqls`. File SDL (ngôn ngữ định nghĩa schema của GraphQL) sẽ xuất hiện ở bài [Tạo schema đầu tiên](/docs/bat-dau/tao-schema-dau-tien), sau khi dependency GraphQL đã được cấu hình.
+
+## Kiểm tra project khởi tạo
+
+Thực hiện các bước dưới đây từ thư mục chứa `pom.xml`. Nếu bạn đã chọn Spring for GraphQL ngay trên Initializr, hãy đọc phần [Đã thêm GraphQL starter nhưng chưa có schema](#đã-thêm-graphql-starter-nhưng-chưa-có-schema) trước khi chạy bước cuối.
+
+### Kiểm tra JDK và Maven wrapper
+
+Trên macOS/Linux hoặc Git Bash, chạy:
+
+```bash
+java -version
+./mvnw -v
+```
+
+Trên Windows PowerShell, chạy:
+
+```powershell
+java -version
+.\mvnw.cmd -v
+```
+
+Kết quả cần cho thấy Java 17 trở lên và Maven wrapper nhận đúng JDK. Nếu terminal và IDE dùng hai JDK khác nhau, hãy ưu tiên kết quả của `./mvnw -v` vì đó là JDK thực sự Maven dùng để build.
+
+### Build test trước khi chạy
+
+Build là quá trình biên dịch mã nguồn và chạy các test của project. Với Maven, dùng wrapper để không phụ thuộc Maven đã cài toàn cục:
+
+```bash
+./mvnw clean test
+```
+
+Trên Windows:
+
+```powershell
+.\mvnw.cmd clean test
+```
+
+Lần đầu lệnh có thể tải dependency nên cần mạng. Kết quả cuối nên là `BUILD SUCCESS`. Ở project mới, test sinh sẵn chỉ kiểm tra application context; nó chưa kiểm tra query GraphQL.
+
+### Chạy ứng dụng local
+
+Sau khi test thành công, khởi động ứng dụng:
+
+```bash
+./mvnw spring-boot:run
+```
+
+Trên Windows:
+
+```powershell
+.\mvnw.cmd spring-boot:run
+```
+
+Khi log xuất hiện thông báo tương đương `Started GraphqlSpringBootApplication`, ứng dụng nền đã khởi động. Mặc định Spring Web lắng nghe ở cổng `8080`. Bạn có thể mở terminal khác và kiểm tra máy chủ HTTP đang lắng nghe:
+
+```bash
+curl -i http://localhost:8080/
+```
+
+`404 Not Found` ở `/` là bình thường vì project chưa có controller. Đây không phải là endpoint GraphQL và cũng không chứng minh `/graphql` đã sẵn sàng. Nhấn `Ctrl+C` để dừng ứng dụng trước khi sửa cấu hình hoặc chuyển bài.
+
+## Các lỗi thường gặp
+
+### JDK không tương thích
+
+Các lỗi như `invalid target release: 17`, `Unsupported class file major version` hoặc Maven hiển thị Java 11 thường là dấu hiệu JDK đang dùng thấp hơn yêu cầu của Spring Boot 3.x.
+
+Kiểm tra hai nơi có thể khác nhau:
+
+```bash
+java -version
+./mvnw -v
+```
+
+Cài hoặc chọn JDK 17 trong IDE, rồi đặt lại `JAVA_HOME` cho terminal nếu cần. Sau đó mở terminal mới và chạy lại `./mvnw clean test`. Không chỉ đổi `java.version` trong `pom.xml` xuống 11 để che lỗi; hãy giữ một JDK phù hợp với dòng Spring Boot đã chọn.
+
+### Maven wrapper không chạy được
+
+- `Permission denied` trên macOS/Linux: cấp quyền thực thi cho script rồi chạy lại.
+
+  ```bash
+  chmod +x mvnw
+  ./mvnw -v
+  ```
+
+- `mvnw is not recognized` trên Windows: dùng `.\mvnw.cmd` trong PowerShell hoặc mở Command Prompt tại thư mục project.
+- Nếu wrapper báo lỗi khi tải Maven, xem thêm phần [Không tải được Maven hoặc dependency](#không-tải-được-maven-hoặc-dependency). Không cần cài thêm Maven toàn cục nếu wrapper đã có trong project.
+
+### Không tải được Maven hoặc dependency
+
+Lỗi như `Could not transfer artifact`, timeout hoặc lỗi proxy mạng xảy ra trước khi code ứng dụng được biên dịch. Kiểm tra kết nối mạng, cấu hình proxy của công ty và quyền truy cập Maven Central. Chạy lại cùng lệnh sau khi mạng ổn định:
+
+```bash
+./mvnw clean test
+```
+
+Nếu môi trường bị giới hạn mạng, hãy tải dependency ở một môi trường có quyền truy cập rồi cấu hình proxy theo chính sách của môi trường đó. Không sửa package hoặc schema để xử lý lỗi tải dependency.
+
+### Chạy lệnh ở sai thư mục
+
+Nếu Maven báo không tìm thấy `pom.xml`, bạn đang đứng ở thư mục cha, thư mục `src` hoặc thư mục khác. Di chuyển về thư mục gốc project:
+
+```bash
+cd graphql-spring-boot
+ls pom.xml
+./mvnw -v
+```
+
+Trên Windows dùng `dir pom.xml`. Chỉ chạy lệnh Maven sau khi lệnh liệt kê tìm thấy `pom.xml` và các file `mvnw`/`mvnw.cmd` nằm cùng cấp.
+
+### Cổng 8080 đã được sử dụng
+
+Lỗi `Port 8080 was already in use` nghĩa là một chương trình khác đang dùng cổng mặc định. Bạn có thể đổi cổng tạm thời khi chạy:
+
+```bash
+./mvnw spring-boot:run "-Dspring-boot.run.arguments=--server.port=8081"
+```
+
+Hoặc thêm vào `src/main/resources/application.properties`:
+
+```properties
+server.port=8081
+```
+
+Sau khi đổi cổng, dùng `http://localhost:8081/` khi kiểm tra. Đây chỉ là cấu hình máy chủ HTTP; nó chưa tạo endpoint GraphQL.
+
+### Đã thêm GraphQL starter nhưng chưa có schema
+
+Nếu bạn chọn `Spring for GraphQL` ngay từ Initializr, ứng dụng có thể dừng khi khởi động với lỗi liên quan đến việc không tìm thấy GraphQL schema. Spring for GraphQL thường tìm schema trong `src/main/resources/graphql/` với phần mở rộng `.graphqls` hoặc `.gqls`.
+
+Đừng tự tạo một resolver hoặc hứa endpoint chạy ở bước khởi tạo. Mở bài [Thêm dependency và cấu hình](/docs/bat-dau/them-dependency-va-cau-hinh), sau đó làm theo [Tạo schema đầu tiên](/docs/bat-dau/tao-schema-dau-tien) để thêm đúng dependency, vị trí SDL và cấu hình theo thứ tự.
 
 ## Bước tiếp theo
 
-Sau khi trang được điền nội dung, đọc bài kế tiếp trong nhóm để tiếp tục lộ trình.
+Project nền đã build được, nhưng lộ trình GraphQL vẫn chưa có schema, resolver hay endpoint `/graphql` hoàn chỉnh. Tiếp tục theo thứ tự sau:
+
+<Cards>
+  <Card title="Thêm dependency và cấu hình" href="/docs/bat-dau/them-dependency-va-cau-hinh" description="Thêm Spring for GraphQL, cấu hình schema location và endpoint HTTP." />
+  <Card title="Tạo schema đầu tiên" href="/docs/bat-dau/tao-schema-dau-tien" description="Định nghĩa schema SDL nhỏ cho ví dụ hello và dữ liệu mẫu." />
+</Cards>

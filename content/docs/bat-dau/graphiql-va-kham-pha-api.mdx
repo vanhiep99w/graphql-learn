@@ -3,21 +3,417 @@ title: "GraphiQL và công cụ khám phá API"
 description: "Dùng GraphiQL để đọc schema, soạn query, truyền variables và xem execution result."
 ---
 
-Trang này sẽ trình bày **GraphiQL và công cụ khám phá API** trong bối cảnh xây dựng GraphQL API với Spring Boot.
+import { Step, Steps } from 'fumadocs-ui/components/steps';
+
+GraphiQL là giao diện chạy trên trình duyệt giúp bạn khám phá schema và gửi request tới GraphQL endpoint. Trong bài này, bạn sẽ bật GraphiQL trong Spring Boot, đi từ schema explorer đến query đầu tiên, truyền variables và headers, rồi phân loại lỗi khi request không chạy như mong đợi.
+
+<Callout type="info" title="Giả định trong bài">
+Các ví dụ giả định Spring Boot 3.5.x với Spring for GraphQL tương ứng, ứng dụng chạy local ở cổng `8080` và không có context path. Trong dòng Spring Boot này, property HTTP endpoint dùng trong bài là `spring.graphql.http.path`; với Spring Boot 3.4.x trở xuống, dùng `spring.graphql.path`. Nếu project dùng version hoặc reverse proxy khác, hãy đối chiếu lại URL thực tế. Các response trong bài là ví dụ minh họa, không phải response đã được chạy và xác minh trong repository này.
+</Callout>
 
 ## Mục lục
 
-- [Nội dung dự kiến](#nội-dung-dự-kiến)
+- [GraphiQL là gì?](#graphiql-là-gì)
+  - [GraphiQL không phải là GraphQL server](#graphiql-không-phải-là-graphql-server)
+- [Chuẩn bị ứng dụng Spring Boot](#chuẩn-bị-ứng-dụng-spring-boot)
+  - [Dependency và endpoint mặc định](#dependency-và-endpoint-mặc-định)
+  - [Bật và truy cập GraphiQL](#bật-và-truy-cập-graphiql)
+  - [Kiểm tra đường dẫn thực tế](#kiểm-tra-đường-dẫn-thực-tế)
+- [Schema minh họa của bài nhập môn](#schema-minh-họa-của-bài-nhập-môn)
+- [Khám phá schema bằng Docs explorer](#khám-phá-schema-bằng-docs-explorer)
+  - [Đi từ Query root đến field](#đi-từ-query-root-đến-field)
+  - [Đọc kiểu dữ liệu và mô tả](#đọc-kiểu-dữ-liệu-và-mô-tả)
+- [Autocomplete và soạn operation](#autocomplete-và-soạn-operation)
+- [Gửi query đầu tiên](#gửi-query-đầu-tiên)
+  - [Chạy query đơn giản](#chạy-query-đơn-giản)
+  - [Đọc execution result](#đọc-execution-result)
+- [Truyền query variables](#truyền-query-variables)
+  - [Khai báo operation và variables](#khai-báo-operation-và-variables)
+  - [Đối chiếu variables với schema](#đối-chiếu-variables-với-schema)
+- [Thêm headers](#thêm-headers)
+- [Phân loại lỗi](#phân-loại-lỗi)
+  - [Lỗi cú pháp và validation](#lỗi-cú-pháp-và-validation)
+  - [Lỗi resolver hoặc execution](#lỗi-resolver-hoặc-execution)
+  - [Lỗi network hoặc HTTP](#lỗi-network-hoặc-http)
+- [Lưu ý bảo mật khi dùng GraphiQL](#lưu-ý-bảo-mật-khi-dùng-graphiql)
 - [Bước tiếp theo](#bước-tiếp-theo)
 
-## Nội dung dự kiến
+## GraphiQL là gì?
 
-Nội dung chi tiết sẽ bao gồm khái niệm chính, ví dụ code và các lưu ý thực hành liên quan đến chủ đề này.
+GraphiQL là một **GraphQL IDE trên trình duyệt**. IDE (môi trường soạn thảo tích hợp) ở đây cung cấp ô viết operation, gợi ý tên field, khu vực nhập variables và nơi hiển thị kết quả thực thi. GraphiQL thường dùng introspection — cơ chế GraphQL dùng để đọc metadata của schema — để dựng phần Docs explorer và autocomplete.
 
-<Callout type="info" title="Trang placeholder">
-Đây là trang khung. Hãy dùng skill `fumadocs-technical-writer` để viết đầy đủ trang này trong bước tiếp theo.
+Khi bạn bấm nút chạy, GraphiQL không tự trả về dữ liệu. Nó gửi operation đến HTTP endpoint của GraphQL server, sau đó hiển thị execution result mà server trả về. Vì vậy, việc mở được trang GraphiQL chỉ xác nhận rằng giao diện có thể được phục vụ; nó chưa chứng minh resolver hoặc data source đã hoạt động.
+
+### GraphiQL không phải là GraphQL server
+
+Ba thành phần sau có vai trò khác nhau:
+
+| Thành phần | Vai trò |
+| --- | --- |
+| **GraphiQL** | Giao diện client để khám phá schema và soạn request. |
+| **GraphQL server** | Ứng dụng Spring Boot nhận operation, parse, validation và gọi resolver. |
+| **GraphQL endpoint** | URL HTTP nhận `POST` request, mặc định là `/graphql` trong cấu hình Spring Boot minh họa. |
+
+Schema là hợp đồng mô tả các type và field mà client được phép yêu cầu. Resolver là logic lấy dữ liệu cho một field. GraphiQL có thể đọc schema qua introspection, nhưng nó không thay thế server và cũng không cấp quyền truy cập dữ liệu.
+
+## Chuẩn bị ứng dụng Spring Boot
+
+Trước khi mở GraphiQL, ứng dụng cần có Spring for GraphQL, một web stack để phục vụ HTTP và schema đã được nạp. Nếu chưa hoàn tất các phần này, xem [Thêm dependency và cấu hình](/docs/bat-dau/them-dependency-va-cau-hinh), sau đó quay lại bài này.
+
+### Dependency và endpoint mặc định
+
+Với Maven, dependency cốt lõi thường có dạng sau:
+
+```xml title="pom.xml"
+<dependency>
+  <groupId>org.springframework.boot</groupId>
+  <artifactId>spring-boot-starter-graphql</artifactId>
+</dependency>
+```
+
+Ứng dụng HTTP cũng cần web stack phù hợp, thường là `spring-boot-starter-web` cho Spring MVC hoặc `spring-boot-starter-webflux` cho WebFlux. Starter GraphQL cung cấp tích hợp GraphQL; nó không biến GraphiQL thành một server riêng.
+
+Với giả định Spring Boot 3.5.x, dùng các property sau cho đường dẫn minh họa:
+
+```properties title="application.properties"
+spring.graphql.http.path=/graphql
+spring.graphql.graphiql.enabled=true
+spring.graphql.graphiql.path=/graphiql
+```
+
+Trong Spring Boot 3.5.x, `spring.graphql.graphiql.enabled=true` bật giao diện GraphiQL; mặc định giao diện này không được bật. `spring.graphql.http.path` là URL nhận GraphQL request, còn `spring.graphql.graphiql.path` là URL phục vụ trang giao diện. Hai đường dẫn này không phải cùng một endpoint.
+
+Nếu project dùng Spring Boot 3.4.x trở xuống, thay property endpoint HTTP bằng:
+
+```properties
+spring.graphql.path=/graphql
+```
+
+Không cấu hình hai key endpoint này để xử lý cùng một project. Chọn key theo version Spring Boot đang dùng và giữ path của GraphiQL ở `spring.graphql.graphiql.path`.
+
+<Callout type="info" title="Phân biệt hai URL">
+`http://localhost:8080/graphiql` chỉ là trang giao diện. Khi bấm **Run**, request GraphQL được gửi đến `http://localhost:8080/graphql` theo cấu hình mặc định. Có thể mở được trang thứ nhất nhưng request đến endpoint thứ hai vẫn bị lỗi.
 </Callout>
+
+### Bật và truy cập GraphiQL
+
+Sau khi cấu hình, quy trình local là:
+
+<Steps>
+  <Step>
+    **Khởi động ứng dụng Spring Boot.** Dùng lệnh chạy tương ứng với project, chẳng hạn `./mvnw spring-boot:run` hoặc chạy class main từ IDE.
+  </Step>
+  <Step>
+    **Mở URL của giao diện.** Với cổng và path mặc định, truy cập `http://localhost:8080/graphiql`.
+  </Step>
+  <Step>
+    **Kiểm tra Docs hoặc schema explorer.** Nếu panel Docs đọc được `Query`, schema đã được GraphiQL lấy qua introspection. Nếu trang mở nhưng Docs không có nội dung, chuyển sang kiểm tra endpoint GraphQL và chính sách introspection.
+  </Step>
+  <Step>
+    **Chạy một query nhỏ.** Bắt đầu bằng một field chắc chắn có trong schema thay vì dán ngay một operation lớn. Cách này giúp tách lỗi UI, validation và resolver dễ hơn.
+  </Step>
+</Steps>
+
+### Kiểm tra đường dẫn thực tế
+
+Bảng sau tóm tắt các URL với giả định của bài:
+
+| Mục đích | Property | URL mặc định trong bài |
+| --- | --- | --- |
+| Trang GraphiQL | `spring.graphql.graphiql.path` | `http://localhost:8080/graphiql` |
+| GraphQL HTTP endpoint (Spring Boot 3.5.x) | `spring.graphql.http.path` | `http://localhost:8080/graphql` |
+| GraphQL HTTP endpoint (Spring Boot 3.4.x trở xuống) | `spring.graphql.path` | `http://localhost:8080/graphql` |
+
+Nếu đổi `server.port=9090`, URL sẽ dùng cổng `9090`. Nếu ứng dụng có `server.servlet.context-path=/api`, URL HTTP thường có thêm prefix `/api`. Reverse proxy cũng có thể đổi public URL so với URL nội bộ. Vì vậy, hãy xem cả `application.properties`/`application.yml`, log lúc startup và cấu hình proxy trước khi kết luận rằng GraphiQL bị hỏng.
+
+GraphiQL có thể tải được dù request introspection hoặc query bị `401`, `403`, `404` hay bị chặn bởi CORS. Khi đó, mở Network tab của DevTools để xem request thực sự đi đến path nào. Đừng suy ra endpoint GraphQL từ URL của trang UI một cách máy móc.
+
+## Schema minh họa của bài nhập môn
+
+Để các ví dụ query, variables và response nhất quán, bài này dùng cùng mô hình lời chào và sách như các bài nhập môn. Schema thực tế trong project là nguồn sự thật; nếu bài [Tạo schema đầu tiên](/docs/bat-dau/tao-schema-dau-tien) đặt tên field khác, hãy chọn field mà Docs explorer hiển thị.
+
+```graphql title="schema.graphqls"
+schema {
+  query: Query
+}
+
+type Query {
+  hello: String!
+  featuredBook: Book
+  books: [Book!]!
+}
+
+type Book {
+  id: ID!
+  title: String!
+  author: String!
+  publishedYear: Int!
+}
+```
+
+Trong schema này, `hello` là scalar đơn giản. `featuredBook` là một `Book` có thể `null`, còn `books` là list không `null` gồm các phần tử `Book` không `null`. Mỗi `Book` có bốn field là `id`, `title`, `author` và `publishedYear`.
+
+`books` không nhận argument trong schema nhập môn này. Vì vậy, không tự thêm `limit` vào query chỉ vì một ví dụ khác có argument đó. Resolver phải có mapping cho `hello`, `featuredBook` và `books` thì query mới lấy được dữ liệu. GraphiQL chỉ đọc được hợp đồng schema; nó không tự tạo resolver hoặc dữ liệu mẫu.
+
+## Khám phá schema bằng Docs explorer
+
+### Đi từ Query root đến field
+
+Trong GraphiQL, mở panel **Docs** hoặc biểu tượng tài liệu ở cạnh giao diện. Sau đó đi theo nhánh `Query` → `hello`, `featuredBook` hoặc `books` → `Book` khi cần.
+
+Khi chọn `Query`, hãy kiểm tra ba điểm:
+
+1. Field có tồn tại và có đúng cách viết hoa/thường không.
+2. Field trả về scalar, object hay list object.
+3. Nếu là object hoặc list object, selection set cần chọn những field con nào.
+
+Ví dụ, `books` không thể đứng một mình trong query vì nó trả về list của object `Book`. Bạn phải chọn các field con:
+
+```graphql
+books {
+  id
+  title
+}
+```
+
+Ngược lại, field scalar như `hello`, `id` hoặc `title` không nhận selection set con. `featuredBook` có thể trả về `null`, nhưng nếu có object thì query vẫn phải chọn các field con của `Book`.
+
+### Đọc kiểu dữ liệu và mô tả
+
+Docs explorer có thể hiển thị description, kiểu trả về và field deprecated nếu các thông tin đó được khai báo trong schema. Hãy dùng nó để trả lời các câu hỏi sau trước khi gọi API:
+
+- Field nào nằm dưới root `Query`, `Mutation` hoặc `Subscription`?
+- Field nào bắt buộc khác `null`? Trong GraphQL, dấu `!` sau kiểu như `ID!` biểu thị non-null.
+- Một object cần selection set nào?
+- Field hoặc enum value nào đã deprecated và có hướng thay thế nào?
+
+Nếu Docs explorer không hiển thị schema, có thể introspection bị chặn, schema chưa được nạp, hoặc request đang đi sai endpoint. Introspection chỉ cung cấp metadata để khám phá; nó không phải là authorization và không quyết định người dùng được đọc dữ liệu nào.
+
+## Autocomplete và soạn operation
+
+Autocomplete giúp bạn dùng đúng tên field mà không phải nhớ toàn bộ schema. Trong ô editor, gõ `query`, mở selection set rồi gõ một phần tên field, chẳng hạn `bo`. GraphiQL thường tự hiện gợi ý; bạn cũng có thể dùng `Ctrl+Space` nếu phiên bản giao diện hỗ trợ phím tắt này.
+
+Gợi ý chỉ đáng tin khi GraphiQL đã lấy được schema. Nếu không có gợi ý, đừng vội sửa query theo phỏng đoán. Kiểm tra Docs explorer và request introspection trước.
+
+Đặt tên operation giúp phân biệt nhiều request trong cùng một tài liệu GraphiQL và làm log dễ đọc hơn. Query scalar đầu tiên có thể viết như sau:
+
+```graphql title="Query đầu tiên"
+query FirstHello {
+  hello
+}
+```
+
+Selection set quyết định shape của response. Nếu bỏ `author` khỏi selection set của `Book`, server không trả `author`, dù field đó tồn tại trong schema. Đây là khác biệt quan trọng giữa việc schema cho phép một field và việc query thực sự yêu cầu field đó.
+
+## Gửi query đầu tiên
+
+### Chạy query đơn giản
+
+Dán query `FirstHello` vào editor rồi bấm nút **Run** hoặc nút hình tam giác của GraphiQL. Nếu tài liệu có nhiều operation, chọn đúng `FirstHello` trước khi chạy. Với resolver minh họa của bài nhập môn, execution result có thể có shape sau:
+
+```json title="Execution result minh họa"
+{
+  "data": {
+    "hello": "Xin chào từ Spring for GraphQL!"
+  }
+}
+```
+
+Đây là response minh họa. Giá trị thật phụ thuộc resolver của ứng dụng.
+
+Sau khi query scalar chạy được, thử object và list để thấy rõ vai trò của selection set:
+
+```graphql title="Query object và list"
+query Books {
+  featuredBook {
+    id
+    title
+    author
+    publishedYear
+  }
+  books {
+    id
+    title
+    author
+    publishedYear
+  }
+}
+```
+
+Với dữ liệu in-memory minh họa trong bài [Viết query đầu tiên](/docs/bat-dau/viet-query-dau-tien), response có thể là:
+
+```json title="Response object và list minh họa"
+{
+  "data": {
+    "featuredBook": {
+      "id": "book-1",
+      "title": "Effective Java",
+      "author": "Joshua Bloch",
+      "publishedYear": 2018
+    },
+    "books": [
+      {
+        "id": "book-1",
+        "title": "Effective Java",
+        "author": "Joshua Bloch",
+        "publishedYear": 2018
+      },
+      {
+        "id": "book-2",
+        "title": "Designing Data-Intensive Applications",
+        "author": "Martin Kleppmann",
+        "publishedYear": 2017
+      }
+    ]
+  }
+}
+```
+
+Dữ liệu, số lượng phần tử và thứ tự sách phụ thuộc resolver/data source của ứng dụng. Nếu schema hoặc dữ liệu của project khác, hãy ưu tiên Docs explorer và response thực tế.
+
+### Đọc execution result
+
+Execution result thường có hai phần:
+
+- `data` chứa đúng các field mà selection set yêu cầu. Một field có thể có giá trị `null` nếu schema cho phép hoặc nếu lỗi được xử lý tại field đó.
+- `errors` chứa lỗi GraphQL với các thông tin như `message`, `path`, `locations` hoặc `extensions`. Một response có thể có cả `data` và `errors` nếu một phần operation thành công còn phần khác thất bại.
+
+Đừng chỉ nhìn HTTP status. Nhiều lỗi trong giai đoạn GraphQL execution vẫn được trả trong body JSON với HTTP `200`; cách xử lý status cụ thể còn phụ thuộc loại lỗi và cấu hình server. Luôn đọc cả `data`, `errors` và Network tab.
+
+## Truyền query variables
+
+Variables là các giá trị truyền riêng khỏi operation document. Dùng variables thay vì nối chuỗi trực tiếp giúp query giữ nguyên, dữ liệu có kiểu rõ ràng và dễ chạy lại với giá trị khác.
+
+Schema nhập môn chưa có argument để lọc `books`. Để minh họa variables mà không tự bịa thêm field vào schema, dùng directive tích hợp `@include`: directive này chỉ giữ field khi điều kiện `if` là `true`.
+
+### Khai báo operation và variables
+
+Viết operation với biến `$includeAuthor`:
+
+```graphql title="Query có variable"
+query BooksWithAuthor($includeAuthor: Boolean!) {
+  books {
+    id
+    title
+    author @include(if: $includeAuthor)
+    publishedYear
+  }
+}
+```
+
+Mở panel **Variables** ở khu vực soạn request và nhập JSON tương ứng:
+
+```json title="Query variables"
+{
+  "includeAuthor": true
+}
+```
+
+Tên `$includeAuthor` trong operation phải trùng với key `includeAuthor` trong JSON. `Boolean!` nghĩa là operation yêu cầu phải cung cấp một giá trị Boolean khác `null`. Giá trị `true` không đặt trong dấu ngoặc kép; nếu dùng `"true"`, kiểu JSON là string và có thể bị từ chối khi GraphQL kiểm tra input.
+
+Khi bấm **Run**, GraphiQL gửi operation và variables trong cùng request. Với `includeAuthor: true`, response `data.books` có field `author`. Nếu đổi thành `false`, directive `@include` loại field `author` khỏi response; field đó không xuất hiện, không phải xuất hiện với giá trị `null`.
+
+### Đối chiếu variables với schema
+
+Khi variables không hợp lệ, kiểm tra theo thứ tự:
+
+1. Tên `$includeAuthor` trong operation có trùng key `includeAuthor` trong JSON không.
+2. Kiểu của biến (`Boolean!`) có đúng với argument `if` của directive `@include` không.
+3. JSON trong panel Variables có hợp lệ không.
+4. Variable bắt buộc có bị bỏ trống hoặc truyền `null` không.
+
+Khi schema sau này có argument, cách truyền vẫn giữ nguyên: khai báo `$limit` trong operation, đặt `limit` trong JSON Variables, rồi dùng `books(limit: $limit)`. Tuy nhiên, chỉ dùng cú pháp đó sau khi `limit` thực sự xuất hiện trong Docs explorer của schema hiện tại.
+
+## Thêm headers
+
+Khi endpoint yêu cầu authentication hoặc metadata request, mở panel **Headers** và nhập object JSON. Ví dụ dùng token giả lập cho local:
+
+```json title="Request headers"
+{
+  "Authorization": "Bearer <access-token>",
+  "X-Request-Id": "graphiql-local"
+}
+```
+
+GraphiQL sẽ gửi các header này cùng request HTTP đến GraphQL endpoint. Tên header và format token phải khớp với cơ chế bảo mật của ứng dụng, chẳng hạn Spring Security JWT. Nếu endpoint không yêu cầu authentication, không cần thêm `Authorization`.
+
+Không dán access token production thật vào một workspace dùng chung hoặc chụp màn hình chứa token. Headers chỉ giúp request mang thông tin xác thực; chúng không biến GraphiQL thành một lớp authorization riêng.
+
+## Phân loại lỗi
+
+Phân loại lỗi theo nơi lỗi xảy ra sẽ giúp bạn biết nên sửa query, resolver hay URL. Bảng dưới đây là quy tắc chẩn đoán nhanh:
+
+| Dấu hiệu | Lớp lỗi | Nơi kiểm tra đầu tiên |
+| --- | --- | --- |
+| Query không có field, thiếu selection set, hoặc sai kiểu | Cú pháp/validation | Editor, Docs explorer và schema SDL |
+| Có response GraphQL nhưng có `errors`, thường kèm `path` | Resolver/execution | Log ứng dụng, controller/resolver và data source |
+| Không có body GraphQL; thấy `Failed to fetch`, `404`, `401`, `403` hoặc connection refused | Network/HTTP | URL, port, auth, CORS và Network tab |
+
+### Lỗi cú pháp và validation
+
+Lỗi cú pháp xảy ra khi operation không parse được, ví dụ thiếu dấu `}`. Lỗi validation xảy ra khi operation parse được nhưng không hợp lệ với schema, ví dụ gọi `bookz` trong khi schema chỉ có `hello`, `featuredBook` và `books`, hoặc bỏ selection set của một object.
+
+GraphiQL có thể gạch chân lỗi ngay trong editor, nhưng validation quan trọng vẫn do server thực hiện. Một response minh họa cho field không tồn tại có thể có dạng:
+
+```json
+{
+  "errors": [
+    {
+      "message": "Cannot query field \"bookz\" on type \"Query\"."
+    }
+  ]
+}
+```
+
+Ở giai đoạn validation, resolver của field sai không được gọi. Hãy đối chiếu chính tả, kiểu field và selection set với Docs explorer trước khi kiểm tra database.
+
+### Lỗi resolver hoặc execution
+
+Với lỗi resolver, query đã hợp lệ theo schema và server đã bắt đầu thực thi. Resolver có thể ném exception, data source có thể timeout, hoặc dữ liệu trả về không phù hợp với nullability. Khi đó, response thường vẫn là JSON GraphQL và có `errors`, thường kèm `path` chỉ vị trí field lỗi.
+
+Ví dụ tổng quát khi field root `books` thất bại:
+
+```json
+{
+  "data": null,
+  "errors": [
+    {
+      "message": "Không thể đọc danh sách sách.",
+      "path": ["books"]
+    }
+  ]
+}
+```
+
+Nếu field lồng nhau là nullable, GraphQL có thể trả `data` một phần và đặt field đó là `null`. Nếu field non-null lỗi, null có thể lan lên parent theo quy tắc GraphQL. Xem log Spring Boot và `path` trong response để tìm resolver cần điều tra; đừng sửa query hợp lệ chỉ vì data source đang lỗi.
+
+### Lỗi network hoặc HTTP
+
+Lỗi network xảy ra trước khi GraphQL tạo execution result. Một số dấu hiệu thường gặp:
+
+- `ERR_CONNECTION_REFUSED`: ứng dụng chưa chạy, sai port hoặc process đã dừng.
+- `404`: thường sai `spring.graphql.http.path` trong Spring Boot 3.5.x, `spring.graphql.path` ở version cũ, context path hoặc route của reverse proxy.
+- `401`/`403`: request thiếu credentials hoặc bị policy từ chối.
+- `Failed to fetch` hoặc lỗi CORS: trình duyệt không cho phép request giữa các origin, hoặc server không trả response mà browser chấp nhận.
+
+Mở Network tab, chọn request đến GraphQL endpoint và kiểm tra URL, method, status, request headers và response body. Nếu không có response body GraphQL, hãy sửa transport/HTTP trước; không gọi đó là lỗi resolver.
+
+## Lưu ý bảo mật khi dùng GraphiQL
+
+<Callout type="warn" title="Không mở công cụ khám phá công khai tùy tiện ở production">
+GraphiQL là giao diện tiện cho local và môi trường development, nhưng `spring.graphql.graphiql.enabled=true` không phải là cơ chế authentication hoặc authorization. Việc ẩn trang `/graphiql` cũng không tự bảo vệ `/graphql`. Introspection chỉ mô tả schema; nó không quyết định user nào được gọi field hay đọc dữ liệu nào.
+
+Trong production, chỉ bật GraphiQL khi có lý do rõ ràng. Nếu cần giữ lại, hãy bảo vệ cả trang GraphiQL và GraphQL endpoint bằng Spring Security hoặc lớp kiểm soát mạng phù hợp, yêu cầu authentication/authorization như chính sách hệ thống, cân nhắc policy introspection, và không nhúng credentials thật vào tài liệu hoặc client dùng chung. Với API công khai, ưu tiên tài liệu đã chọn lọc thay vì mở tùy tiện toàn bộ schema explorer.
+</Callout>
+
+Tóm lại, hãy xem GraphiQL là client hỗ trợ phát triển. Quyền truy cập phải được quyết định ở server và resolver, không phải ở việc người dùng có nhìn thấy Docs explorer hay không.
 
 ## Bước tiếp theo
 
-Sau khi trang được điền nội dung, đọc bài kế tiếp trong nhóm để tiếp tục lộ trình.
+Sau khi query chạy được trong GraphiQL, hãy đối chiếu cùng operation bằng các công cụ không có giao diện để tạo quy trình lặp lại:
+
+<Cards>
+  <Card title="Thêm dependency và cấu hình" href="/docs/bat-dau/them-dependency-va-cau-hinh" description="Kiểm tra starter, schema location và endpoint Spring Boot." />
+  <Card title="Viết query đầu tiên" href="/docs/bat-dau/viet-query-dau-tien" description="Theo dõi mapping từ field trong schema đến resolver." />
+  <Card title="Kiểm thử bằng curl/Postman" href="/docs/bat-dau/kiem-thu-request-curl-postman" description="Gửi cùng request bằng curl hoặc Postman." />
+</Cards>

@@ -1,23 +1,267 @@
 ---
 title: "Tạo schema đầu tiên"
-description: "Định nghĩa type, query và dữ liệu mẫu bằng GraphQL SDL trong project Spring Boot."
+description: "Định nghĩa schema GraphQL đầu tiên bằng SDL trong project Spring Boot."
 ---
 
-Trang này sẽ trình bày **Tạo schema đầu tiên** trong bối cảnh xây dựng GraphQL API với Spring Boot.
+Schema là nơi mô tả chính xác những gì một GraphQL API cho phép client yêu cầu. Trong bài này, bạn tạo file `schema.graphqls`, định nghĩa một object type, các scalar, list, nullable và root query nhỏ nhất để dùng ở bài tiếp theo.
+
+<Callout type="info" title="Mục tiêu của bài">
+Sau bài này, bạn biết schema được Spring for GraphQL tìm ở đâu, đọc được các ký hiệu như `String!` và `[Book!]!`, đồng thời phân biệt phần contract với dữ liệu và resolver của ứng dụng.
+</Callout>
 
 ## Mục lục
 
-- [Nội dung dự kiến](#nội-dung-dự-kiến)
+- [Schema là contract của API](#schema-là-contract-của-api)
+- [Chuẩn bị vị trí file schema](#chuẩn-bị-vị-trí-file-schema)
+  - [Vị trí mặc định trong Spring Boot](#vị-trí-mặc-định-trong-spring-boot)
+  - [Khi cần đổi schema location](#khi-cần-đổi-schema-location)
+- [Viết schema SDL đầu tiên](#viết-schema-sdl-đầu-tiên)
+  - [Toàn bộ nội dung file SDL](#toàn-bộ-nội-dung-file-sdl)
+  - [Đọc từng phần của schema](#đọc-từng-phần-của-schema)
+    - [Khai báo schema và Query](#khai-báo-schema-và-query)
+    - [Object type và field](#object-type-và-field)
+    - [Scalar và giá trị nullable](#scalar-và-giá-trị-nullable)
+    - [List và kiểu không null](#list-và-kiểu-không-null)
+- [Viết query tối thiểu](#viết-query-tối-thiểu)
+- [Kiểm tra schema trước khi nối resolver](#kiểm-tra-schema-trước-khi-nối-resolver)
+  - [Kiểm tra cú pháp và vị trí file](#kiểm-tra-cú-pháp-và-vị-trí-file)
+  - [Kiểm tra lúc Spring Boot khởi động](#kiểm-tra-lúc-spring-boot-khởi-động)
+- [Nối schema với resolver](#nối-schema-với-resolver)
 - [Bước tiếp theo](#bước-tiếp-theo)
 
-## Nội dung dự kiến
+## Schema là contract của API
 
-Nội dung chi tiết sẽ bao gồm khái niệm chính, ví dụ code và các lưu ý thực hành liên quan đến chủ đề này.
+**SDL** (*Schema Definition Language*) là cú pháp dạng văn bản dùng để khai báo schema GraphQL. SDL nói cho client biết có operation nào, field nào được phép chọn và kiểu của từng giá trị. SDL không mô tả cách truy vấn cơ sở dữ liệu và cũng không chứa bản ghi cụ thể.
 
-<Callout type="info" title="Trang placeholder">
-Đây là trang khung. Hãy dùng skill `fumadocs-technical-writer` để viết đầy đủ trang này trong bước tiếp theo.
+Hãy tách ba khái niệm sau khi đọc một schema:
+
+| Thành phần | Vai trò | Ví dụ trong bài |
+| --- | --- | --- |
+| Schema hoặc SDL | Contract: API cho phép yêu cầu gì và kết quả có hình dạng nào | `hello: String!`, `books: [Book!]!` |
+| Dữ liệu | Giá trị thật được tạo hoặc đọc khi request được thực thi | Một `Book` lấy từ service hoặc repository |
+| Resolver | Code biết cách lấy dữ liệu cho một field | Method xử lý `Query.books` |
+
+Schema có thể được parse và validate trước khi ứng dụng có dữ liệu. Tuy nhiên, một query chỉ trả về dữ liệu khi field tương ứng có resolver hoặc cơ chế data fetching phù hợp. Vì vậy, schema hợp lệ chưa có nghĩa là ứng dụng đã có dữ liệu để trả về.
+
+## Chuẩn bị vị trí file schema
+
+Trong project Spring Boot dùng Spring for GraphQL, hãy đặt schema trong `src/main/resources`. Thư mục `resources` được đưa lên classpath khi ứng dụng chạy.
+
+### Vị trí mặc định trong Spring Boot
+
+Tạo file ở vị trí sau:
+
+```text
+project/
+└── src/
+    └── main/
+        └── resources/
+            └── graphql/
+                └── schema.graphqls
+```
+
+Với cấu hình mặc định, Spring Boot tự động tìm các file schema bên dưới `src/main/resources/graphql/**`; trên classpath, location này thường được biểu diễn bằng pattern `classpath:graphql/**/`. Hai phần mở rộng được hỗ trợ mặc định là `.graphqls` và `.gqls`. Vì thế, `src/main/resources/graphql/schema.graphqls` là lựa chọn đơn giản nhất cho schema đầu tiên.
+
+Bạn không cần khai báo `schema.graphqls` bằng đường dẫn tuyệt đối. Spring for GraphQL đọc resource từ classpath và hợp nhất các file phù hợp thành một schema. Nếu project chưa có starter cần thiết, hãy xem bài [Thêm dependency và cấu hình](/docs/bat-dau/them-dependency-va-cau-hinh) trước khi kiểm tra schema.
+
+<Callout type="warn" title="Gotcha: file đúng tên nhưng sai chỗ">
+File đặt trong `src/main/java`, ở thư mục gốc project hoặc dưới một thư mục không được cấu hình sẽ không tự động trở thành schema. Hãy kiểm tra cả thư mục `resources/graphql` và phần mở rộng của file trước khi tìm lỗi trong SDL.
 </Callout>
+
+### Khi cần đổi schema location
+
+Nếu muốn dùng thư mục khác, cấu hình `spring.graphql.schema.locations` bằng một classpath location. Ví dụ, với file `src/main/resources/custom-graphql/schema.graphqls`:
+
+```yaml
+spring:
+  graphql:
+    schema:
+      locations: classpath:custom-graphql/**/
+```
+
+Khi đổi phần mở rộng file, cấu hình thêm `spring.graphql.schema.file-extensions`. Chỉ cần đổi location khi project có lý do rõ ràng; giữ convention `graphql/` giúp người mới và công cụ build dễ tìm schema hơn.
+
+Nếu tách schema thành nhiều file theo domain, các file vẫn phải tạo thành một schema hợp lệ sau khi được hợp nhất. Xem thêm [Tách schema theo module](/docs/schema-va-type-system/tach-schema-theo-module) khi schema bắt đầu lớn hơn ví dụ trong bài này.
+
+## Viết schema SDL đầu tiên
+
+Ví dụ dùng một domain nhỏ là lời chào và danh sách sách. `Book` đủ phức tạp để minh họa object type, scalar, list và nullable, còn `hello` là root field nhỏ nhất để dùng ngay ở bài query kế tiếp.
+
+### Toàn bộ nội dung file SDL
+
+Lưu nội dung sau vào `src/main/resources/graphql/schema.graphqls`:
+
+```graphql
+# Khai báo rõ type đứng ở đầu vào của query operation.
+schema {
+  query: Query
+}
+
+# Root type cho các operation đọc dữ liệu.
+type Query {
+  # Một scalar đơn giản để kiểm tra resolver đầu tiên.
+  hello: String!
+
+  # Có thể không có cuốn sách nổi bật.
+  featuredBook: Book
+
+  # List không null và từng phần tử Book cũng không null.
+  books: [Book!]!
+}
+
+# Object type mô tả hình dạng của một cuốn sách.
+type Book {
+  # ID là scalar tích hợp, phù hợp cho định danh.
+  id: ID!
+
+  # Các field văn bản luôn phải có giá trị.
+  title: String!
+  author: String!
+
+  # Năm xuất bản là bắt buộc trong contract minh họa này.
+  publishedYear: Int!
+}
+```
+
+Các dòng bắt đầu bằng `#` là comment của SDL. Chúng giúp giải thích contract cho người đọc nhưng không tạo thêm field hay dữ liệu nào.
+
+### Đọc từng phần của schema
+
+#### Khai báo schema và Query
+
+Khối `schema` chỉ ra root operation type cho query:
+
+```graphql
+schema {
+  query: Query
+}
+```
+
+`Query` là tên type được tham chiếu bởi `query`. Vì ví dụ đặt root type theo tên chuẩn `Query`, GraphQL cũng có thể suy ra root query mà không cần khối `schema`. Viết tường minh như trên giúp người mới nhìn thấy điểm bắt đầu của API; chỉ khai báo một root schema, không lặp lại khối này ở file khác.
+
+`schema` không phải là URL HTTP. Endpoint và cấu hình transport thuộc phần Spring Boot, còn khối này chỉ mô tả operation type của GraphQL.
+
+#### Object type và field
+
+```graphql
+type Book {
+  id: ID!
+  title: String!
+  author: String!
+  publishedYear: Int!
+}
+```
+
+`Book` là **object type**. Nó mô tả các field mà client có thể chọn trên một kết quả sách. Mỗi field có một kiểu trả về sau dấu `:`:
+
+- `id` có kiểu `ID!`.
+- `title` và `author` có kiểu `String!`.
+- `publishedYear` có kiểu `Int!`.
+
+Khai báo `Book` không tạo ra một object Java, một bảng database hay một bản ghi. Nó chỉ tạo phần contract để query biết được các field hợp lệ.
+
+#### Scalar và giá trị nullable
+
+GraphQL có các scalar tích hợp như `String`, `Int`, `Float`, `Boolean` và `ID`. Scalar là giá trị kết thúc ở một field; client không thể chọn field con bên trong một scalar.
+
+Dấu `!` sau kiểu có nghĩa là **non-null**. Ví dụ, `hello: String!` nói rằng resolver không được trả về `null` cho `hello`. Các field `id`, `title`, `author` và `publishedYear` trong ví dụ cũng áp dụng quy tắc này.
+
+Ngược lại, `featuredBook: Book` không có `!`, nên schema cho phép không có sách nổi bật và resolver có thể trả về `null` cho field đó. Nullable ở đây mô tả khả năng vắng mặt của cả object `Book`, không biến các field bên trong `Book` thành nullable khi một object tồn tại.
+
+Chọn nullable dựa trên quy tắc dữ liệu thật, không chỉ dựa trên việc field hiện đang có trong model Java. Nếu khai báo field là non-null nhưng resolver trả về `null`, GraphQL có thể phát sinh lỗi thực thi và lan truyền `null` lên phần kết quả liên quan.
+
+Để tìm hiểu sâu hơn về scalar, object và field, xem bài [Scalar, object và field](/docs/schema-va-type-system/scalar-object-field).
+
+#### List và kiểu không null
+
+Trong GraphQL, dấu ngoặc vuông biểu diễn list:
+
+- `[Book!]!`: bản thân list không `null`, và từng phần tử `Book` cũng không `null`.
+- `[Book!]`: list có thể `null`, nhưng nếu list tồn tại thì từng phần tử không `null`.
+- `[Book]!`: list không `null`, nhưng một phần tử bên trong có thể `null`.
+- `[Book]`: cả list và phần tử đều có thể `null`.
+
+Vì `books` dùng `[Book!]!`, client có thể dựa vào contract rằng luôn nhận được một list. List đó không chứa phần tử `null`. List rỗng vẫn hợp lệ và khác với `null`.
+
+Cùng quy tắc đó áp dụng cho list scalar như `[String!]!`: resolver phải trả về list không null và không có phần tử null. Ví dụ chính dùng `[Book!]!` để client đọc danh sách object. Nếu domain chưa đảm bảo một nullability cụ thể, hãy chọn thận trọng thay vì thêm `!` chỉ để schema trông chặt chẽ hơn. Bài [List và nullable](/docs/schema-va-type-system/list-va-nullable) giải thích thêm cách chọn các biến thể này.
+
+## Viết query tối thiểu
+
+Schema chỉ định những gì được phép yêu cầu; query là document mà client gửi để chọn một phần của schema. Với root scalar `hello`, query nhỏ nhất là:
+
+```graphql
+query FirstHello {
+  hello
+}
+```
+
+`FirstHello` là tên operation, giúp log và công cụ phát triển nhận diện request. `hello` là scalar nên không cần selection set con.
+
+Để kiểm tra thêm object và list, dùng query nhỏ sau:
+
+```graphql
+query ListBooks {
+  books {
+    id
+    title
+    author
+    publishedYear
+  }
+}
+```
+
+Field `books` trả về list của object `Book`, nên phải có selection set. Không được yêu cầu field không có trong `Book`, và cũng không thể viết `books` mà bỏ qua các field con. Đây là lúc schema đóng vai trò contract: client được kiểm tra lựa chọn trước khi GraphQL thực thi resolver.
+
+## Kiểm tra schema trước khi nối resolver
+
+Có hai lớp cần kiểm tra: file có được nạp và SDL có hợp lệ hay không, sau đó ứng dụng có nối được field với resolver hay chưa. Đừng trộn lỗi schema với lỗi dữ liệu.
+
+### Kiểm tra cú pháp và vị trí file
+
+Trước khi khởi động project thật, rà soát nhanh các điểm sau:
+
+1. File nằm dưới `src/main/resources/graphql/` hoặc đúng location đã cấu hình.
+2. File có phần mở rộng `.graphqls` hoặc `.gqls`, hoặc phần mở rộng đó đã được khai báo lại bằng `spring.graphql.schema.file-extensions`.
+3. Mỗi field có dấu `:` và một kiểu hợp lệ.
+4. Mọi type được tham chiếu đều đã được khai báo. Ví dụ, `schema.query` phải trỏ đến `Query`, `Query.featuredBook` và `Query.books` phải trỏ đến `Book`.
+5. Các dấu `{` và `}` cân bằng; `type Query` có ít nhất một field operation.
+
+Syntax highlighting trong IDE có ích để phát hiện lỗi gõ, nhưng không thay thế việc load schema bằng GraphQL runtime. Một file có thể trông đúng về mặt cú pháp nhưng vẫn có type trùng tên hoặc reference không hợp lệ.
+
+### Kiểm tra lúc Spring Boot khởi động
+
+Khi ứng dụng Spring Boot chạy, Spring for GraphQL đọc các resource schema, parse SDL và xây dựng executable schema. Lỗi cú pháp hoặc lỗi validation thường làm quá trình khởi động GraphQL thất bại. Hãy đọc exception đầu tiên liên quan đến schema và kiểm tra lại dòng SDL được nêu trong log, thay vì đoán từ request.
+
+Nếu ứng dụng khởi động thành công và GraphiQL đã được bật, hãy mở phần documentation hoặc introspection để kiểm tra `Query.hello`, `Query.books`, `Book.id` và `Book.title` xuất hiện. Điều đó xác nhận schema đã được nạp. Nó chưa xác nhận các field đã có resolver trả dữ liệu.
+
+<Callout type="warn" title="Schema hợp lệ chưa đủ để query chạy">
+Một query có thể hợp lệ theo schema nhưng vẫn lỗi khi thực thi nếu `Query.books` chưa được map tới resolver hoặc resolver trả về dữ liệu không phù hợp với nullability. Schema kiểm tra contract; resolver chịu trách nhiệm thực hiện contract.
+</Callout>
+
+Repo này chỉ là skeleton tài liệu và không có backend Spring Boot để chạy. Vì vậy, không có output runtime nào để kiểm chứng trong repo; các bước khởi động và introspection ở trên áp dụng sau khi bạn có project ứng dụng thật.
+
+## Nối schema với resolver
+
+Resolver là phần code thực hiện field đã khai báo. Với các root field, Spring for GraphQL thường map một method có `@QueryMapping`:
+
+```java
+@QueryMapping
+public String hello() {
+    return greetingService.message();
+}
+
+@QueryMapping
+public List<Book> books() {
+    return bookService.findAll();
+}
+```
+
+Đây là đoạn minh họa, không phải code chạy độc lập. `greetingService.message()` và `bookService.findAll()` đại diện cho nguồn dữ liệu hoặc service thật của ứng dụng. Kiểu `Book` trong Java cần cung cấp các property hoặc getter tương ứng với `id`, `title`, `author` và `publishedYear` để các field lồng nhau có thể được đọc. Nếu query `featuredBook`, field đó cũng cần một resolver hoặc data fetching phù hợp.
+
+Tên method `hello` và `books` khớp với field tương ứng trong `Query`. Nếu tên method khác, có thể khai báo tên field GraphQL rõ ràng trong annotation, nhưng contract SDL vẫn là nguồn tên mà client sử dụng. Cách viết controller, mapping nested field và xử lý query sẽ được thực hiện trong bài [Viết query đầu tiên](/docs/bat-dau/viet-query-dau-tien). Bạn cũng có thể xem bài [Query, mutation và subscription mapping](/docs/tich-hop-spring-for-graphql/query-mutation-subscription-mapping) để đi sâu hơn vào mapping của Spring for GraphQL.
 
 ## Bước tiếp theo
 
-Sau khi trang được điền nội dung, đọc bài kế tiếp trong nhóm để tiếp tục lộ trình.
+- Nếu chưa thêm starter, đọc [Thêm dependency và cấu hình](/docs/bat-dau/them-dependency-va-cau-hinh) để chuẩn bị Spring for GraphQL và schema location.
+- Giữ file SDL này làm contract, sau đó theo [Viết query đầu tiên](/docs/bat-dau/viet-query-dau-tien) để nối `Query.books` với resolver và gửi request.
+- Khi muốn thiết kế schema có hệ thống hơn, đọc [SDL và nguyên tắc thiết kế schema](/docs/schema-va-type-system/sdl-va-thiet-ke-schema), [Scalar, object và field](/docs/schema-va-type-system/scalar-object-field) và [List và nullable](/docs/schema-va-type-system/list-va-nullable).

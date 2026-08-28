@@ -1,23 +1,368 @@
 ---
 title: "Thêm dependency và cấu hình"
-description: "Cấu hình Spring for GraphQL, endpoint HTTP, schema locations và môi trường local."
+description: "Cấu hình Spring for GraphQL, endpoint HTTP, schema location và môi trường local."
 ---
 
-Trang này sẽ trình bày **Thêm dependency và cấu hình** trong bối cảnh xây dựng GraphQL API với Spring Boot.
+Bài này nối tiếp [Khởi tạo project Spring Boot](/docs/bat-dau/khoi-tao-spring-boot). Mục tiêu là đưa một project Spring Boot từ trạng thái có bộ khung lên trạng thái sẵn sàng nhận GraphQL request qua HTTP.
+
+<Callout type="info" title="Phạm vi kiểm tra">
+Các lệnh và response trong bài là cách kiểm tra khi bạn áp dụng cấu hình vào một backend Spring Boot thật. Repository tài liệu này chỉ là skeleton Fumadocs, không chứa backend Spring Boot để chạy thử.
+</Callout>
 
 ## Mục lục
 
-- [Nội dung dự kiến](#nội-dung-dự-kiến)
+- [Phạm vi của bài](#phạm-vi-của-bài)
+- [Chọn version và JDK](#chọn-version-và-jdk)
+- [Thêm dependency cho GraphQL và HTTP](#thêm-dependency-cho-graphql-và-http)
+  - [Maven](#maven)
+  - [Gradle](#gradle)
+  - [Vai trò của từng dependency](#vai-trò-của-từng-dependency)
+- [Bố cục thư mục và schema location](#bố-cục-thư-mục-và-schema-location)
+  - [Thư mục mặc định](#thư-mục-mặc-định)
+  - [Schema tối thiểu để kiểm tra wiring](#schema-tối-thiểu-để-kiểm-tra-wiring)
+- [Cấu hình runtime local](#cấu-hình-runtime-local)
+  - [Cấu hình bằng YAML](#cấu-hình-bằng-yaml)
+  - [Cấu hình bằng Properties](#cấu-hình-bằng-properties)
+  - [Bắt buộc và tùy chọn](#bắt-buộc-và-tùy-chọn)
+- [Chạy và kiểm tra cấu hình](#chạy-và-kiểm-tra-cấu-hình)
+  - [Khởi động ứng dụng](#khởi-động-ứng-dụng)
+  - [Gửi request tới endpoint GraphQL](#gửi-request-tới-endpoint-graphql)
+  - [Mở GraphiQL local](#mở-graphiql-local)
+- [Chẩn đoán lỗi thường gặp](#chẩn-đoán-lỗi-thường-gặp)
+  - [Sai hoặc thiếu dependency](#sai-hoặc-thiếu-dependency)
+  - [Sai path hoặc phần mở rộng schema](#sai-path-hoặc-phần-mở-rộng-schema)
+  - [Endpoint không khớp](#endpoint-không-khớp)
+  - [Version hoặc JDK không tương thích](#version-hoặc-jdk-không-tương-thích)
 - [Bước tiếp theo](#bước-tiếp-theo)
 
-## Nội dung dự kiến
+## Phạm vi của bài
 
-Nội dung chi tiết sẽ bao gồm khái niệm chính, ví dụ code và các lưu ý thực hành liên quan đến chủ đề này.
+Để phục vụ GraphQL qua HTTP, project cần bốn mảnh ghép:
 
-<Callout type="info" title="Trang placeholder">
-Đây là trang khung. Hãy dùng skill `fumadocs-technical-writer` để viết đầy đủ trang này trong bước tiếp theo.
+1. `spring-boot-starter-graphql` cung cấp tích hợp Spring for GraphQL và GraphQL Java.
+2. Một web starter cung cấp transport HTTP và embedded server.
+3. Ít nhất một schema GraphQL nằm trên classpath khi ứng dụng khởi động.
+4. Cấu hình xác định endpoint, schema location và các tiện ích local như GraphiQL.
+
+Bài này chỉ cấu hình wiring — tức cách nối các mảnh ghép để request đi được đến GraphQL engine. Type, field nghiệp vụ và resolver sẽ được viết ở [Tạo schema đầu tiên](/docs/bat-dau/tao-schema-dau-tien) và [Viết query đầu tiên](/docs/bat-dau/viet-query-dau-tien).
+
+## Chọn version và JDK
+
+Spring Boot quản lý version tương thích của Spring for GraphQL và các thư viện chuyển tiếp thông qua parent hoặc BOM (bộ quản lý version). Vì vậy, hãy giữ một dòng version Spring Boot nhất quán thay vì tự chọn version riêng cho `spring-graphql` hoặc `graphql-java`.
+
+Với Spring Boot 3.x, JDK tối thiểu là Java 17. Một JDK mới hơn chỉ nên dùng khi đúng dòng Spring Boot và build tool của project hỗ trợ nó. Trước khi thêm dependency, kiểm tra version đang thực sự được chọn:
+
+```bash
+java -version
+./mvnw --version
+./gradlew --version
+```
+
+Không phải project nào cũng có cả Maven Wrapper và Gradle Wrapper. Chạy lệnh tương ứng với build tool của project. Version Spring Boot thường nằm trong `<parent>` của `pom.xml`, hoặc trong plugin Spring Boot của `build.gradle`/`build.gradle.kts`.
+
+Tên property cho HTTP endpoint có một khác biệt quan trọng giữa các dòng version:
+
+| Dòng Spring Boot | Property HTTP nên dùng |
+| --- | --- |
+| 3.4.x trở xuống | `spring.graphql.path` |
+| 3.5.x trở lên và 4.x | `spring.graphql.http.path` |
+
+Trong Spring Boot 3.5, `spring.graphql.path` là tên cũ được đánh dấu deprecated và có property thay thế là `spring.graphql.http.path`. Nếu version của project không khớp bảng trên, hãy mở tài liệu Spring Boot đúng version hoặc metadata cấu hình của dependency thay vì đoán tên property. Chỉ dùng một trong hai key cho cùng một project.
+
+## Thêm dependency cho GraphQL và HTTP
+
+GraphQL engine không tự quyết định transport. `spring-boot-starter-graphql` là dependency tối thiểu cho GraphQL, nhưng để nhận request HTTP bạn vẫn cần `spring-boot-starter-web` hoặc `spring-boot-starter-webflux`.
+
+### Maven
+
+Đặt hai dependency runtime sau vào phần `<dependencies>` của `pom.xml`. Ví dụ giả định parent hoặc BOM Spring Boot đã được tạo ở bài trước và đang quản lý version:
+
+```xml
+<dependencies>
+    <dependency>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-graphql</artifactId>
+    </dependency>
+
+    <dependency>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-web</artifactId>
+    </dependency>
+</dependencies>
+```
+
+Không thêm `<version>` riêng cho hai starter khi parent/BOM đã quản lý chúng. Nếu project không dùng parent hoặc BOM, hãy import BOM có cùng version với Spring Boot trước khi bỏ trống version dependency.
+
+### Gradle
+
+Với `build.gradle` dùng Groovy DSL, phần dependency tương đương là:
+
+```groovy
+dependencies {
+    implementation 'org.springframework.boot:spring-boot-starter-graphql'
+    implementation 'org.springframework.boot:spring-boot-starter-web'
+}
+```
+
+Đoạn này giả định Spring Boot Gradle plugin hoặc BOM đã được cấu hình. Với `build.gradle.kts`, giữ nguyên tọa độ dependency và đổi cú pháp chuỗi theo Kotlin DSL:
+
+```kotlin
+dependencies {
+    implementation("org.springframework.boot:spring-boot-starter-graphql")
+    implementation("org.springframework.boot:spring-boot-starter-web")
+}
+```
+
+### Vai trò của từng dependency
+
+| Dependency | Trạng thái trong bài | Vai trò |
+| --- | --- | --- |
+| `spring-boot-starter-graphql` | Bắt buộc | Kích hoạt auto-configuration cho Spring for GraphQL, nạp GraphQL Java và tạo GraphQL runtime từ schema. |
+| `spring-boot-starter-web` | Bắt buộc nếu dùng HTTP với Spring MVC | Cung cấp Spring MVC, JSON HTTP và embedded servlet server để mở cổng phục vụ `/graphql`. |
+| `spring-boot-starter-webflux` | Lựa chọn thay thế | Dùng khi project chọn reactive stack. Không thêm đồng thời với `spring-boot-starter-web` trong bước tối thiểu đầu tiên. |
+| `spring-boot-starter-websocket` | Tùy chọn | Chỉ cần khi muốn thêm WebSocket transport cho ứng dụng servlet, chẳng hạn subscription. Không cần cho HTTP query/mutation trong bài này. |
+| `spring-boot-starter-test` | Tùy chọn | Cung cấp thư viện test; không cần để khởi động endpoint và kiểm tra bằng `curl`. |
+
+`spring-boot-starter-graphql` đã kéo theo các thư viện GraphQL phù hợp với BOM. Tránh thêm trực tiếp `spring-graphql` hoặc `graphql-java` với version tùy ý, vì cách đó có thể tạo xung đột giữa Spring Boot, Spring for GraphQL và GraphQL Java.
+
+## Bố cục thư mục và schema location
+
+### Thư mục mặc định
+
+Spring Boot đọc schema như resource trên classpath, không đọc một đường dẫn tuyệt đối trên máy phát triển. Với project Maven hoặc Gradle thông thường, `src/main/resources/` được đưa lên classpath khi chạy và khi đóng gói. Bố cục tối thiểu là:
+
+```text
+project/
+├── src/
+│   └── main/
+│       └── resources/
+│           ├── application.yml
+│           └── graphql/
+│               └── schema.graphqls
+└── pom.xml hoặc build.gradle
+```
+
+Các dòng Spring Boot hiện hành thường quét `classpath:graphql/**/` và nhận các file có đuôi `.graphqls` hoặc `.gqls` theo mặc định. Bài này dùng `.graphqls` và khai báo explicit `file-extensions` để kết quả không phụ thuộc vào danh sách mặc định của từng version.
+
+Trong cấu hình, viết `classpath:graphql/**/`, không viết `src/main/resources/graphql/`. Tiền tố `classpath:` mô tả vị trí sau khi resource đã được build. Nếu schema được chia sẻ từ nhiều module hoặc dependency, tài liệu của version tương ứng có thể yêu cầu pattern `classpath*:graphql/**/`; chỉ dùng pattern đó khi thật sự cần quét nhiều classpath.
+
+### Schema tối thiểu để kiểm tra wiring
+
+Spring GraphQL cần schema hợp lệ ngay lúc startup. Trước khi có schema nghiệp vụ, có thể đặt tạm `src/main/resources/graphql/schema.graphqls` với một query root tối thiểu:
+
+```graphql
+type Query {
+    ping: String
+}
+```
+
+Đây là GraphQL SDL (Schema Definition Language), tức phần khai báo type và field mà API cho phép. File này chỉ kiểm tra việc schema được tìm thấy và parse được. Field `ping` chưa có resolver nên chưa phải ví dụ nghiệp vụ hoàn chỉnh; resolver sẽ được nối ở [Viết query đầu tiên](/docs/bat-dau/viet-query-dau-tien).
+
+Khi tách schema thành nhiều file, các file khớp location sẽ được đọc cùng nhau. Nếu mở rộng `Query` ở file thứ hai, dùng `extend type Query` thay vì khai báo trùng một `type Query` hoàn chỉnh.
+
+## Cấu hình runtime local
+
+### Cấu hình bằng YAML
+
+Với Spring Boot 3.5+ hoặc 4.x, `application.yml` có thể viết như sau:
+
+```yaml
+spring:
+  graphql:
+    http:
+      path: /graphql
+    graphiql:
+      enabled: true
+    schema:
+      locations:
+        - "classpath:graphql/**/"
+      file-extensions:
+        - .graphqls
+
+server:
+  port: 8080
+```
+
+Ý nghĩa của từng phần:
+
+- `spring.graphql.http.path` là URL của GraphQL HTTP endpoint. `/graphql` cũng là giá trị mặc định của các dòng hỗ trợ property này, nhưng ghi rõ giúp tránh nhầm khi đổi path.
+- `spring.graphql.graphiql.enabled` bật GraphiQL mặc định ở local. Đây là UI phục vụ phát triển, không phải một endpoint GraphQL khác.
+- `spring.graphql.schema.locations` là pattern trên classpath. Pattern trên cho phép schema nằm trực tiếp trong `resources/graphql/` hoặc thư mục con.
+- `spring.graphql.schema.file-extensions` giới hạn ví dụ này ở `.graphqls`. Nếu đặt file là `.gqls` mà không thêm đuôi đó vào danh sách, file sẽ không được nạp.
+- `server.port` chỉ là cấu hình local tùy chọn. Nếu bỏ qua, dùng port mặc định của Spring Boot; nếu đổi giá trị, phải đổi URL kiểm tra tương ứng.
+
+Với Spring Boot 3.4.x trở xuống, giữ nguyên các key `graphiql` và `schema`, nhưng đổi phần endpoint thành:
+
+```yaml
+spring:
+  graphql:
+    path: /graphql
+```
+
+Không cấu hình đồng thời `spring.graphql.path` và `spring.graphql.http.path` để xử lý cùng một endpoint. Chọn key đúng với version rồi giữ các phần cấu hình chung bên dưới `spring.graphql`.
+
+### Cấu hình bằng Properties
+
+Nếu project dùng `application.properties`, bản cho Spring Boot 3.5+ hoặc 4.x là:
+
+```properties
+spring.graphql.http.path=/graphql
+spring.graphql.graphiql.enabled=true
+spring.graphql.schema.locations=classpath:graphql/**/
+spring.graphql.schema.file-extensions=.graphqls
+
+server.port=8080
+```
+
+Với Spring Boot 3.4.x trở xuống, thay dòng đầu tiên bằng:
+
+```properties
+spring.graphql.path=/graphql
+```
+
+Dùng một trong `application.yml` hoặc `application.properties` cho cùng nhóm key. Việc để hai file chứa các giá trị khác nhau có thể khiến profile hoặc thứ tự nạp cấu hình làm endpoint thực tế không giống điều bạn nhìn thấy trong file đang mở.
+
+### Bắt buộc và tùy chọn
+
+| Cấu hình | Bắt buộc hay tùy chọn | Ghi chú |
+| --- | --- | --- |
+| `spring-boot-starter-graphql` | Bắt buộc | Nếu thiếu, Spring Boot không có GraphQL runtime. |
+| Một web starter | Bắt buộc cho HTTP | Chọn MVC (`starter-web`) hoặc WebFlux (`starter-webflux`). |
+| Một schema hợp lệ | Bắt buộc | Ứng dụng Spring GraphQL cần schema khi startup. |
+| `spring.graphql.*.path` | Tùy chọn | Endpoint mặc định là `/graphql`; key cụ thể phụ thuộc version. |
+| `spring.graphql.graphiql.enabled` | Tùy chọn local | Mặc định tắt trong nhiều dòng version; chỉ bật khi cần UI phát triển. |
+| `server.port` | Tùy chọn local | Dùng port mặc định nếu không có nhu cầu đổi. |
+| WebSocket hoặc database | Không cần trong bài | Chỉ thêm khi bài toán cần subscription hoặc dữ liệu thật. |
+
+<Callout type="warn" title="GraphiQL không thay thế endpoint">
+GraphiQL thường mở tại `/graphiql`, còn request GraphQL gửi tới `/graphql` hoặc path bạn đã cấu hình. Hai URL này có vai trò khác nhau.
 </Callout>
+
+## Chạy và kiểm tra cấu hình
+
+### Khởi động ứng dụng
+
+Trong project backend thật, chạy đúng một lệnh theo build tool.
+
+Với Maven Wrapper:
+
+```bash
+./mvnw spring-boot:run
+```
+
+Hoặc với Gradle Wrapper:
+
+```bash
+./gradlew bootRun
+```
+
+Trên Windows, dùng `mvnw.cmd spring-boot:run` hoặc `gradlew.bat bootRun` nếu project có wrapper tương ứng. Chờ ứng dụng báo startup hoàn tất trước khi gửi request. Repository tài liệu hiện tại không có các wrapper hoặc class Spring Boot để xác minh bước này.
+
+### Gửi request tới endpoint GraphQL
+
+Với `server.port=8080` và path `/graphql`, gửi một POST request tối thiểu:
+
+```bash
+curl --request POST "http://localhost:8080/graphql" \
+  --header "Content-Type: application/json" \
+  --data '{"query":"{ __typename }"}'
+```
+
+`__typename` là meta-field có sẵn của GraphQL nên phép thử này không cần resolver cho `ping`. Khi project backend đã chạy và schema root là `Query`, response thành công thường có dạng:
+
+```json
+{
+  "data": {
+    "__typename": "Query"
+  }
+}
+```
+
+Mục tiêu của phép thử là kiểm tra đồng thời HTTP transport, endpoint và việc schema được nạp. Nó chưa chứng minh query nghiệp vụ đã có dữ liệu. Query `ping` chỉ nên kiểm tra sau khi bài resolver đã nối field đó.
+
+### Mở GraphiQL local
+
+Mở `http://localhost:8080/graphiql` trên trình duyệt khi `spring.graphql.graphiql.enabled=true`. Trong ô query, chạy:
+
+```graphql
+{
+  __typename
+}
+```
+
+GraphiQL cung cấp editor, nút chạy và phần hiển thị response. Nó không cần thêm một npm package hoặc một dependency GraphQL riêng trong backend cho cấu hình mặc định này. Nếu muốn đổi URL của giao diện, kiểm tra property `spring.graphql.graphiql.path` trong tài liệu đúng version thay vì suy ra từ `spring.graphql.*.path` của API.
+
+## Chẩn đoán lỗi thường gặp
+
+Hãy đọc lỗi đầu tiên trong log startup trước. Một lỗi schema hoặc version ở đầu log có thể kéo theo nhiều lỗi endpoint ở phía sau.
+
+### Sai hoặc thiếu dependency
+
+**Triệu chứng:** ứng dụng không tạo được GraphQL runtime, hoặc `/graphql` trả `404` dù web server đã lên.
+
+1. Kiểm tra `pom.xml` hoặc file Gradle có `spring-boot-starter-graphql`.
+2. Kiểm tra project có đúng một web stack cho HTTP: `spring-boot-starter-web` hoặc `spring-boot-starter-webflux`.
+3. Xem dependency tree để phát hiện version bị override.
+
+Với Maven:
+
+```bash
+./mvnw dependency:tree
+```
+
+Với Gradle:
+
+```bash
+./gradlew dependencies --configuration runtimeClasspath
+```
+
+Không sửa lỗi bằng cách thêm bừa một version của `graphql-java`. Trước hết hãy tìm dependency management hoặc plugin Spring Boot đang quản lý version. Nếu đã thêm cả MVC và WebFlux, bỏ stack không dùng trong cấu hình tối thiểu rồi kiểm tra lại.
+
+### Sai path hoặc phần mở rộng schema
+
+**Triệu chứng:** startup báo không có schema, không parse được schema, hoặc sửa file nhưng ứng dụng không thay đổi.
+
+- Xác nhận file thật nằm dưới `src/main/resources/graphql/`, không phải `src/main/java/` hay thư mục `graphql/` ở root repository.
+- Dùng path classpath như `classpath:graphql/**/`; không dùng chuỗi filesystem `src/main/resources/graphql/` trong property.
+- Kiểm tra file có đuôi `.graphqls` đúng với `spring.graphql.schema.file-extensions`. Nếu dùng `.gqls` hoặc đuôi khác, thêm chính xác đuôi đó và đối chiếu tài liệu version.
+- Kiểm tra SDL có `type Query` và không có lỗi cú pháp. Schema tối thiểu trong bài giúp tách lỗi wiring khỏi lỗi resolver.
+- Sau khi đóng gói, có thể kiểm tra resource đã vào artifact chưa. Với Maven, thay `app.jar` bằng tên jar thực tế:
+
+```bash
+jar tf target/app.jar | grep 'graphql/.*\.graphqls'
+```
+
+Với Gradle:
+
+```bash
+jar tf build/libs/app.jar | grep 'graphql/.*\.graphqls'
+```
+
+Nếu lệnh không tìm thấy file, kiểm tra lại source set resources và tên file trước khi điều tra endpoint.
+
+### Endpoint không khớp
+
+**Triệu chứng:** `curl` trả `404`, `405`, hoặc GraphiQL mở được nhưng request trong UI thất bại.
+
+- Dùng `spring.graphql.http.path` cho Spring Boot 3.5+ hoặc 4.x; dùng `spring.graphql.path` cho Spring Boot 3.4.x trở xuống.
+- Phân biệt `/graphql` là API và `/graphiql` là UI. Đừng gửi POST vào URL UI.
+- Kiểm tra `server.port`. Nếu có `server.servlet.context-path=/api`, URL servlet thực tế có thể là `http://localhost:8080/api/graphql`.
+- Với phép thử API, dùng `POST` và header `Content-Type: application/json` như ví dụ. `405` thường cho biết HTTP method không phù hợp hơn là schema bị sai.
+- Nếu response là `401` hoặc `403`, kiểm tra security/filter của project. Đó là lớp chặn HTTP, không phải bằng chứng rằng GraphQL path sai.
+
+### Version hoặc JDK không tương thích
+
+**Triệu chứng:** build báo unsupported Java version, `release version not supported`, class file không tương thích, hoặc Spring Boot cảnh báo property deprecated/unbound.
+
+1. Đối chiếu `java -version` với System Requirements của đúng dòng Spring Boot.
+2. Kiểm tra JDK mà Maven/Gradle thật sự sử dụng bằng `./mvnw --version` hoặc `./gradlew --version`; JDK trong terminal có thể khác JDK trong IDE.
+3. Kiểm tra parent/BOM và plugin Spring Boot có cùng dòng version. Không trộn starter từ các dòng khác nhau.
+4. Nếu thấy cảnh báo về `spring.graphql.path`, chuyển sang key thay thế được tài liệu của version đó nêu rõ. Nếu `spring.graphql.http.path` không được bind, kiểm tra lại version trước khi đổi cấu hình ngẫu nhiên.
 
 ## Bước tiếp theo
 
-Sau khi trang được điền nội dung, đọc bài kế tiếp trong nhóm để tiếp tục lộ trình.
+Sau khi dependency, schema location và HTTP endpoint đã rõ, tiếp tục [Tạo schema đầu tiên](/docs/bat-dau/tao-schema-dau-tien) để định nghĩa type và query trong SDL. Bài [Viết query đầu tiên](/docs/bat-dau/viet-query-dau-tien) sẽ thêm resolver để field trả về dữ liệu thay vì chỉ kiểm tra wiring.
+
+<Callout type="info" title="Ranh giới giữa các bài">
+Trang này không thêm database, authentication hay resolver nghiệp vụ. Những phần đó nên được cấu hình sau khi endpoint tối thiểu đã nhận được request và schema đã được kiểm tra độc lập.
+</Callout>
