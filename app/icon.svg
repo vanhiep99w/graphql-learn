@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <title>GraphQL</title>
+  <rect width="64" height="64" rx="14" fill="#E10098"/>
+  <g fill="none" stroke="#fff" stroke-linecap="round" stroke-linejoin="round" stroke-width="3.5">
+    <path d="M32 10 51 21v22L32 54 13 43V21L32 10Z"/>
+    <path d="M32 10v44M13 21l38 22M51 21 13 43"/>
+  </g>
+  <g fill="#fff">
+    <circle cx="32" cy="10" r="4"/>
+    <circle cx="51" cy="21" r="4"/>
+    <circle cx="51" cy="43" r="4"/>
+    <circle cx="32" cy="54" r="4"/>
+    <circle cx="13" cy="43" r="4"/>
+    <circle cx="13" cy="21" r="4"/>
+  </g>
+</svg>
