@@ -15,10 +15,14 @@ Mở [http://localhost:3000/docs](http://localhost:3000/docs).
 
 ## Build production
 
+Project dùng Next.js static export để deploy lên Cloudflare Pages. Build output được ghi vào `dist/` (thay cho thư mục `out/` mặc định).
+
 ```bash
 npm run build
 npm run start
 ```
+
+`npm run start` dùng `serve` để preview thư mục static `dist/`.
 
 `postinstall` sẽ chạy `fumadocs-mdx` để tạo source index trong `.source/`. Thư mục này được ignore và không cần commit.
 
@@ -27,6 +31,16 @@ npm run start
 Nội dung nằm trong `content/docs/`. Mỗi nhóm có `meta.json` và `index.mdx`; các bài hiện tại là placeholder để được viết chi tiết từng trang.
 
 Bài nên viết chi tiết đầu tiên là `content/docs/bat-dau/khoi-tao-spring-boot.mdx`, sau đó nối sang `content/docs/bat-dau/tao-schema-dau-tien.mdx`.
+
+## Deploy Cloudflare Pages
+
+Dùng các thiết lập sau trong Cloudflare Pages:
+
+- **Framework preset:** `Next.js (Static HTML Export)`
+- **Build command:** `npm run build`
+- **Build output directory:** `dist`
+
+`next.config.ts` đã bật `output: 'export'` và `distDir: 'dist'` để khớp với output directory này.
 
 ## Ghi chú layout
 
