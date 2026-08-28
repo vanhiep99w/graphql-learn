@@ -1,23 +1,1192 @@
 ---
 title: "`@SchemaMapping` và nested field"
-description: "Resolve nested field và liên kết field trong schema với method hoặc service tương ứng."
+description: "Hiểu cách Spring for GraphQL resolve field của object, chọn giữa property data fetcher, resolver tùy chỉnh và batching."
 ---
 
-Trang này sẽ trình bày **`@SchemaMapping` và nested field** trong bối cảnh xây dựng GraphQL API với Spring Boot.
+Trong GraphQL, một field trả về object không tự chứa sẵn toàn bộ dữ liệu của graph. GraphQL đi từ field root đến từng object cha, rồi resolve các field con mà client đã chọn. Spring for GraphQL nối các field đó với method trong controller bằng `@SchemaMapping`, hoặc để GraphQL Java đọc property mặc định từ object nguồn.
+
+<Callout type="info" title="Phạm vi và trạng thái ví dụ">
+Các SDL, query, variables, JSON và Java trong bài là **static illustration** (minh họa tĩnh). Repository này là docs-only, không có backend Spring Boot, database hoặc runtime response để chạy kiểm chứng. Ví dụ bám programming model được tài liệu hóa của Spring for GraphQL 1.4.x ở các phần có ghi chú version; return type, context adapter và cấu hình batching phải được đối chiếu với version Spring Boot, Spring for GraphQL và GraphQL Java mà project đang pin.
+</Callout>
 
 ## Mục lục
 
-- [Nội dung dự kiến](#nội-dung-dự-kiến)
+- [Bức tranh tổng thể](#bức-tranh-tổng-thể)
+  - [Field của object được resolve theo từng bước](#field-của-object-được-resolve-theo-từng-bước)
+  - [Root mapping và nested mapping](#root-mapping-và-nested-mapping)
+  - [Selection set không tạo field hoặc resolver](#selection-set-không-tạo-field-hoặc-resolver)
+- [Ví dụ xuyên suốt với catalog sách](#ví-dụ-xuyên-suốt-với-catalog-sách)
+  - [SDL khai báo object và nested field](#sdl-khai-báo-object-và-nested-field)
+  - [Query selection variables và response](#query-selection-variables-và-response)
+  - [Java model service và root controller](#java-model-service-và-root-controller)
+  - [Controller cho nested field](#controller-cho-nested-field)
+- [Cấu hình annotation SchemaMapping](#cấu-hình-annotation-schemamapping)
+  - [typeName và field](#typename-và-field)
+  - [Tên method và annotation ở class](#tên-method-và-annotation-ở-class)
+  - [Source parent object](#source-parent-object)
+  - [Argument trong nested field](#argument-trong-nested-field)
+  - [Return type và xử lý bất đồng bộ](#return-type-và-xử-lý-bất-đồng-bộ)
+- [Property data fetcher mặc định và resolver tùy chỉnh](#property-data-fetcher-mặc-định-và-resolver-tùy-chỉnh)
+  - [Khi getter hoặc map đã đủ](#khi-getter-hoặc-map-đã-đủ)
+  - [Khi cần custom resolver](#khi-cần-custom-resolver)
+  - [DTO projection và ranh giới persistence](#dto-projection-và-ranh-giới-persistence)
+- [Nullability lỗi và authorization](#nullability-lỗi-và-authorization)
+  - [Null propagation từ nested field](#null-propagation-từ-nested-field)
+  - [Không tìm thấy khác với lỗi](#không-tìm-thấy-khác-với-lỗi)
+  - [Authorization ở field level và context](#authorization-ở-field-level-và-context)
+- [Transaction lazy loading và selection](#transaction-lazy-loading-và-selection)
+  - [Transaction boundary](#transaction-boundary)
+  - [JPA lazy relation](#jpa-lazy-relation)
+  - [Selection set và projection không đồng nghĩa](#selection-set-và-projection-không-đồng-nghĩa)
+- [N+1 DataLoader và BatchMapping](#n1-dataloader-và-batchmapping)
+  - [N+1 xuất hiện ở nested field](#n1-xuất-hiện-ở-nested-field)
+  - [DataLoader theo key](#dataloader-theo-key)
+  - [BatchMapping cho quan hệ đơn giản](#batchmapping-cho-quan-hệ-đơn-giản)
+  - [Batching ordering cache và context](#batching-ordering-cache-và-context)
+  - [Khi không nên ép batch mapping](#khi-không-nên-ép-batch-mapping)
+- [Collision type mismatch và schema first](#collision-type-mismatch-và-schema-first)
+  - [Duplicate mapping](#duplicate-mapping)
+  - [Type name mismatch](#type-name-mismatch)
+  - [Schema first và ownership](#schema-first-và-ownership)
+  - [Quan hệ vòng depth và cost](#quan-hệ-vòng-depth-và-cost)
+- [Chiến lược kiểm thử](#chiến-lược-kiểm-thử)
+  - [Kiểm tra mapping bằng unit test](#kiểm-tra-mapping-bằng-unit-test)
+  - [Kiểm tra execution bằng GraphQlTester](#kiểm-tra-execution-bằng-graphqltester)
+  - [Kiểm tra lỗi quyền và hiệu năng](#kiểm-tra-lỗi-quyền-và-hiệu-năng)
+- [Lưu ý phiên bản và endpoint](#lưu-ý-phiên-bản-và-endpoint)
+- [Checklist trước khi merge](#checklist-trước-khi-merge)
 - [Bước tiếp theo](#bước-tiếp-theo)
 
-## Nội dung dự kiến
+## Bức tranh tổng thể
 
-Nội dung chi tiết sẽ bao gồm khái niệm chính, ví dụ code và các lưu ý thực hành liên quan đến chủ đề này.
+### Field của object được resolve theo từng bước
 
-<Callout type="info" title="Trang placeholder">
-Đây là trang khung. Hãy dùng skill `fumadocs-technical-writer` để viết đầy đủ trang này trong bước tiếp theo.
-</Callout>
+Một object trong response GraphQL có thể được tạo từ nhiều nguồn. Mỗi field có một data fetcher (bộ lấy dữ liệu). Data fetcher có thể là method annotated controller, một resolver thủ công, hoặc `PropertyDataFetcher` mặc định đọc property từ object cha.
+
+Giả sử query bắt đầu ở `Query.books` và chọn `Book.author { displayName }`. Execution có thể được hình dung như sau:
+
+```text
+Query.books
+    │  @QueryMapping trả về List<BookView>
+    ▼
+Book.author
+    │  @SchemaMapping nhận từng BookView làm source/parent
+    ▼
+Author.displayName
+    │  property data fetcher đọc getter của AuthorView
+    ▼
+String ở lá response
+```
+
+Các bước quan trọng là:
+
+1. GraphQL validate query với SDL. Field phải tồn tại và object field phải có selection set.
+2. Data fetcher của field root `Query.books` lấy danh sách sách.
+3. Mỗi phần tử `BookView` trở thành **source/parent object** cho các field con của `Book`.
+4. Với `Book.author`, Spring gọi `@SchemaMapping` nếu field đã có mapping riêng. Nếu không, data fetcher mặc định thử đọc property `author` từ source.
+5. Kết quả `AuthorView` lại trở thành source cho `Author.displayName`.
+6. GraphQL serialize kết quả theo selection set, nullability và response key của operation.
+
+Source của `Book.author` không phải là toàn bộ query và cũng không phải giá trị argument `id`. Nó là object mà field cha trả về. Vì vậy, resolver nested thường cần một `Book` hoặc `BookView` làm tham số đầu tiên.
+
+### Root mapping và nested mapping
+
+**Root mapping** phục vụ field nằm trực tiếp dưới `Query`, `Mutation` hoặc `Subscription`. **Nested mapping** phục vụ field nằm dưới một output object như `Book.author` hoặc `Book.reviews`.
+
+```graphql
+ type Query {
+   books: [Book!]!
+ }
+
+type Book {
+  author: Author!
+}
+```
+
+```java
+@QueryMapping
+public List<BookView> books() {
+    return catalogService.findBooks();
+}
+
+@SchemaMapping(typeName = "Book", field = "author")
+public AuthorView author(BookView book) {
+    return authorService.findVisibleById(book.getAuthorId())
+            .orElseThrow(() -> new AuthorNotFoundException(book.getAuthorId()));
+}
+```
+
+`@QueryMapping` là shortcut cho mapping vào root type `Query`. Tương tự, `@MutationMapping` và `@SubscriptionMapping` dành cho root operation tương ứng. `@SchemaMapping` có thể dùng cho root nếu ghi `typeName = "Query"`, nhưng annotation root-specific thường dễ đọc hơn.
+
+Không dùng `@QueryMapping` cho `Book.author`. Annotation đó nhắm `Query.author`, không nhắm field `author` của type `Book`. Xem [Query, mutation và subscription mapping](/docs/tich-hop-spring-for-graphql/query-mutation-subscription-mapping) để phân biệt ba root operation trước khi thêm nested resolver.
+
+### Selection set không tạo field hoặc resolver
+
+Selection set chỉ nói client muốn nhận field nào. Nó không thêm field vào schema, không sinh method Java, không tự tạo SQL join và không bật DataLoader.
+
+Nếu SDL không khai báo `Book.author`, query sau bị từ chối ở bước validation dù Java object có `getAuthor()`:
+
+```graphql
+query InvalidBook {
+  books {
+    id
+    author {
+      displayName
+    }
+  }
+}
+```
+
+Ngược lại, nếu SDL có `Book.author` nhưng không có mapping riêng và source không có property phù hợp, GraphQL Java có thể không lấy được giá trị. Với field nullable, kết quả có thể là `null`; với field non-null, execution sẽ tạo lỗi và áp dụng null propagation. Không nên coi query chạy qua validation là bằng chứng field đã được wiring.
+
+Selection set cũng quyết định nested resolver có được yêu cầu hay không. Client chỉ chọn `books { id title }` thì `Book.author` và `Book.reviews` không cần resolve trong execution đó. Tuy nhiên, selection set không bảo đảm implementation chỉ đọc đúng hai cột. Xem [Query, selection set và alias](/docs/query-mutation-subscription/query-selection-set-alias) để theo dõi response shape, còn [SDL và nguyên tắc thiết kế schema](/docs/schema-va-type-system/sdl-va-thiet-ke-schema) để phân biệt contract với implementation.
+
+## Ví dụ xuyên suốt với catalog sách
+
+Ví dụ này cố ý dùng `BookView` làm source Java trong khi GraphQL type tên là `Book`. Sự khác nhau giúp thấy vì sao mapping tường minh quan trọng với DTO projection.
+
+Các snippet resolve `Book.author` bên dưới giữ đúng contract `author: Author!`. Vì vậy, khi `findVisibleById` trả `Optional.empty()` (không tìm thấy hoặc không còn visible theo policy), resolver chuyển trạng thái đó thành `AuthorNotFoundException` thay vì trả `null`; error handler của application sẽ map exception này thành execution error an toàn. Đây là error policy minh họa nhất quán, không phải lời khẳng định về exception class của mọi project. `orElse(null)` chỉ còn phù hợp ở các field nullable như `internalScore` hoặc một contract `author: Author` được nêu riêng.
+
+### SDL khai báo object và nested field
+
+```graphql title="schema.graphqls"
+schema {
+  query: Query
+}
+
+type Query {
+  """Các sách mà principal hiện tại được phép xem."""
+  books(limit: Int = 20): [Book!]!
+}
+
+type Book {
+  id: ID!
+  title: String!
+  author: Author!
+  reviews(limit: Int = 10): [Review!]!
+  internalScore: Int
+}
+
+type Author {
+  id: ID!
+  displayName: String!
+}
+
+type Review {
+  id: ID!
+  rating: Int!
+  body: String
+}
+```
+
+Các quyết định trong SDL có tác động trực tiếp đến resolver:
+
+| Field | Kiểu | Hệ quả cho implementation |
+| --- | --- | --- |
+| `Query.books` | `[Book!]!` | Trả một list khác `null`; từng phần tử cũng không được `null`; `[]` là kết quả không có sách. |
+| `Book.author` | `Author!` | Khi `Book` tồn tại, author phải resolve được hoặc lỗi sẽ bubble lên parent. |
+| `Book.reviews` | `[Review!]!` | List luôn tồn tại; không có review dùng `[]`; mỗi review phải khác `null`. |
+| `Book.internalScore` | `Int` | Có thể nullable, phù hợp với field chỉ một số principal được xem hoặc score chưa có, nếu semantics được tài liệu hóa. |
+| `reviews(limit: Int = 10)` | Argument nullable có default | `@Argument("limit")` nhận giá trị đã được GraphQL coerce; default thuộc SDL, không thuộc annotation. |
+
+`BookView` không cần có public property `author` hoặc `reviews`. Hai field đó sẽ được lấy từ service riêng trong nested resolver. Các property nội bộ như `authorId` và `tenantId` cũng không tự trở thành field GraphQL nếu không được khai báo trong SDL.
+
+### Query selection variables và response
+
+Client phải mở selection set khi field trả về object hoặc list object. Argument `reviewLimit` trong operation được truyền vào argument `limit` của field `reviews`:
+
+```graphql title="Catalog.graphql"
+query Catalog($limit: Int = 2, $reviewLimit: Int = 2) {
+  books(limit: $limit) {
+    id
+    title
+    author {
+      id
+      displayName
+    }
+    reviews(limit: $reviewLimit) {
+      id
+      rating
+      body
+    }
+  }
+}
+```
+
+Variables là JSON riêng với query document:
+
+```json title="Variables"
+{
+  "limit": 2,
+  "reviewLimit": 2
+}
+```
+
+`$reviewLimit` là tên variable. `limit` trong `reviews(limit: $reviewLimit)` mới là tên argument mà `@Argument("limit")` đọc. Tên hai lớp này có thể khác nhau.
+
+Với dữ liệu giả định, response có thể có dạng sau:
+
+```json title="Response — minh họa tĩnh"
+{
+  "data": {
+    "books": [
+      {
+        "id": "book-1",
+        "title": "Effective Java",
+        "author": {
+          "id": "author-1",
+          "displayName": "Joshua Bloch"
+        },
+        "reviews": [
+          {
+            "id": "review-1",
+            "rating": 5,
+            "body": "Ví dụ minh họa."
+          }
+        ]
+      },
+      {
+        "id": "book-2",
+        "title": "Designing Data-Intensive Applications",
+        "author": {
+          "id": "author-2",
+          "displayName": "Martin Kleppmann"
+        },
+        "reviews": []
+      }
+    ]
+  }
+}
+```
+
+Response chỉ có các field được chọn. `internalScore` không xuất hiện vì query không chọn field đó. Việc source Java có thêm `tenantId` hoặc các thuộc tính audit cũng không làm chúng tự xuất hiện trong response.
+
+### Java model service và root controller
+
+Các lớp sau chỉ là model và service tối thiểu để giữ ví dụ nhất quán. Tên `BookRepository`, `RequestContext` và các method repository là quy ước minh họa, không phải API có sẵn trong repository tài liệu này.
+
+```java title="BookView.java"
+public final class BookView {
+
+    private final String id;
+    private final String tenantId;
+    private final String title;
+    private final String authorId;
+
+    public BookView(String id, String tenantId, String title, String authorId) {
+        this.id = id;
+        this.tenantId = tenantId;
+        this.title = title;
+        this.authorId = authorId;
+    }
+
+    public String getId() {
+        return id;
+    }
+
+    public String getTenantId() {
+        return tenantId;
+    }
+
+    public String getTitle() {
+        return title;
+    }
+
+    public String getAuthorId() {
+        return authorId;
+    }
+}
+```
+
+Service root nên trả DTO đã đủ dữ liệu cơ bản trong boundary của nó. Nó không cần biết client sẽ chọn author hay reviews ở bước sau:
+
+```java title="CatalogService.java"
+@Service
+public class CatalogService {
+
+    private final BookRepository bookRepository;
+
+    public CatalogService(BookRepository bookRepository) {
+        this.bookRepository = bookRepository;
+    }
+
+    @Transactional(readOnly = true)
+    public List<BookView> findVisibleBooks(RequestContext request, Integer limit) {
+        // Repository method này là tên minh họa.
+        return bookRepository.findVisibleProjection(request.tenantId(), limit);
+    }
+}
+```
+
+Controller root lấy `RequestContext` từ context đã được server xác thực. `limit` là argument của field `Query.books`, không phải một HTTP parameter riêng:
+
+```java title="CatalogQueryController.java"
+import graphql.GraphQLContext;
+import org.springframework.graphql.data.method.annotation.Argument;
+import org.springframework.graphql.data.method.annotation.QueryMapping;
+import org.springframework.stereotype.Controller;
+
+@Controller
+public class CatalogQueryController {
+
+    private final CatalogService catalogService;
+
+    public CatalogQueryController(CatalogService catalogService) {
+        this.catalogService = catalogService;
+    }
+
+    @QueryMapping
+    public List<BookView> books(
+            @Argument("limit") Integer limit,
+            GraphQLContext context) {
+
+        RequestContext request = context.get("requestContext");
+        return catalogService.findVisibleBooks(request, limit);
+    }
+}
+```
+
+`@QueryMapping` mặc định dùng tên method `books` để map vào `Query.books`. GraphQL áp dụng default `20` trong SDL khi client bỏ qua argument. Service vẫn nên kiểm tra giới hạn tối đa, giá trị `null` được gửi tường minh và invariant của list.
+
+### Controller cho nested field
+
+`BookFieldController` map hai field lồng nhau. Cùng một `BookView` có thể được dùng làm source cho cả hai method:
+
+```java title="BookFieldController.java"
+import graphql.GraphQLContext;
+import org.springframework.graphql.data.method.annotation.Argument;
+import org.springframework.graphql.data.method.annotation.SchemaMapping;
+import org.springframework.stereotype.Controller;
+
+@Controller
+public class BookFieldController {
+
+    private final AuthorizationService authorizationService;
+    private final AuthorService authorService;
+    private final ReviewService reviewService;
+
+    public BookFieldController(
+            AuthorizationService authorizationService,
+            AuthorService authorService,
+            ReviewService reviewService) {
+        this.authorizationService = authorizationService;
+        this.authorService = authorService;
+        this.reviewService = reviewService;
+    }
+
+    @SchemaMapping(typeName = "Book", field = "author")
+    public AuthorView author(BookView book, GraphQLContext context) {
+        RequestContext request = context.get("requestContext");
+        authorizationService.requireCanReadAuthor(request, book.getTenantId());
+
+        return authorService.findVisibleById(book.getAuthorId())
+                .orElseThrow(() -> new AuthorNotFoundException(book.getAuthorId()));
+    }
+
+    @SchemaMapping(typeName = "Book", field = "reviews")
+    public List<ReviewView> reviews(
+            BookView book,
+            @Argument("limit") Integer limit,
+            GraphQLContext context) {
+
+        RequestContext request = context.get("requestContext");
+        authorizationService.requireCanReadReviews(request, book.getTenantId());
+        return reviewService.findVisibleByBookId(book.getId(), limit, request);
+    }
+}
+```
+
+Đọc code theo cặp type/field:
+
+- `typeName = "Book"` trỏ vào GraphQL object type `Book`, không trỏ vào tên class `BookView`.
+- `field = "author"` trỏ vào `Book.author` trong SDL.
+- `BookView book` là source/parent object của field hiện tại.
+- `@Argument("limit")` chỉ xuất hiện vì `Book.reviews` khai báo argument `limit`.
+- `AuthorView` và `ReviewView` là return type Java. GraphQL vẫn validate giá trị theo `Author` và `Review` trong SDL.
+
+Nếu query chỉ chọn `id` và `title`, cả hai method nested trên không cần được gọi. Nếu query chọn `author` hai lần bằng alias khác nhau, số lần fetch cụ thể còn phụ thuộc field merging, DataLoader và implementation; không nên suy ra từ alias rằng service sẽ chỉ gọi một lần.
+
+## Cấu hình annotation SchemaMapping
+
+### typeName và field
+
+`@SchemaMapping` nhận diện một cặp **parent type + field**. Hai thuộc tính quan trọng là:
+
+| Thuộc tính | Ý nghĩa | Giá trị mặc định |
+| --- | --- | --- |
+| `typeName` | Tên GraphQL type của source/parent object, ví dụ `Book`. | Suy ra từ simple class name của source argument nếu có thể. |
+| `field` | Tên field GraphQL trên parent type, ví dụ `author`. | Tên method Java. |
+
+Trong API hiện tại, `value` là alias của `field`. Dùng `field` tường minh thường dễ đọc hơn:
+
+```java
+@SchemaMapping(typeName = "Book", field = "author")
+public AuthorView resolveAuthor(BookView book) {
+    return authorService.findVisibleById(book.getAuthorId())
+            .orElseThrow(() -> new AuthorNotFoundException(book.getAuthorId()));
+}
+```
+
+`typeName` và `field` phải khớp chính xác với schema GraphQL. Chúng phân biệt chữ hoa/chữ thường. `Book.author` và `book.author` không phải cùng một cặp mapping.
+
+Vì source trong ví dụ là `BookView`, nếu bỏ `typeName`, Spring có thể suy ra parent type là `BookView`. SDL lại khai báo `Book`. Đây là lý do DTO, projection, interface và class có tên khác thường nên ghi `typeName` tường minh.
+
+### Tên method và annotation ở class
+
+Khi không ghi `field`, tên method trở thành tên field GraphQL. Method `resolveAuthor` không tự được rút gọn thành `author`:
+
+```java
+// Map vào Book.resolveAuthor, không phải Book.author.
+@SchemaMapping(typeName = "Book")
+public AuthorView resolveAuthor(BookView book) {
+    return authorService.findVisibleById(book.getAuthorId())
+            .orElseThrow(() -> new AuthorNotFoundException(book.getAuthorId()));
+}
+```
+
+Nếu muốn tên method khác tên field, ghi field rõ ràng:
+
+```java
+@SchemaMapping(typeName = "Book", field = "author")
+public AuthorView loadAuthor(BookView book) {
+    return authorService.findVisibleById(book.getAuthorId())
+            .orElseThrow(() -> new AuthorNotFoundException(book.getAuthorId()));
+}
+```
+
+Có thể đặt `@SchemaMapping(typeName = "Book")` ở class để các method nested trong class dùng chung parent type:
+
+```java
+@Controller
+@SchemaMapping(typeName = "Book")
+public class BookFieldController {
+
+    @SchemaMapping
+    public AuthorView author(BookView book) {
+        return authorService.findVisibleById(book.getAuthorId())
+                .orElseThrow(() -> new AuthorNotFoundException(book.getAuthorId()));
+    }
+
+    @SchemaMapping(field = "reviews")
+    public List<ReviewView> loadReviews(
+            BookView book,
+            @Argument("limit") Integer limit) {
+        return reviewService.findVisibleByBookId(book.getId(), limit);
+    }
+}
+```
+
+Ở đây `author()` mặc định map vào `Book.author`, còn `loadReviews()` dùng `field = "reviews"` để đổi tên. Method-level `typeName` có thể override giá trị ở class. Không đặt cả `@SchemaMapping` và `@QueryMapping` lên cùng method để “tăng độ chắc chắn”; hãy chọn một mapping owner.
+
+### Source parent object
+
+GraphQL Java gọi object kết quả của field cha là source. Với nested field, Spring cho phép nhận source bằng một tham số Java có kiểu tương ứng:
+
+```java
+@SchemaMapping(typeName = "Book", field = "author")
+public AuthorView author(BookView source) {
+    return authorService.findVisibleById(source.getAuthorId())
+            .orElseThrow(() -> new AuthorNotFoundException(source.getAuthorId()));
+}
+```
+
+`source` ở đây là `BookView` của từng phần tử trong `books`. Nó không phải:
+
+- argument `id` của một query root;
+- variable `$bookId` của operation;
+- một object được client gửi lên để cấp quyền;
+- tên alias trong response.
+
+Ở root field, method `@QueryMapping` tạo source cho bước kế tiếp. Không thêm `BookView` vào `@QueryMapping` chỉ vì query cuối cùng có `Book.author`; source chỉ xuất hiện khi GraphQL đang resolve field nằm dưới một `Book`.
+
+Nếu source là `Map`, property fetcher có thể tìm key theo tên field. Nếu source là JPA entity, getter có thể kích hoạt lazy loading. Nếu source là DTO, chỉ những getter hoặc map key phù hợp mới được data fetcher mặc định nhìn thấy.
+
+### Argument trong nested field
+
+Nested field có thể có argument riêng. Trong SDL ví dụ, `limit` của `reviews` thuộc phạm vi của `Book.reviews`, không phải phạm vi của `Query.books`:
+
+```graphql
+query BookReviews($reviewLimit: Int!) {
+  books {
+    id
+    reviews(limit: $reviewLimit) {
+      id
+      rating
+    }
+  }
+}
+```
+
+Method nhận tên argument bên phải dấu ngoặc:
+
+```java
+@SchemaMapping(typeName = "Book", field = "reviews")
+public List<ReviewView> reviews(
+        BookView book,
+        @Argument("limit") Integer limit) {
+    return reviewService.findVisibleByBookId(book.getId(), limit);
+}
+```
+
+`@Argument` bind một named GraphQL argument sau khi GraphQL đã parse, validate và coerce giá trị. Nó không tìm trực tiếp key `$reviewLimit` trong JSON variables. Annotation không có cờ `required` hoặc default riêng; required/default phải được khai báo trong SDL.
+
+Nếu cần phân biệt argument bị bỏ qua với argument được gửi `null`, dùng `ArgumentValue<T>` theo API version đang dùng. Đây là trường hợp hữu ích cho partial update, nhưng với resolver đọc nested field, thường chỉ cần `@Argument("limit")` và một quy tắc chuẩn hóa giới hạn ở service. Chi tiết binding nằm trong [Binding arguments và input](/docs/tich-hop-spring-for-graphql/binding-arguments-input).
+
+### Return type và xử lý bất đồng bộ
+
+Return type Java diễn tả giá trị resolver hoàn tất. Nullability vẫn do SDL quyết định:
+
+| SDL | Java minh họa | Điều phải bảo đảm |
+| --- | --- | --- |
+| `author: Author!` | `AuthorView` | Không trả `null` trong outcome thành công; lỗi phải được map theo error policy. |
+| `reviews: [Review!]!` | `List<ReviewView>` | List và mọi phần tử không được `null`; không có review dùng `[]`. |
+| `internalScore: Int` | `Integer` | Có thể trả `null` nếu đó là semantics đã công bố. |
+| `author: Author` | `Mono<AuthorView>` hoặc kiểu async được version hỗ trợ | Completion async không làm field tự thành non-null. |
+
+Tài liệu Spring for GraphQL 1.4.x liệt kê return value trực tiếp, `Mono<T>`, `Flux<T>`, `Callable<T>` và `DataFetcherResult<P>` trong programming model phù hợp. `CompletableFuture<T>` thường xuất hiện khi controller delegate cho `DataLoader`. Web stack, executor và version cụ thể có thể thay đổi adapter được hỗ trợ, nên hãy đối chiếu Javadoc/BOM trước khi chọn signature. Không dùng `List<T>` như bằng chứng Java đã cấm phần tử `null`.
+
+`DataFetcherResult<P>` còn có thể mang local context hoặc extensions. Đây là công cụ nâng cao; đừng dùng nó để thay đổi contract nullability hoặc che lỗi service. Phần [DataFetcher và GraphQL context](/docs/tich-hop-spring-for-graphql/datafetcher-va-graphql-context) giải thích context ở mức execution.
+
+## Property data fetcher mặc định và resolver tùy chỉnh
+
+### Khi getter hoặc map đã đủ
+
+GraphQL Java thường dùng `PropertyDataFetcher` cho field chưa có data fetcher tùy chỉnh. Nó thử đọc property cùng tên từ POJO theo quy ước getter hoặc từ key cùng tên trong `Map`.
+
+Với source có các getter sau, `Book.id` và `Book.title` có thể được resolve mà không cần `@SchemaMapping` riêng:
+
+```java
+public final class BookView {
+
+    public String getId() {
+        return id;
+    }
+
+    public String getTitle() {
+        return title;
+    }
+
+    // authorId là property nội bộ, không phải Book.author.
+    public String getAuthorId() {
+        return authorId;
+    }
+}
+```
+
+Điều kiện là tên property runtime phải tương ứng với tên field GraphQL. `getDisplayName()` phù hợp với `displayName`; `getName()` không tự biến thành `displayName`. Java record, Kotlin property, proxy và naming convention đặc biệt cần được kiểm tra với GraphQL Java/Spring version cụ thể thay vì suy đoán từ cú pháp Java.
+
+Property data fetcher phù hợp khi:
+
+- field là một giá trị trực tiếp của DTO;
+- không cần argument hoặc request context;
+- không có policy field-level riêng;
+- đọc property không mở một quan hệ lazy ngoài transaction;
+- việc expose property đã được owner schema chấp thuận.
+
+Không cần viết resolver cho mọi scalar. Thêm annotation cho `id` hoặc `title` chỉ để lặp lại getter làm code khó đọc hơn mà không thêm behavior.
+
+### Khi cần custom resolver
+
+Dùng `@SchemaMapping` khi field không phải property trực tiếp hoặc cần một boundary rõ ràng:
+
+- ghép dữ liệu từ service/repository khác;
+- tính toán hoặc đổi tên property;
+- nhận argument như `reviews(limit: ...)`;
+- kiểm tra authorization ở field level;
+- dùng DataLoader hoặc `@BatchMapping`;
+- chuyển entity sang DTO an toàn;
+- tránh chạm vào lazy relation sau khi transaction đã đóng;
+- cần đọc context, selection set hoặc deadline cho một use case cụ thể.
+
+Ví dụ `Book.author` chỉ có `authorId` trong `BookView`. Getter `getAuthorId()` không đáp ứng field `author`, vì vậy cần custom resolver:
+
+```java
+@SchemaMapping(typeName = "Book", field = "author")
+public AuthorView author(BookView book) {
+    return authorService.findVisibleById(book.getAuthorId())
+            .orElseThrow(() -> new AuthorNotFoundException(book.getAuthorId()));
+}
+```
+
+Một mapping riêng đăng ký data fetcher cho cặp `Book.author`. Không nên đồng thời coi getter `getAuthor()` và method resolver là hai owner độc lập của cùng field. Nếu muốn đổi logic, chọn một nguồn và kiểm thử nguồn đó.
+
+`DataFetchingEnvironment` có thể được nhận trực tiếp khi resolver cần selection set hoặc thông tin cấp thấp. Hãy ưu tiên tham số typed như `@Argument`, `GraphQLContext` và source object cho logic nghiệp vụ; chỉ dùng environment khi thật sự cần.
+
+### DTO projection và ranh giới persistence
+
+GraphQL type `Book` không bắt buộc phải là JPA entity `BookEntity`. DTO projection giúp giữ field GraphQL ở ranh giới API và tránh làm lộ khóa ngoại, audit field hoặc quan hệ lazy.
+
+```text
+Database projection
+        │  id, tenant_id, title, author_id
+        ▼
+BookView DTO
+        │  @SchemaMapping dùng authorId để lấy AuthorView
+        ▼
+GraphQL Book
+        │  chỉ công khai id, title, author, reviews
+        ▼
+Client response
+```
+
+Trong ví dụ, `BookView` giữ `authorId` để resolver dùng nhưng SDL không công khai `authorId`. `AuthorView` và `ReviewView` chỉ trả các field mà schema cần. Đây là một projection server-side, không phải lời hứa rằng GraphQL selection set đã được dịch trực tiếp thành SQL.
+
+Spring Data có thể hỗ trợ projection hoặc property path hint trong các integration cụ thể. Tuy nhiên, Spring for GraphQL không phải data gateway tự động biến mọi selection set thành câu SQL tối ưu. Hãy đo query thật và thiết kế projection trong repository/service. Xem [SDL và nguyên tắc thiết kế schema](/docs/schema-va-type-system/sdl-va-thiet-ke-schema) để giữ ownership của API tách khỏi persistence model.
+
+## Nullability lỗi và authorization
+
+### Null propagation từ nested field
+
+Nullability trong SDL quyết định phạm vi ảnh hưởng khi nested resolver không hoàn tất. Với schema ví dụ:
+
+```graphql
+type Query {
+  books: [Book!]!
+}
+
+type Book {
+  author: Author!
+  internalScore: Int
+}
+```
+
+Nếu `Book.author` ném lỗi hoặc trả `null`, field `author` không thể giữ cam kết `Author!`. GraphQL ghi một execution error, biến object `Book` tương ứng thành `null`, rồi tiếp tục bubble qua phần tử `Book!`, list `[Book!]!` và có thể đến root `data`:
+
+```text
+Book.author: Author!
+        │ lỗi
+        ▼
+Book trong books: Book!
+        │ phần tử không được null
+        ▼
+Query.books: [Book!]!
+        │ list không được null
+        ▼
+data có thể trở thành null
+```
+
+Một response minh họa có thể là:
+
+```json title="Execution error — minh họa tĩnh"
+{
+  "data": {
+    "books": null
+  },
+  "errors": [
+    {
+      "message": "Không thể resolve author.",
+      "path": ["books", 0, "author"]
+    }
+  ]
+}
+```
+
+`message`, `locations`, error category và HTTP status phụ thuộc GraphQL Java cùng error handler. `path` mới là thông tin hữu ích để liên hệ lỗi với field nested. Nếu đổi `author` thành nullable `Author`, lỗi có thể chỉ làm `author: null` trong một `Book` và giữ lại phần data còn lại, nhưng client sẽ phải hiểu rõ ý nghĩa `null`.
+
+`Book.internalScore: Int` là nullable. Nếu field này bị lỗi, GraphQL thường có thể giữ object `Book`, đặt `internalScore` thành `null` và thêm error vào response. Nullable giảm blast radius, không làm lỗi biến mất.
+
+### Không tìm thấy khác với lỗi
+
+Resolver cần phân biệt ít nhất ba trạng thái:
+
+| Trạng thái | Cách biểu diễn có thể phù hợp | Lưu ý |
+| --- | --- | --- |
+| Tìm `reviews` thành công nhưng không có bản ghi | `[]` cho `[Review!]!` | Đây là kết quả bình thường của collection. |
+| Author không tồn tại và API cho phép thiếu quan hệ | `null` với `author: Author` | Phải đổi contract và mô tả semantics. |
+| Database timeout, mapping hỏng hoặc downstream lỗi | Execution error | Không đổi lỗi kỹ thuật thành `null`/`[]` một cách im lặng. |
+
+Với `author: Author!`, `Optional.empty()` không phải là một response thành công hợp lệ. Service cần quyết định đó là dữ liệu không hợp lệ, lỗi domain hay contract nullable chưa phù hợp. Đừng dùng `orElse(null)` để che một invariant mà SDL đã khai báo là non-null.
+
+Error handler nên trả message an toàn, giữ `path` và category ổn định nếu client cần. Không đưa SQL, stack trace hoặc token vào `errors.message`. Xem [Xử lý lỗi tập trung](/docs/tich-hop-spring-for-graphql/xu-ly-loi-tap-trung) khi cần thiết kế exception resolver dùng chung.
+
+### Authorization ở field level và context
+
+HTTP URL security chỉ biết request có đi qua endpoint hay không. Nó không tự phân biệt một query đang chọn `Book.title`, `Book.author` hay `Book.internalScore`. Field nhạy cảm cần policy ở resolver/service boundary.
+
+Trong ví dụ, `AuthorizationService` nhận `RequestContext` từ server và tenant của source. `tenantId` trong source là dữ liệu để kiểm tra phạm vi, không phải bằng chứng user có quyền. Không lấy quyền từ variables hoặc argument do client gửi.
+
+Resolver có thể nhận context trực tiếp:
+
+```java
+@SchemaMapping(typeName = "Book", field = "internalScore")
+public Integer internalScore(
+        BookView book,
+        DataFetchingEnvironment environment) {
+
+    GraphQLContext context = environment.getGraphQlContext();
+    RequestContext request = context.get("requestContext");
+    authorizationService.requireCanReadInternalScore(
+            request, book.getTenantId());
+
+    return scoreService.findScore(book.getId()).orElse(null);
+}
+```
+
+`GraphQLContext` là context của một lần execution, thường chứa principal đã xác thực, tenant đã xác định, correlation ID hoặc deadline. Interceptor có thể copy header đã được kiểm soát vào context; controller không nên tin một header/variable tùy ý chỉ vì nó có tên `tenantId`.
+
+Có thể đặt `@PreAuthorize` hoặc policy tương đương ở service method nếu Spring Security đã được cấu hình, nhưng biểu thức, context propagation và cách map lỗi phụ thuộc project. Chính sách quan trọng nên được bảo vệ ở service để các đường gọi khác ngoài GraphQL không bỏ qua. Xem [Authorization theo field và resolver](/docs/bao-mat-va-quan-sat/authorization-field-resolver) và [DataFetcher và GraphQL context](/docs/tich-hop-spring-for-graphql/datafetcher-va-graphql-context).
+
+## Transaction lazy loading và selection
+
+### Transaction boundary
+
+`@SchemaMapping` không tự mở một transaction bao phủ toàn bộ query. Một request có thể đi qua nhiều data fetcher và mỗi service có boundary riêng.
+
+Trong ví dụ, `@Transactional(readOnly = true)` trên `CatalogService.findVisibleBooks` chỉ bảo đảm repository root và việc materialize `BookView` nằm trong transaction đó. Khi method trả về, GraphQL mới tiếp tục hoàn tất nested field. Không nên giả định transaction của root vẫn mở khi `BookFieldController.author()` được gọi.
+
+Đặt boundary ở application service cho từng use case:
+
+```java
+@Service
+public class AuthorService {
+
+    private final AuthorRepository authorRepository;
+
+    public AuthorService(AuthorRepository authorRepository) {
+        this.authorRepository = authorRepository;
+    }
+
+    @Transactional(readOnly = true)
+    public Optional<AuthorView> findVisibleById(String authorId) {
+        return authorRepository.findVisibleProjection(authorId)
+                .map(this::toView);
+    }
+}
+```
+
+Đoạn code là vị trí boundary minh họa. Propagation, transaction manager, MVC/WebFlux và reactive database phải khớp application thật. Nếu một nested resolver gọi blocking JPA từ executor khác, transaction gắn với thread gọi ban đầu không tự đi theo. Hãy đưa thao tác database vào Spring bean có boundary rõ ràng và kiểm thử trên stack thực tế.
+
+Khi dùng DataLoader hoặc `@BatchMapping`, batch service nên materialize toàn bộ batch trong một boundary đọc phù hợp. Đừng mở một transaction mới cho từng key nếu mục tiêu là giảm N+1.
+
+### JPA lazy relation
+
+Một entity JPA có thể khai báo quan hệ `author` là `LAZY`. Nếu root resolver trả entity ra ngoài service rồi property data fetcher gọi `getAuthor()` sau khi persistence context đóng, có thể xảy ra `LazyInitializationException`. Nếu Open Session in View còn mở, getter có thể âm thầm phát sinh một query cho mỗi Book và tạo N+1.
+
+Các lựa chọn an toàn hơn là:
+
+1. projection thành `BookView` trong transaction, giữ `authorId` hoặc dữ liệu đã cần;
+2. query rõ ràng quan hệ bounded bằng fetch join/entity graph khi phù hợp;
+3. dùng nested service hoặc DataLoader có batch query `WHERE id IN (...)`;
+4. giới hạn field và depth để một query không ép tải cả object graph;
+5. đo SQL và transaction thật thay vì dựa vào việc getter “có vẻ” đơn giản.
+
+Không dùng `@Transactional` trên controller như cách giữ session cho mọi nested field. Nó làm boundary khó nhìn thấy và không tự giải quyết concurrency, N+1 hoặc một downstream call ngoài database. Phần [JPA và transaction boundary](/docs/truy-cap-du-lieu-va-hieu-nang/jpa-va-transaction-boundary) đi sâu hơn vào lazy loading và projection.
+
+### Selection set và projection không đồng nghĩa
+
+Client có thể chỉ chọn:
+
+```graphql
+query BookCards {
+  books {
+    id
+    title
+  }
+}
+```
+
+Điều đó chắc chắn làm response không có `author` và `reviews`. Nó không tự chứng minh repository chỉ select hai cột, cũng không làm transaction kéo dài đến cuối execution. Muốn tối ưu database, implementation có thể dùng projection cố định, look-ahead bằng selection set, fetch join hoặc batch query.
+
+Nếu resolver đọc `DataFetchingFieldSelectionSet`, hãy coi đó là input tối ưu hóa có kiểm soát. Không dùng selection set để bypass authorization, thay đổi semantics của field hoặc xây một SQL generator không có giới hạn. Selection set có fragment, alias và nested condition nên việc diễn giải phải được test với query thật.
+
+## N+1 DataLoader và BatchMapping
+
+### N+1 xuất hiện ở nested field
+
+Với query lấy 100 sách, implementation ngây thơ có thể làm:
+
+```text
+1 query lấy books
++ N query lấy author cho từng Book
++ N query lấy reviews cho từng Book
+= 1 + 2N lần đọc, tùy cách service triển khai
+```
+
+Đây là **N+1 query**: một query root tạo ra N lần đọc riêng ở nested field. `@SchemaMapping` không tự batching. Việc client chọn `author` trong selection set chỉ khiến field đó được resolve; nó không quyết định resolver dùng một query hay N query.
+
+Một resolver trực tiếp như sau dễ tạo N+1:
+
+```java
+@SchemaMapping(typeName = "Book", field = "author")
+public AuthorView author(BookView book) {
+    return authorService.findVisibleById(book.getAuthorId())
+            .orElseThrow(() -> new AuthorNotFoundException(book.getAuthorId()));
+}
+```
+
+Code này có thể vẫn đúng với ít phần tử hoặc source đã có cache. Khi list lớn, hãy đo số query, latency và kích thước batch trước khi chọn cách sửa. Xem [N+1 query](/docs/truy-cap-du-lieu-va-hieu-nang/n-plus-1-query) để đi theo quy trình đo và xác nhận.
+
+### DataLoader theo key
+
+`DataLoader` gom các lời gọi `load(key)` trong một execution để batch loader lấy nhiều key cùng lúc. Nó cũng thường có cache theo request. Pattern một-hop theo `authorId` có thể có dạng:
+
+```java
+import java.util.concurrent.CompletableFuture;
+import org.dataloader.DataLoader;
+import org.springframework.graphql.data.method.annotation.SchemaMapping;
+
+@SchemaMapping(typeName = "Book", field = "author")
+public CompletableFuture<AuthorView> author(
+        BookView book,
+        DataLoader<String, AuthorView> authors) {
+
+    return authors.load(book.getAuthorId());
+}
+```
+
+Phần đăng ký batch loader phụ thuộc version và kiểu async của service. Programming model Spring for GraphQL 1.4.x dùng `BatchLoaderRegistry` để đăng ký theo cặp key/value và tạo DataLoader theo request:
+
+```java
+@Configuration
+public class GraphQlBatchConfiguration {
+
+    public GraphQlBatchConfiguration(
+            BatchLoaderRegistry registry,
+            AuthorBatchService authorBatchService) {
+
+        registry.forTypePair(String.class, AuthorView.class)
+                .registerMappedBatchLoader((authorIds, environment) ->
+                        authorBatchService.findByIds(authorIds, environment));
+    }
+}
+```
+
+`AuthorBatchService.findByIds` trong ví dụ cần trả map `authorId -> AuthorView` bằng một truy vấn bounded như `WHERE id IN (...)`. Vì `Book.author` là `Author!`, batch service phải áp dụng cùng error policy: key không tìm thấy hoặc không còn visible phải trở thành lỗi domain theo key/batch mà adapter hỗ trợ, chẳng hạn `AuthorNotFoundException`, không được âm thầm coi map thiếu là một kết quả thành công có `null`. Kiểu return cụ thể có thể là `Mono<Map<...>>` hoặc `CompletionStage<Map<...>>` tùy Spring GraphQL/GraphQL Java và web stack; đừng copy signature mà không kiểm tra Javadoc của dependency đang pin.
+
+`BatchLoaderRegistry` được Boot Starter cung cấp trong programming model tương ứng và đảm bảo các DataLoader được đăng ký theo execution request. Không giữ một instance DataLoader mutable làm singleton toàn application, vì cache có thể làm lộ dữ liệu hoặc context của user này sang user khác.
+
+Batch loader phải xử lý key thiếu một cách có chủ đích:
+
+- mapped loader trả map theo key và không tự giả định database trả đủ mọi ID;
+- nếu author thiếu nhưng SDL là `Author!`, cần tạo lỗi hoặc sửa contract;
+- nếu quan hệ nullable, giá trị thiếu phải được biểu diễn theo semantics nullable đã công bố;
+- authorization phải áp dụng trong batch query, không chỉ ở resolver gọi `load`.
+
+Chi tiết cơ chế DataLoader và chiến lược batching nằm trong [Batch loading và DataLoader](/docs/truy-cap-du-lieu-va-hieu-nang/batch-loading-va-dataloader).
+
+### BatchMapping cho quan hệ đơn giản
+
+`@BatchMapping` là shortcut cho trường hợp nested resolver chủ yếu chỉ delegate đến DataLoader. Method nhận danh sách source/parent và trả kết quả theo parent:
+
+```java
+import java.util.List;
+import java.util.Map;
+import org.springframework.graphql.data.method.annotation.BatchMapping;
+import org.springframework.stereotype.Controller;
+
+@Controller
+public class BookAuthorBatchController {
+
+    private final AuthorBatchService authorBatchService;
+
+    public BookAuthorBatchController(AuthorBatchService authorBatchService) {
+        this.authorBatchService = authorBatchService;
+    }
+
+    @BatchMapping(typeName = "Book", field = "author")
+    public Map<BookView, AuthorView> author(List<BookView> books) {
+        return authorBatchService.findAuthorsFor(books);
+    }
+}
+```
+
+Spring đăng ký method này như batch loading function và đồng thời tạo data fetcher cho `Book.author`. `BookView` dùng làm key phải có `equals`/`hashCode` ổn định; Java record có equality theo component, còn class thường cần tự thiết kế equality phù hợp. `findAuthorsFor` phải áp dụng cùng error policy với resolver đơn: chỉ trả map thành công khi mỗi parent có `AuthorView` hợp lệ; parent thiếu author phải được chuyển thành lỗi domain/per-parent error theo adapter, chẳng hạn `AuthorNotFoundException`, không bị bỏ khỏi map rồi để `Author!` nhận `null`. Service cần trả map cho đúng các parent nhận vào, không dựa vào thứ tự row database.
+
+API Spring for GraphQL 1.4.x còn tài liệu hóa các biến thể như `Mono<Map<K,V>>` và `Flux<V>`. Nếu dùng `Flux<V>`, sequence phải có cùng số lượng và **cùng thứ tự** với danh sách source/parent. Nếu muốn tránh phụ thuộc equality của parent hoặc cần policy phức tạp theo ID, DataLoader với key vô hướng thường dễ kiểm soát hơn.
+
+`@BatchMapping` không phải là cách truyền mọi thông tin của một `@SchemaMapping` vào batch function. Trong tài liệu 1.4.x, các tham số batch chính là danh sách source, context/principal và batch environment; không nên mặc định rằng `@Argument("limit")` của nested field sẽ được gom an toàn vào một batch. Nếu kết quả phụ thuộc `limit`, tenant, role hoặc filter riêng của từng selection, dùng `BatchLoaderRegistry` với key/context phù hợp hoặc tách field/use case.
+
+### Batching ordering cache và context
+
+Batching đúng cần giữ ba invariant: key, ordering và context.
+
+**Key và ordering**
+
+- `BatchLoader<K,V>` dạng list phải trả value ở vị trí tương ứng với thứ tự input keys.
+- Mapped batch loader trả map theo key nên không phụ thuộc thứ tự row database, nhưng phải xử lý key bị thiếu.
+- Với `@BatchMapping` trả `Flux<V>`, sequence phải khớp số lượng và thứ tự source/parent.
+- Với `@BatchMapping` trả `Map<K,V>`, key phải định danh đúng source/parent; đừng tạo object khác equality không tương thích.
+
+Ví dụ database trả author theo thứ tự `[author-2, author-1]` trong khi parent list là `[book-1(author-1), book-2(author-2)]`. Nếu dùng list loader và không reorder, response có thể gắn nhầm author cho sách. Test phải cố tình đảo thứ tự để bắt lỗi này.
+
+**Batch boundary**
+
+Một request không nhất thiết tạo đúng một batch. Aliases, nhiều execution level, `maxBatchSize`, cache hit, async timing và nhiều DataLoader khác nhau có thể chia batch. Mục tiêu cần kiểm thử là không có N query ngoài ý muốn và mapping vẫn đúng, không phải ép mọi request thành một batch duy nhất.
+
+**Cache và context**
+
+DataLoader cache thường có phạm vi một execution request. Cache giúp deduplicate key lặp trong cùng request, nhưng không thay thế authorization. Key phải bao gồm hoặc được bảo vệ bởi phạm vi tenant/role khi cùng một loader có thể trả dữ liệu khác nhau theo principal. `BatchLoaderRegistry` cũng hỗ trợ truyền `GraphQLContext` và context của batch trong programming model Spring tương ứng.
+
+Đặt I/O bất đồng bộ bên trong batch function, còn gọi `load()` trực tiếp trong data fetcher trước khi trả future. GraphQL Java cảnh báo pattern gọi `DataLoader.load()` bên trong một `supplyAsync` tùy ý có thể làm engine không quan sát được thời điểm dispatch. Với DataLoader chain, hành vi dispatch còn phụ thuộc version GraphQL Java; bài này chỉ dùng một hop và không tuyên bố behavior chain cho mọi version.
+
+### Khi không nên ép batch mapping
+
+Không phải nested field nào cũng nên dùng `@BatchMapping`:
+
+- field có argument làm thay đổi kết quả cho từng parent;
+- policy authorization cần thông tin riêng của từng selection;
+- source không có equality ổn định;
+- downstream không hỗ trợ batch hoặc batch quá lớn;
+- field có side effect, thứ tự nghiệp vụ hoặc deadline riêng;
+- query nhỏ đến mức batch overhead lớn hơn lợi ích.
+
+Có thể tối ưu bằng projection/fetch join ở root nếu relation bounded và cùng transaction. Có thể dùng explicit DataLoader nếu key là `authorId`. Hãy chọn sau khi đo và ghi rõ contract ordering, nullability, cache scope và error behavior.
+
+## Collision type mismatch và schema first
+
+### Duplicate mapping
+
+Một executable schema cần một data fetcher owner cho mỗi cặp parent type + field. Hai method Java khác class không tạo ra overload GraphQL:
+
+```java
+@Controller
+public class FirstBookController {
+
+    @SchemaMapping(typeName = "Book", field = "author")
+    public AuthorView author(BookView book) {
+        return firstAuthorService.findVisibleById(book.getAuthorId())
+                .orElseThrow(() -> new AuthorNotFoundException(book.getAuthorId()));
+    }
+}
+
+@Controller
+public class SecondBookController {
+
+    @SchemaMapping(typeName = "Book", field = "author")
+    public AuthorView anotherAuthor(BookView book) {
+        return secondAuthorService.findVisibleById(book.getAuthorId())
+                .orElseThrow(() -> new AuthorNotFoundException(book.getAuthorId()));
+    }
+}
+```
+
+Đây là collision mapping. Runtime thường phát hiện ambiguity khi đăng ký handler hoặc khởi động application context; không có contract “method được scan sau sẽ thắng”. Cách sửa là chọn một owner, hợp nhất logic ở service hoặc đổi field/schema sau khi review semantics.
+
+SDL collision cũng nguy hiểm:
+
+```graphql
+# Sai khi schema hợp nhất chỉ cho phép một Book.author.
+type Book {
+  author: Author!
+}
+
+extend type Book {
+  author: Author!
+}
+```
+
+`extend` dùng để thêm field mới do module khác sở hữu theo quy ước đã thống nhất, không phải để khai báo lại field đã có. Kiểm tra schema hợp nhất trước khi debug annotation.
+
+### Type name mismatch
+
+Các mismatch thường gặp:
+
+| SDL | Java/mapping sai | Vấn đề |
+| --- | --- | --- |
+| `Book.author` | `@SchemaMapping` suy ra `BookView.author` | DTO simple name không trùng GraphQL type. |
+| `Book.author` | `field = "authors"` | Sai field name hoặc số ít/số nhiều. |
+| `Query.books` | `@SchemaMapping(typeName = "Book", field = "books")` | Nhắm nhầm parent type. |
+| `Book.author` | Method chỉ có `@QueryMapping` | `@QueryMapping` luôn nhắm `Query`. |
+| Query `primary: book` | Method `primary()` | Alias không đổi field GraphQL cần resolve. |
+
+Khi mapping không hoạt động, đọc theo thứ tự: SDL đang được nạp, parent type thật của field, field name bên phải alias, source parameter và package/component scan. Đừng bắt đầu bằng việc đổi tên method ngẫu nhiên. Xem [Lỗi mapping resolver](/docs/xu-ly-su-co/loi-mapping-resolver) khi cần checklist chẩn đoán.
+
+### Schema first và ownership
+
+Trong schema-first, SDL là nguồn contract. Annotation chỉ nối implementation vào field đã tồn tại:
+
+```graphql
+type Book {
+  title: String!
+  author: Author!
+}
+```
+
+```java
+@SchemaMapping(typeName = "Book", field = "author")
+public AuthorView author(BookView book) {
+    return authorService.findVisibleById(book.getAuthorId())
+            .orElseThrow(() -> new AuthorNotFoundException(book.getAuthorId()));
+}
+```
+
+Method Java không tạo thêm `Book.author`. Nếu SDL bỏ field đó, query không hợp lệ dù method vẫn nằm trong controller. Nếu SDL có field nhưng không có explicit mapping, chỉ property data fetcher phù hợp mới có thể lấp khoảng trống.
+
+Mỗi type và field nên có owner rõ:
+
+- owner schema quyết định tên, kiểu, nullability và deprecation;
+- owner resolver/service quyết định nguồn dữ liệu, authorization và latency budget;
+- owner data layer quyết định query, projection, transaction và batching;
+- reviewer phải biết collision sẽ được xử lý ở module nào.
+
+Schema hợp nhất từ nhiều file vẫn là một graph. Không để hai module cùng định nghĩa `Book` hoặc cùng đăng ký semantics khác nhau cho `Book.author`. Xem [Tách schema theo module](/docs/schema-va-type-system/tach-schema-theo-module) nếu cần chia ownership theo domain.
+
+### Quan hệ vòng depth và cost
+
+GraphQL cho phép type tham chiếu ngược:
+
+```graphql
+type Book {
+  author: Author!
+}
+
+type Author {
+  books: [Book!]!
+}
+```
+
+Query hữu hạn vẫn có thể đi sâu nhiều lớp:
+
+```graphql
+query DeepGraph {
+  books {
+    author {
+      books {
+        author {
+          books {
+            id
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+Nguy cơ không chỉ là vòng trong model. Mỗi lớp list có thể nhân số object, làm tăng database call, memory, authorization check và latency. Resolver cũng có thể vô tình map entity đầy đủ đệ quy và giữ một object graph rất lớn.
+
+Biện pháp thực tế:
+
+- dùng DTO summary hoặc chỉ expose `authorId`/connection ở một hướng;
+- bắt buộc pagination cho relation có cardinality lớn;
+- giới hạn `limit` và đặt default/max rõ trong SDL/service;
+- áp dụng depth/complexity limit ở gateway hoặc execution instrumentation;
+- đo cost theo operation thật, alias và fragment, không chỉ đếm số field;
+- tránh dùng nullability để che timeout hoặc lỗi do graph quá sâu.
+
+Depth limit không thay thế authorization. Complexity limit cũng không tự làm resolver batch. Xem [Depth và complexity limit](/docs/bao-mat-va-quan-sat/depth-va-complexity-limit) khi đưa guard này vào thiết kế API.
+
+## Chiến lược kiểm thử
+
+### Kiểm tra mapping bằng unit test
+
+Unit test nên kiểm tra logic resolver độc lập với GraphQL engine:
+
+- tạo `BookView` có `authorId` và tenant cụ thể;
+- gọi method `author` với service mock;
+- xác nhận service nhận đúng `authorId` và context đã xác thực;
+- kiểm tra `reviews` truyền đúng `limit` của nested field;
+- kiểm tra author missing, forbidden và downstream exception theo policy;
+- kiểm tra list rỗng được trả là `[]`, không phải `null` cho `[Review!]!`.
+
+Unit test không chứng minh `typeName`, `field`, component scan hoặc SDL đã wiring đúng. Một method gọi trực tiếp vẫn có thể dùng annotation sai. Cần thêm test execution với schema thật.
+
+### Kiểm tra execution bằng GraphQlTester
+
+Spring for GraphQL cung cấp `GraphQlTester` để gửi document và kiểm tra path tương đối với phần `data`. Đoạn sau là test fragment minh họa; nó không yêu cầu thay đổi dependency trong repository docs-only:
+
+```java
+String document = """
+    query Catalog($limit: Int!, $reviewLimit: Int!) {
+      books(limit: $limit) {
+        id
+        title
+        author {
+          displayName
+        }
+        reviews(limit: $reviewLimit) {
+          rating
+        }
+      }
+    }
+    """;
+
+graphQlTester.document(document)
+        .variable("limit", 2)
+        .variable("reviewLimit", 1)
+        .execute()
+        .path("books[0].author.displayName")
+        .entity(String.class)
+        .isEqualTo("Joshua Bloch");
+```
+
+Nên có ít nhất các execution test sau:
+
+1. Query chỉ chọn `id` và `title`, xác nhận nested service không bị gọi ngoài ý muốn.
+2. Query chọn `author`, xác nhận source `BookView` được map vào `AuthorView`.
+3. Query truyền `reviews(limit: ...)`, xác nhận argument field-level được bind đúng.
+4. Query không có review, xác nhận response là `[]` và không có error.
+5. Author missing hoặc forbidden, xác nhận `errors.path` và null propagation theo SDL.
+6. Query có alias/fragments, xác nhận resolver vẫn dùng field GraphQL gốc.
+
+API builder và assertion của `GraphQlTester` có thể khác theo Spring GraphQL version. Tài liệu 1.4.x dùng path tương đối `data` như ví dụ trên; hãy kiểm tra import và test starter của project thay vì thêm dependency tùy tiện.
+
+### Kiểm tra lỗi quyền và hiệu năng
+
+Test integration nên quan sát cả response lẫn side effect phía data layer:
+
+| Nhóm test | Điều cần xác nhận |
+| --- | --- |
+| Mapping startup | SDL có field; controller được scan; không có duplicate mapping hoặc unmapped argument. |
+| Default property | Getter/map key đúng tên field và không vô tình expose property nội bộ. |
+| Authorization | Principal A không đọc được field nhạy cảm của tenant B; context không lấy quyền từ variables. |
+| Nullability | `Author!`, list và phần tử list bubble đúng; message lỗi không lộ stack trace. |
+| N+1 | Một query nhiều books gọi batch service theo số batch dự kiến, không gọi author service N lần. |
+| Ordering | DB trả rows lệch thứ tự vẫn gắn đúng author vào từng parent. |
+| Cache scope | Key lặp được deduplicate trong một request nhưng không chia cache giữa user/request. |
+| Lazy loading | DTO/projection không truy cập lazy relation sau transaction; SQL count nằm trong budget. |
+| Depth/cost | Query graph sâu hoặc list lớn bị giới hạn trước khi tiêu thụ tài nguyên quá mức. |
+
+Có thể dùng mock repository, SQL statement counter, tracing hoặc metric DataLoader để đo. Không kết luận “đã sửa N+1” chỉ vì response đúng; cần bằng chứng số query và batch size. Khi dùng `BatchLoaderRegistry`, có thể test riêng batch function với nhiều keys và xác nhận map/list ordering.
+
+## Lưu ý phiên bản và endpoint
+
+`@SchemaMapping` và `@BatchMapping` là API đã có từ Spring for GraphQL 1.0. Javadoc Spring for GraphQL 1.4.x ghi `maxBatchSize` của `@BatchMapping` từ 1.1; nếu project dùng version cũ hơn, không tự thêm thuộc tính này. Return adapter (`Mono`, `Flux`, `CompletableFuture`, `Callable`), context propagation, schema inspection và DataLoader dispatch cần được kiểm tra theo BOM thực tế.
+
+Bài không pin một dependency version và không khẳng định mọi signature chạy nguyên trạng trên Spring Boot 3.x, 4.x, MVC, WebFlux hoặc GraphQL Java khác nhau. Đặc biệt, DataLoader chain và behavior dispatch có thể thay đổi theo GraphQL Java; ví dụ trong bài chỉ dựa vào nested one-hop loader và cần test khi nâng version.
+
+Nếu kiểm thử qua GraphQL HTTP endpoint, chỉ dùng key phù hợp với Spring Boot version:
+
+```properties
+# Spring Boot 3.5+
+spring.graphql.http.path=/graphql
+
+# Spring Boot 3.4 trở xuống
+spring.graphql.path=/graphql
+```
+
+Không cấu hình đồng thời hai key trên cho cùng một application. Path thực tế còn chịu ảnh hưởng của port, context path và reverse proxy. Endpoint transport không thay đổi cách `@SchemaMapping` nối parent type với field.
+
+## Checklist trước khi merge
+
+- [ ] SDL khai báo parent type và nested field đúng một lần.
+- [ ] Query example có selection set cho mọi object/list object và chỉ chọn field tồn tại.
+- [ ] `@SchemaMapping(typeName = ..., field = ...)` khớp chính xác SDL, nhất là khi Java source là DTO/projection khác tên.
+- [ ] Method name được hiểu đúng: không có `field` thì method name chính là field GraphQL; alias client không đổi mapping.
+- [ ] Nested method nhận source/parent object đúng kiểu; không nhầm source với argument hoặc variable.
+- [ ] `@Argument` dùng tên argument trong SDL, không dùng tên `$variable`; default/required nằm ở SDL.
+- [ ] Return type Java tôn trọng nullability và list element contract; `List<T>` không tự cấm `null`.
+- [ ] Getter/property data fetcher được dùng cho field trực tiếp; custom resolver chỉ thêm khi có logic, quyền, argument, DTO hoặc batching cần thiết.
+- [ ] Authorization dựa trên principal/context đã xác thực và được bảo vệ ở service/resolver; input tenant không tự cấp quyền.
+- [ ] Null hợp lệ, not found, forbidden và infrastructure error có semantics khác nhau; đã kiểm tra error path và bubbling.
+- [ ] Transaction boundary được đặt ở service; DTO được materialize trước khi lazy persistence context đóng.
+- [ ] N+1 đã được đo. DataLoader/`@BatchMapping` có cache scope theo request, key, batch size và error policy rõ.
+- [ ] Batch loader giữ ordering hoặc dùng mapped result đúng key; test có database trả row lệch thứ tự.
+- [ ] Duplicate mapping, duplicate SDL field/type và type name mismatch được phát hiện trước runtime production.
+- [ ] DTO không làm lộ persistence detail; relation vòng có depth, cost, pagination hoặc projection guard.
+- [ ] GraphQlTester/integration test bao phủ positive case, empty case, authorization, nullability, alias và batch count.
+- [ ] Return API và endpoint property đã được đối chiếu với Spring Boot/Spring for GraphQL/GraphQL Java version đang dùng.
 
 ## Bước tiếp theo
 
-Sau khi trang được điền nội dung, đọc bài kế tiếp trong nhóm để tiếp tục lộ trình.
+- Đọc [Query, selection set và alias](/docs/query-mutation-subscription/query-selection-set-alias) để hiểu vì sao nested resolver chỉ chạy cho field client đã chọn.
+- Xem [Query, mutation và subscription mapping](/docs/tich-hop-spring-for-graphql/query-mutation-subscription-mapping) để phân biệt root mapping với `@SchemaMapping`.
+- Đọc [DataFetcher và GraphQL context](/docs/tich-hop-spring-for-graphql/datafetcher-va-graphql-context) để truyền principal, tenant và metadata vào resolver.
+- Thực hành [N+1 query](/docs/truy-cap-du-lieu-va-hieu-nang/n-plus-1-query) và [Batch loading và DataLoader](/docs/truy-cap-du-lieu-va-hieu-nang/batch-loading-va-dataloader) trước khi tối ưu quan hệ nhiều phần tử.
+- Ôn [List và nullable](/docs/schema-va-type-system/list-va-nullable) khi cần thiết kế null propagation cho nested field.
+
+<Cards>
+  <Card title="Query và selection set" href="/docs/query-mutation-subscription/query-selection-set-alias" description="Đọc response shape và nested selection từ schema đến client." />
+  <Card title="Operation mapping" href="/docs/tich-hop-spring-for-graphql/query-mutation-subscription-mapping" description="Nối root Query, Mutation và Subscription với controller method." />
+  <Card title="Batch loading và DataLoader" href="/docs/truy-cap-du-lieu-va-hieu-nang/batch-loading-va-dataloader" description="Giảm N+1 khi resolve quan hệ nhiều phần tử." />
+</Cards>

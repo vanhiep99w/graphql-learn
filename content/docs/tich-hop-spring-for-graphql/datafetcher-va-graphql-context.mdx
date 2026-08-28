@@ -1,23 +1,1194 @@
 ---
 title: "DataFetcher và GraphQL context"
-description: "Dùng DataFetcher, local context và request context khi resolver cần thêm thông tin runtime."
+description: "Phân biệt DataFetcher, DataFetchingEnvironment, GraphQLContext, local context và source khi xây dựng resolver với Spring for GraphQL."
 ---
 
-Trang này sẽ trình bày **DataFetcher và GraphQL context** trong bối cảnh xây dựng GraphQL API với Spring Boot.
+`DataFetcher` là điểm nối giữa execution engine của GraphQL Java và logic cung cấp giá trị cho một field. Khi tích hợp với Spring for GraphQL, một method có `@QueryMapping` hoặc `@SchemaMapping` thường được Spring đăng ký thành `DataFetcher` phía sau. Vì vậy, điều quan trọng không phải là chọn một “loại resolver bí mật”, mà là hiểu đúng boundary, phạm vi của context và vòng đời của dữ liệu runtime.
+
+<Callout type="info" title="Phạm vi và giả định">
+Các SDL, query, variables, Java/pseudo-code và JSON trong bài là **minh họa tĩnh**, được thiết kế nhất quán để giải thích wiring. Repository này là docs-only, không có backend Spring Boot, database, security provider hoặc event source để chạy kiểm chứng. Không xem response bên dưới là output runtime đã được xác nhận. API và tên method có thể cần đối chiếu với version Spring Boot, Spring for GraphQL và GraphQL Java thật của ứng dụng.
+</Callout>
 
 ## Mục lục
 
-- [Nội dung dự kiến](#nội-dung-dự-kiến)
+- [DataFetcher và context trong một request](#datafetcher-và-context-trong-một-request)
+  - [DataFetcher là gì](#datafetcher-là-gì)
+  - [Context giải quyết bài toán nào](#context-giải-quyết-bài-toán-nào)
+- [Ví dụ xuyên suốt: catalog theo tenant](#ví-dụ-xuyên-suốt-catalog-theo-tenant)
+  - [SDL minh họa](#sdl-minh-họa)
+  - [Query và variables](#query-và-variables)
+  - [Response minh họa](#response-minh-họa)
+- [Execution flow và các boundary](#execution-flow-và-các-boundary)
+  - [Từ HTTP request tới execution](#từ-http-request-tới-execution)
+  - [Registration và binding boundary](#registration-và-binding-boundary)
+  - [Request scope không phải global state](#request-scope-không-phải-global-state)
+- [Annotated controller method và raw DataFetcher](#annotated-controller-method-và-raw-datafetcher)
+  - [Annotated method trong Spring for GraphQL](#annotated-method-trong-spring-for-graphql)
+  - [Raw DataFetcher trong GraphQL Java](#raw-datafetcher-trong-graphql-java)
+  - [Chọn abstraction nào](#chọn-abstraction-nào)
+- [Đọc DataFetchingEnvironment](#đọc-datafetchingenvironment)
+  - [Arguments và variables](#arguments-và-variables)
+  - [Source parent và local context](#source-parent-và-local-context)
+  - [GraphQLContext và request metadata](#graphqlcontext-và-request-metadata)
+- [Thiết kế và đưa context vào execution](#thiết-kế-và-đưa-context-vào-execution)
+  - [Context nên chứa gì](#context-nên-chứa-gì)
+  - [Dữ liệu không nên nhét vào context](#dữ-liệu-không-nên-nhét-vào-context)
+  - [Tạo context từ HTTP hoặc WebSocket](#tạo-context-từ-http-hoặc-websocket)
+- [Context authorization và DataLoader](#context-authorization-và-dataloader)
+  - [Principal tenant và field authorization](#principal-tenant-và-field-authorization)
+  - [DataLoader registry trong request](#dataloader-registry-trong-request)
+  - [Nested field và N plus 1](#nested-field-và-n-plus-1)
+- [Async reactive và instrumentation](#async-reactive-và-instrumentation)
+  - [Khi resolver trả kết quả bất đồng bộ](#khi-resolver-trả-kết-quả-bất-đồng-bộ)
+  - [Propagation không đồng nghĩa ThreadLocal](#propagation-không-đồng-nghĩa-threadlocal)
+  - [Instrumentation quan sát execution](#instrumentation-quan-sát-execution)
+- [Error handling cancellation và timeout](#error-handling-cancellation-và-timeout)
+  - [Lỗi ở DataFetcher](#lỗi-ở-datafetcher)
+  - [Cancellation và timeout](#cancellation-và-timeout)
+  - [Cleanup và memory leak](#cleanup-và-memory-leak)
+- [Logging tracing và redaction](#logging-tracing-và-redaction)
+  - [Thiết kế field log và trace](#thiết-kế-field-log-và-trace)
+  - [Redact context và variables](#redact-context-và-variables)
+- [Chọn mapping raw DataFetcher và migration](#chọn-mapping-raw-datafetcher-và-migration)
+  - [Khi dùng QueryMapping hoặc SchemaMapping](#khi-dùng-querymapping-hoặc-schemamapping)
+  - [Khi dùng DataFetcher](#khi-dùng-datafetcher)
+  - [Migration không đổi contract](#migration-không-đổi-contract)
+- [Chiến lược kiểm thử](#chiến-lược-kiểm-thử)
+  - [Unit test DataFetcher và context](#unit-test-datafetcher-và-context)
+  - [Integration test mapping và request](#integration-test-mapping-và-request)
+  - [Test async cancellation và leak](#test-async-cancellation-và-leak)
+- [Cấu hình endpoint và version](#cấu-hình-endpoint-và-version)
+- [Checklist review](#checklist-review)
 - [Bước tiếp theo](#bước-tiếp-theo)
 
-## Nội dung dự kiến
+## DataFetcher và context trong một request
 
-Nội dung chi tiết sẽ bao gồm khái niệm chính, ví dụ code và các lưu ý thực hành liên quan đến chủ đề này.
+### DataFetcher là gì
 
-<Callout type="info" title="Trang placeholder">
-Đây là trang khung. Hãy dùng skill `fumadocs-technical-writer` để viết đầy đủ trang này trong bước tiếp theo.
-</Callout>
+Trong GraphQL Java, `DataFetcher<T>` là hàm được execution engine gọi để lấy giá trị của một field. Chữ `T` là giá trị trước khi GraphQL hoàn tất selection set, serialize scalar hoặc đi tiếp vào các field con.
+
+```java
+@FunctionalInterface
+public interface DataFetcher<T> {
+    T get(DataFetchingEnvironment environment) throws Exception;
+}
+```
+
+`DataFetchingEnvironment` là đối tượng mô tả lần gọi field hiện tại. Nó chứa argument của field, source/parent, context của execution, local context, selection set và nhiều metadata khác. Một `DataFetcher` không phải là endpoint HTTP. Nó chỉ được gọi sau khi operation vượt qua các bước parse, validation và input coercion cần thiết.
+
+Spring for GraphQL cung cấp một lớp adapter để đăng ký annotated controller method thành `DataFetcher`. Adapter đó bind `@Argument`, suy ra source cho `@SchemaMapping`, gọi method Spring và chuyển kết quả đồng bộ hoặc bất đồng bộ cho GraphQL Java. Vì vậy, method annotated và raw `DataFetcher` khác nhau chủ yếu ở cách đăng ký và binding, không phải ở việc chúng chạy ngoài execution engine.
+
+### Context giải quyết bài toán nào
+
+Một field thường cần biết request đang chạy cho principal nào, tenant nào hoặc trace nào. Những dữ liệu đó không phải argument do client yêu cầu, cũng không phải source object của field. **GraphQL context** là nơi server gắn các metadata runtime chung cho một execution để mọi `DataFetcher` và một số hook execution có thể đọc được.
+
+Ví dụ xuyên suốt của bài này dùng một giá trị typed tên `RequestContext` nằm bên trong `GraphQLContext`:
+
+```text
+Client query + variables
+          │
+          ▼
+HTTP/WebSocket boundary xác thực credential
+          │ tạo RequestContext nhỏ, bất biến
+          ▼
+GraphQL execution
+  ├── Query.books DataFetcher
+  ├── Book.author DataFetcher
+  └── DataLoader batch loader
+          │ cùng đọc principal, tenant, correlation ID
+          ▼
+Service/repository áp dụng policy và lấy dữ liệu
+```
+
+Có ba nguyên tắc cần nhớ ngay từ đầu:
+
+1. Context do server tạo từ thông tin đã xác minh. Client không thể tự cấp quyền bằng cách gửi một key trong `variables`.
+2. Context thuộc phạm vi execution. Nó không phải static field, singleton mutable state hoặc “biến user hiện tại” dùng chung cho mọi request.
+3. Context nên nhỏ và ổn định. Principal snapshot, tenant đã chọn, correlation ID, deadline và request metadata phù hợp hơn một entity graph lớn hoặc toàn bộ HTTP request.
+
+Nếu cần mental model đầy đủ hơn về schema, resolver, service và data source, xem [Kiến trúc GraphQL](/docs/nen-tang/kien-truc-graphql) và [Kiến trúc Spring for GraphQL](/docs/tich-hop-spring-for-graphql/kien-truc-spring-for-graphql).
+
+## Ví dụ xuyên suốt: catalog theo tenant
+
+Các phần tiếp theo dùng cùng một schema để nối context với root resolver, nested resolver và DataLoader. `tenantId` cố ý **không** phải argument của query. Server lấy tenant từ context sau khi xác thực membership của principal.
+
+### SDL minh họa
+
+```graphql title="schema.graphqls — minh họa tĩnh"
+schema {
+  query: Query
+}
+
+type Query {
+  books(limit: Int = 2): [Book!]!
+}
+
+type Book {
+  id: ID!
+  title: String!
+  author: Author!
+}
+
+type Author {
+  id: ID!
+  name: String!
+}
+```
+
+`Query.books` trả list không `null`, và mỗi `Book` trong list cũng không `null`. `Book.author` là nested field. Java model nội bộ có thể giữ `authorId` để DataLoader dùng, dù schema không công khai `authorId`.
+
+SDL chỉ là contract. Nó không tạo `RequestContext`, không tự lọc tenant và không tự đăng ký `DataFetcher`. Việc nối SDL với controller hoặc runtime wiring là registration boundary được giải thích ở phần sau.
+
+### Query và variables
+
+Client gửi một query ổn định và chỉ truyền giới hạn trang qua variables:
+
+```graphql title="CatalogBooks.graphql — minh họa tĩnh"
+query CatalogBooks($limit: Int = 2) {
+  books(limit: $limit) {
+    id
+    title
+    author {
+      id
+      name
+    }
+  }
+}
+```
+
+```json title="Variables — minh họa tĩnh"
+{
+  "limit": 2
+}
+```
+
+Request không chứa `tenantId`, principal hoặc access token trong GraphQL variables. Credential thuộc transport/security boundary. Tenant hiệu lực được suy ra từ credential, policy và metadata server; nếu một user có nhiều tenant, việc chọn tenant cần một cơ chế đã được xác thực riêng, không phải tin một string tùy ý.
+
+`$limit` là variable của operation. `limit` trong `books(limit: $limit)` là argument của field. `RequestContext` không nằm trong query document và cũng không xuất hiện trong JSON variables.
+
+### Response minh họa
+
+Với dữ liệu giả định, execution result có thể có dạng sau:
+
+```json title="Response — minh họa tĩnh"
+{
+  "data": {
+    "books": [
+      {
+        "id": "book-1",
+        "title": "Effective Java",
+        "author": {
+          "id": "author-1",
+          "name": "Joshua Bloch"
+        }
+      },
+      {
+        "id": "book-2",
+        "title": "Designing Data-Intensive Applications",
+        "author": {
+          "id": "author-2",
+          "name": "Martin Kleppmann"
+        }
+      }
+    ]
+  }
+}
+```
+
+Response không hiển thị `tenantId`, correlation ID hoặc principal vì đó là metadata nội bộ, không phải field đã chọn. Response cũng không chứng minh có đúng hai lời gọi database: implementation có thể tạo N+1, dùng DataLoader, join hoặc projection. Muốn biết chi phí thật phải đo data source; xem [N+1 query](/docs/truy-cap-du-lieu-va-hieu-nang/n-plus-1-query) và [Batch loading và DataLoader](/docs/truy-cap-du-lieu-va-hieu-nang/batch-loading-va-dataloader).
+
+## Execution flow và các boundary
+
+### Từ HTTP request tới execution
+
+Trong một request GraphQL, context được tạo trước hoặc trong lúc xây dựng `ExecutionInput`, rồi được gắn vào execution. Mỗi `DataFetchingEnvironment` của field hiện tại có thể truy cập cùng `GraphQLContext` của execution đó.
+
+```text
+Transport
+  │  headers, credential, operation document
+  ▼
+Spring GraphQL interceptor
+  │  xác thực + tạo RequestContext nhỏ
+  ▼
+ExecutionInput
+  ├── query, variables, operationName
+  ├── GraphQLContext
+  └── DataLoaderRegistry theo execution
+  ▼
+Parse → validate → coerce variables
+  ▼
+DataFetcher của Query.books
+  │  DataFetchingEnvironment hiện tại
+  ▼
+Giá trị Book[]
+  ▼
+DataFetcher của Book.author cho từng source Book
+  │  có source/parent riêng, cùng request context
+  ▼
+Execution result: data + errors + extensions
+```
+
+Có thể có nhiều field được resolve độc lập hoặc bất đồng bộ. Vì vậy, không giả định context chỉ được đọc một lần, cũng không giả định các fetcher luôn chạy trên cùng một thread. Context cần an toàn khi được đọc đồng thời; cách đơn giản nhất là xây một holder bất biến và không sửa nó trong resolver.
+
+`DataFetchingEnvironment` chỉ mô tả field hiện tại. `GraphQLContext` mô tả execution. `DataLoaderRegistry` là registry phục vụ batching trong execution. Ba đối tượng này liên quan nhưng không thay thế nhau.
+
+### Registration và binding boundary
+
+Có hai boundary cần tách rõ:
+
+| Boundary | Trách nhiệm | Ví dụ |
+| --- | --- | --- |
+| **Registration** | Nối cặp `parent type + field` trong schema với code thực thi khi executable schema được tạo. | `Query.books` → method `books` hoặc raw `DataFetcher`. |
+| **Binding** | Chuyển input runtime thành tham số mà code thực thi nhận. | `@Argument("limit")` hoặc `environment.getArgument("limit")`. |
+| **Context creation** | Tạo metadata server-side cho execution trước khi fetcher cần dùng. | Interceptor tạo `RequestContext` từ principal đã xác thực. |
+| **Execution** | Gọi fetcher, hoàn tất nested selection, batching, serialize và gom lỗi. | `Book.author` được gọi với source từng `Book`. |
+
+Annotation không thay thế SDL. Một method `@QueryMapping` không mở thêm field nếu schema không khai báo field tương ứng. Ngược lại, SDL hợp lệ không đảm bảo method đã được đăng ký hoặc service có dữ liệu.
+
+Trong Spring for GraphQL, controller phải là Spring bean được phát hiện, thường có `@Controller` và nằm trong component scan. Raw wiring thường được thêm qua `RuntimeWiringConfigurer` hoặc cấu hình `GraphQlSource` tùy cách project xây schema. Không đăng ký đồng thời hai handler cho cùng cặp `Query.books` nếu không có một cơ chế hợp nhất có chủ đích; mapping collision nên được phát hiện lúc startup hoặc qua test wiring.
+
+Binding cũng khác nhau. Annotated method có thể nhận `@Argument`, `DataFetchingEnvironment`, context value hoặc source theo programming model của Spring. Raw `DataFetcher` tự đọc `environment.getArgument("limit")`, tự kiểm tra kiểu Java và tự quyết định cách lấy context. Đừng dùng raw fetcher chỉ để né một input typed mà Spring đã bind tốt.
+
+Các annotation root và method signature chi tiết nằm ở [Query, mutation và subscription mapping](/docs/tich-hop-spring-for-graphql/query-mutation-subscription-mapping). Bài đó cũng nhắc rằng `@SubscriptionMapping` chỉ tạo mapping cho Publisher; transport WebSocket và lifecycle là boundary riêng.
+
+### Request scope không phải global state
+
+Trong ví dụ này, một execution có một `GraphQLContext` và một `DataLoaderRegistry` riêng. Hai request đồng thời có thể có hai tenant khác nhau và phải thấy hai giá trị context khác nhau.
+
+| Giá trị | Scope đúng | Sai lầm cần tránh |
+| --- | --- | --- |
+| `GraphQLContext` | Một GraphQL execution; subscription có thể sống lâu hơn một HTTP request ngắn. | Đặt vào static field hoặc singleton rồi ghi đè theo request mới nhất. |
+| `RequestContext` | Một holder nhỏ nằm trong `GraphQLContext`. | Cho phép resolver sửa tenant/principal giữa chừng. |
+| `local context` | Một nhánh subtree đi từ parent fetcher xuống child fetcher. | Dùng như context global cho toàn execution. |
+| `source/parent` | Giá trị output của field cha, thay đổi theo từng item/nhánh. | Coi source là identity của request. |
+| `DataLoaderRegistry` | Một execution/request để cache và batch an toàn theo quyền. | Dùng một registry singleton cho nhiều user. |
+| `ThreadLocal` | Nếu buộc phải dùng, chỉ là cơ chế kỹ thuật tạm thời có cleanup nghiêm ngặt. | Dùng làm nguồn chính cho auth trong async/reactive resolver. |
+
+Với query thông thường, context thường được giải phóng sau execution. Với subscription, execution hoặc stream có thể giữ tham chiếu context trong thời gian dài. Vì vậy, context cho subscription không nên giữ `HttpServletRequest`, response buffer, transaction đang mở hoặc object graph lớn. Khi credential hết hạn hoặc membership thay đổi, policy subscription phải có cơ chế kiểm tra/revoke riêng; context ban đầu không làm quyền bất biến mãi mãi.
+
+## Annotated controller method và raw DataFetcher
+
+### Annotated method trong Spring for GraphQL
+
+Đây là cách phù hợp cho phần lớn root field nghiệp vụ trong Spring for GraphQL:
+
+```java
+package com.example.catalog.graphql;
+
+import java.util.List;
+
+import graphql.schema.DataFetchingEnvironment;
+import org.springframework.graphql.data.method.annotation.Argument;
+import org.springframework.graphql.data.method.annotation.QueryMapping;
+import org.springframework.stereotype.Controller;
+
+@Controller
+public class CatalogQueryController {
+
+    private static final String REQUEST_CONTEXT = "requestContext";
+
+    private final CatalogService catalogService;
+    private final CatalogAuthorization authorization;
+
+    public CatalogQueryController(
+            CatalogService catalogService,
+            CatalogAuthorization authorization) {
+        this.catalogService = catalogService;
+        this.authorization = authorization;
+    }
+
+    @QueryMapping
+    public List<Book> books(
+            @Argument("limit") Integer limit,
+            DataFetchingEnvironment environment) {
+
+        RequestContext requestContext = environment
+                .getGraphQlContext()
+                .get(REQUEST_CONTEXT);
+
+        if (requestContext == null) {
+            throw new UnauthenticatedException();
+        }
+
+        authorization.assertCanReadCatalog(requestContext);
+        return catalogService.findBooks(requestContext.tenantId(), limit);
+    }
+}
+```
+
+Đoạn code là **minh họa tĩnh**. `CatalogService`, `CatalogAuthorization`, `Book`, `RequestContext` và exception là các type giả định. Điểm quan trọng là Spring bind `limit` theo argument GraphQL, còn method đọc `RequestContext` từ `GraphQLContext`. Method không lấy tenant từ query vì tenant phải đến từ security policy server-side.
+
+Nếu version Spring for GraphQL hỗ trợ annotation tương ứng, một method có thể nhận context value trực tiếp:
+
+```java
+@QueryMapping
+public List<Book> books(
+        @Argument("limit") Integer limit,
+        @ContextValue(name = "requestContext") RequestContext requestContext) {
+    return catalogService.findBooks(requestContext.tenantId(), limit);
+}
+```
+
+`@ContextValue` và tên thuộc tính cần đối chiếu với version dependency thật. Dùng `DataFetchingEnvironment` trong ví dụ đầu tiên giúp thấy rõ GraphQL Java API và phù hợp khi method cần thêm selection set, field metadata hoặc local context. [Binding arguments và input](/docs/tich-hop-spring-for-graphql/binding-arguments-input) trình bày riêng cách bind argument, input object và kiểu Java.
+
+Method annotated không phải raw `DataFetcher` dù Spring cuối cùng đăng ký nó thành fetcher. Spring còn có thể áp dụng argument resolver, conversion, validation và adapter cho return type. Vì thế, controller method thường dễ đọc và dễ test hơn khi field là use case ổn định của ứng dụng.
+
+### Raw DataFetcher trong GraphQL Java
+
+Khi cần runtime wiring trực tiếp, có thể đăng ký raw `DataFetcher`. Ví dụ dưới đây minh họa cách đọc argument và context thủ công:
+
+```java
+import graphql.schema.DataFetchingEnvironment;
+import org.springframework.context.annotation.Bean;
+import org.springframework.graphql.execution.RuntimeWiringConfigurer;
+
+@Bean
+RuntimeWiringConfigurer catalogWiring(
+        CatalogService catalogService,
+        CatalogAuthorization authorization) {
+
+    return wiringBuilder -> wiringBuilder.type(
+            "Query",
+            typeWiring -> typeWiring.dataFetcher(
+                    "books",
+                    (DataFetchingEnvironment environment) -> {
+                        Integer limit = environment.getArgument("limit");
+                        RequestContext requestContext = environment
+                                .getGraphQlContext()
+                                .get("requestContext");
+
+                        if (requestContext == null) {
+                            throw new UnauthenticatedException();
+                        }
+
+                        authorization.assertCanReadCatalog(requestContext);
+                        return catalogService.findBooks(
+                                requestContext.tenantId(), limit);
+                    }));
+}
+```
+
+Đây là Java/pseudo-code minh họa registration boundary. Tên package, builder API và cách project cung cấp `RuntimeWiringConfigurer` có thể thay đổi theo version. Raw fetcher không có `@Argument` để Spring bind hộ. `getArgument("limit")` cần khớp chính xác tên argument trong SDL; `$limit` là tên variable không được dùng ở đây.
+
+Raw fetcher phù hợp khi:
+
+- schema được lắp ráp bằng runtime wiring hoặc generated code;
+- cần một data fetcher dùng chung cho nhiều field có metadata riêng;
+- đang tích hợp directive, scalar hoặc một thư viện GraphQL Java cấp thấp;
+- cần kiểm soát trực tiếp `DataFetcherResult`, local context hoặc custom instrumentation;
+- migration từ một runtime wiring cũ chưa thể đổi sang controller ngay.
+
+Raw fetcher không tự có authorization, transaction, validation, context hoặc DataLoader. Những trách nhiệm đó vẫn cần được đưa vào service, interceptor hoặc policy layer. Một raw fetcher được đăng ký lúc khởi động phải đọc `GraphQLContext` từ **environment của lần gọi hiện tại**; không được capture một `RequestContext` của request nào vào lambda singleton.
+
+### Chọn abstraction nào
+
+| Câu hỏi | Annotated controller method | Raw `DataFetcher` |
+| --- | --- | --- |
+| Field thông thường trong ứng dụng Spring? | Lựa chọn mặc định, rõ `@QueryMapping`/`@SchemaMapping`. | Chỉ dùng nếu có lý do về wiring hoặc API cấp thấp. |
+| Binding argument/input? | Spring bind `@Argument` vào kiểu Java. | Tự gọi `getArgument`/`getArguments` và xử lý conversion. |
+| Source của nested field? | `@SchemaMapping` nhận parent/source rõ ràng. | Tự gọi `getSource()` và cast. |
+| Context và local context? | Có thể nhận environment/context value theo programming model. | Đọc trực tiếp từ environment, linh hoạt nhưng nhiều ceremony. |
+| Schema động hoặc wiring theo directive? | Có thể không phải boundary thuận tiện nhất. | Thường phù hợp hơn. |
+| Test unit? | Gọi method với dependency/context typed. | Tạo environment giả hoặc test qua executable schema. |
+| Rủi ro chính | Mapping mơ hồ hoặc lạm dụng controller cho business logic. | Binding thủ công, duplicate wiring và code phụ thuộc GraphQL Java. |
+
+Không có lợi ích bảo mật khi đổi từ annotation sang raw fetcher. Nếu context đang sai, hãy sửa nơi tạo context hoặc authorization boundary trước, thay vì đổi kiểu resolver.
+
+## Đọc DataFetchingEnvironment
+
+### Arguments và variables
+
+`DataFetchingEnvironment` nhìn thấy giá trị argument của **field hiện tại**, sau khi GraphQL đã parse và coerce theo schema. Nó không nhìn tên variable definition như `$limit`.
+
+```graphql
+query CatalogBooks($pageSize: Int = 2) {
+  books(limit: $pageSize) {
+    id
+    title
+  }
+}
+```
+
+```java
+@QueryMapping
+public List<Book> books(
+        @Argument("limit") Integer limit,
+        DataFetchingEnvironment environment) {
+
+    Integer sameValue = environment.getArgument("limit");
+    // limit và sameValue phải cùng là giá trị của argument "limit".
+    if (!java.util.Objects.equals(limit, sameValue)) {
+        throw new IllegalStateException("Argument binding mismatch");
+    }
+    return catalogService.findBooks(limit);
+}
+```
+
+Trong ví dụ này:
+
+- `$pageSize` là variable definition và key `pageSize` trong variables JSON;
+- `limit` là argument trong SDL và là key mà `getArgument("limit")` đọc;
+- `@Argument("limit")` không đọc key `$pageSize`;
+- GraphQL đã kiểm tra kiểu `Int` trước khi method hoặc raw fetcher dùng giá trị.
+
+Ưu tiên `@Argument` typed cho controller nghiệp vụ. Dùng `getArguments()` hoặc raw map khi viết adapter generic thật sự cần toàn bộ arguments. Đừng dùng map để đưa một input có shape đã biết đi xuyên qua service; điều đó làm mất type safety và khiến validation khó nhìn thấy.
+
+### Source parent và local context
+
+Ba phương thức sau trả về ba loại dữ liệu khác nhau:
+
+| API | Câu hỏi nó trả lời | Ví dụ ở `Book.author` |
+| --- | --- | --- |
+| `getSource()` | Field cha đã trả object nào cho field hiện tại? | `Book` của item đang resolve. |
+| `getLocalContext()` | Parent fetcher truyền metadata nào xuống subtree? | `AuthorFieldPolicy` của nhánh `Book`. |
+| `getGraphQlContext()` | Execution này thuộc principal/tenant/request nào? | `RequestContext` dùng chung cho execution. |
+
+Raw nested fetcher có thể viết như sau:
+
+```java
+DataFetcher<Author> authorFetcher = environment -> {
+    Book source = environment.getSource();
+    AuthorFieldPolicy localPolicy = environment.getLocalContext();
+    RequestContext requestContext = environment
+            .getGraphQlContext()
+            .get("requestContext");
+
+    if (source == null || requestContext == null) {
+        throw new IllegalStateException("Missing resolver state");
+    }
+
+    if (localPolicy != null && !localPolicy.canReadAuthor()) {
+        throw new ForbiddenException();
+    }
+
+    return authorService.findVisible(
+            requestContext.tenantId(), source.authorId());
+};
+```
+
+`source` ở đây là `Book` mà `Query.books` hoặc property fetcher trả về. Nó không phải `tenantId`, không phải `variables` và không phải request context. Một list có nhiều `Book` sẽ tạo nhiều source khác nhau.
+
+**Local context** thường được tạo bằng `DataFetcherResult` ở parent fetcher:
+
+```java
+DataFetcherResult<Book> result = DataFetcherResult.<Book>newResult()
+        .data(book)
+        .localContext(new AuthorFieldPolicy(true))
+        .build();
+return result;
+```
+
+Fetcher của các field con có thể đọc giá trị đó bằng `environment.getLocalContext()`. Local context có scope theo subtree và có thể khác giữa hai nhánh trong cùng execution. Nó phù hợp cho metadata hẹp do server tính ở parent, chẳng hạn policy đã tính hoặc một hint tối ưu cho field con. Nó không nên chứa toàn bộ object graph và không thay thế `GraphQLContext` cấp execution.
+
+Spring `@SchemaMapping` tự làm rõ source hơn raw fetcher:
+
+```java
+@SchemaMapping(typeName = "Book", field = "author")
+public Author author(
+        Book book,
+        DataFetchingEnvironment environment) {
+    RequestContext requestContext = environment
+            .getGraphQlContext()
+            .get("requestContext");
+    return authorService.findVisible(
+            requestContext.tenantId(), book.authorId());
+}
+```
+
+`Book book` là parent/source vì method đang map `Book.author`. Nếu đây là `@QueryMapping` root, không thêm `Book` chỉ vì kết quả cuối cùng có type `Book`; root field không nhận source `Book` do field con sẽ được resolve ở bước sau. Xem [`@SchemaMapping` và nested field](/docs/tich-hop-spring-for-graphql/schema-mapping-va-nested-field) để phân tích source object, default property fetcher và nested boundary.
+
+### GraphQLContext và request metadata
+
+Thuật ngữ “request context” thường bị dùng cho ba thứ khác nhau:
+
+| Tên gọi | Bản chất | Phạm vi |
+| --- | --- | --- |
+| `WebGraphQlRequest` hoặc request HTTP/WebSocket | Wrapper của transport, có headers, URI và dữ liệu request. | Boundary web; không nên đưa nguyên object vào domain resolver. |
+| `GraphQLContext` | Container của GraphQL Java gắn với execution. | Các `DataFetcher`, instrumentation và hook được execution cung cấp. |
+| `RequestContext` | Kiểu dữ liệu do application định nghĩa, đặt trong `GraphQLContext`. | Holder nhỏ, typed cho principal, tenant, correlation và deadline. |
+
+Đọc `GraphQLContext` theo key ứng dụng:
+
+```java
+GraphQLContext graphQlContext = environment.getGraphQlContext();
+RequestContext requestContext = graphQlContext.get("requestContext");
+
+String correlationId = requestContext.correlationId();
+String tenantId = requestContext.tenantId();
+```
+
+`GraphQLContext` không phải một `Map` mà client có thể gửi tùy ý. Variables và headers chỉ trở thành context sau khi server chọn, xác thực và chuẩn hóa chúng. Nếu ứng dụng vẫn dùng API context cũ của GraphQL Java, `environment.getContext()` có thể có semantics khác; ưu tiên `getGraphQlContext()` cho `GraphQLContext` và kiểm tra migration guide của version thật.
+
+Không đặt `DataFetchingEnvironment` vào `RequestContext`. Environment chỉ có ý nghĩa trong lần gọi field hiện tại và giữ nhiều tham chiếu execution. Nếu service cần correlation ID hoặc tenant, truyền holder nhỏ hoặc các giá trị typed cần thiết, không truyền cả environment xuống repository.
+
+## Thiết kế và đưa context vào execution
+
+### Context nên chứa gì
+
+Một `RequestContext` tốt thường là record bất biến hoặc object tương đương:
+
+```java
+import java.time.Instant;
+
+public record RequestContext(
+        PrincipalSnapshot principal,
+        String tenantId,
+        String correlationId,
+        Instant deadline,
+        RequestMetadata metadata) {
+}
+
+public record PrincipalSnapshot(
+        String subject,
+        String authenticationType,
+        java.util.Set<String> authorities) {
+}
+
+public record RequestMetadata(
+        String channel,
+        String locale,
+        String clientVersion) {
+}
+```
+
+Các trường trên chỉ là ví dụ. Chọn trường theo policy và nhu cầu thật, không sao chép nguyên claim token hoặc toàn bộ header.
+
+| Dữ liệu | Vì sao phù hợp | Lưu ý |
+| --- | --- | --- |
+| Principal snapshot | Resolver/service cần biết ai đang gọi. | Giữ thông tin tối thiểu; authorization vẫn nằm ở policy/service. |
+| Tenant đã xác định | Giới hạn truy cập và query data source. | Phải được derive từ membership/credential đã kiểm tra. |
+| Correlation ID hoặc trace ID an toàn | Nối log, metric và downstream trace. | Không dùng làm authorization hoặc bí mật. |
+| Deadline/remaining budget | Chuyển ngân sách thời gian xuống service. | Cần kết hợp timeout thật; một timestamp không tự hủy call. |
+| Locale hoặc channel đã chuẩn hóa | Chọn presentation/policy phù hợp. | Không dùng locale client gửi để bỏ qua policy. |
+| Request metadata nhỏ | Phân tích client version, channel hoặc feature flag đã allow-list. | Tránh giữ raw header map không giới hạn. |
+| DataLoader registry hoặc accessor | Phục vụ batching trong execution. | Thường framework quản lý riêng; không biến thành singleton. |
+
+Principal trong context là dữ liệu **đã xác thực**, không phải lời khẳng định rằng mọi field đều được phép đọc. Authorization cần kiểm tra resource, tenant, field và trạng thái hiện tại ở boundary phù hợp.
+
+### Dữ liệu không nên nhét vào context
+
+Context không phải túi truyền dữ liệu tổng quát. Tránh các loại sau:
+
+- Bearer token, refresh token, cookie nguyên bản hoặc secret. Auth layer nên xác minh rồi giữ một snapshot tối thiểu; token nguyên bản làm tăng rủi ro log, dump heap và accidental forwarding.
+- Toàn bộ `HttpServletRequest`, `ServerWebExchange`, WebSocket session hoặc response. Những object này gắn với transport và có lifecycle riêng.
+- Toàn bộ query text, variables raw hoặc payload chứa PII. Nếu cần quan sát, dùng operation name/query hash và redaction có policy.
+- Entity graph lớn, list domain, file upload, binary payload hoặc kết quả query đã tải sẵn. Context lớn làm tăng heap retention trên mọi field và có thể bị giữ suốt subscription.
+- `EntityManager`, transaction/session hoặc stream mở mà không có owner cleanup rõ ràng. Context không kéo dài transaction một cách an toàn.
+- Mutable global cache, static `currentUser`, `ThreadLocal` dùng chung hoặc registry DataLoader dùng cho nhiều request.
+- Giá trị do client gửi mà chưa xác thực như `tenantId`, `isAdmin`, `internalRole` hoặc một “permission flag”.
+
+Nếu nhiều resolver cần cùng domain object, cân nhắc service/cache theo request hoặc DataLoader với key và policy rõ. Đừng dùng context để giấu một query lớn dưới tên “metadata”.
+
+### Tạo context từ HTTP hoặc WebSocket
+
+Trong Spring for GraphQL, `WebGraphQlInterceptor` là một boundary phù hợp để đọc thông tin transport, gọi lớp authentication và đưa context vào execution. Pseudo-code sau minh họa ý tưởng; tên callback/configuration API cần đối chiếu version Spring GraphQL thật:
+
+```java
+import graphql.GraphQLContext;
+import org.springframework.graphql.server.WebGraphQlInterceptor;
+import org.springframework.graphql.server.WebGraphQlRequest;
+import org.springframework.graphql.server.WebGraphQlResponse;
+import reactor.core.publisher.Mono;
+
+final class RequestContextInterceptor implements WebGraphQlInterceptor {
+
+    private final AuthenticationService authenticationService;
+
+    RequestContextInterceptor(AuthenticationService authenticationService) {
+        this.authenticationService = authenticationService;
+    }
+
+    @Override
+    public Mono<WebGraphQlResponse> intercept(
+            WebGraphQlRequest request,
+            Chain chain) {
+
+        PrincipalSnapshot principal = authenticationService
+                .authenticatedPrincipal(request);
+        String tenantId = authenticationService
+                .resolveTenant(principal, request);
+
+        RequestContext requestContext = new RequestContext(
+                principal,
+                tenantId,
+                CorrelationIds.from(request),
+                Deadlines.from(request),
+                RequestMetadata.from(request));
+
+        request.configureExecutionInput((executionInput, builder) ->
+                builder.graphQLContext(
+                        GraphQLContext.newContext()
+                                .of("requestContext", requestContext)
+                                .build())
+                        .build());
+
+        return chain.next(request);
+    }
+}
+```
+
+Interceptor nên từ chối request khi credential không hợp lệ hoặc tenant không thể xác định an toàn. Nó không nên “điền mặc định tenant-7” chỉ để resolver chạy tiếp. `CorrelationIds.from` và `Deadlines.from` là các hàm minh họa: correlation ID do server kiểm soát hoặc validate format; deadline không được nới vô hạn theo header client.
+
+Với WebSocket subscription, có thể có interceptor cho connection và cho từng GraphQL request/operation tùy version. `connection_init` có thể mang credential, nhưng server chỉ ACK sau khi xác minh và không nên coi một connection context là authorization vĩnh viễn cho mọi subscription. Hãy tạo/kiểm tra context theo operation, xử lý token expiry và hủy stream khi quyền bị thu hồi. Xem [Context, interceptor và request lifecycle](/docs/tich-hop-spring-for-graphql/context-interceptor-request-lifecycle) và [Subscription và WebSocket](/docs/query-mutation-subscription/subscription-websocket).
+
+Khi tự xây GraphQL Java ở tầng thấp hơn, cùng ý tưởng được biểu diễn bằng `ExecutionInput`:
+
+```java
+ExecutionInput executionInput = ExecutionInput.newExecutionInput()
+        .query(queryDocument)
+        .variables(variables)
+        .graphQLContext(
+                GraphQLContext.newContext()
+                        .of("requestContext", requestContext)
+                        .build())
+        .dataLoaderRegistry(requestScopedRegistry)
+        .build();
+```
+
+Đoạn code chỉ là minh họa GraphQL Java; application Spring thường để Spring for GraphQL tạo `ExecutionInput`. Không xây `ExecutionInput` mới cho mỗi field. Runtime wiring được tạo ở startup, còn `GraphQLContext` và registry được gắn ở execution boundary.
+
+## Context authorization và DataLoader
+
+### Principal tenant và field authorization
+
+Một argument có tên `tenantId` hoặc `userId` chỉ là dữ liệu client yêu cầu. Nó không phải credential. Resolver/service nên lấy tenant hiệu lực từ context rồi kiểm tra quyền:
+
+```java
+@QueryMapping
+public List<Book> books(
+        @Argument("limit") Integer limit,
+        DataFetchingEnvironment environment) {
+
+    RequestContext requestContext = environment
+            .getGraphQlContext()
+            .get("requestContext");
+
+    authorization.assertCanReadBooks(
+            requestContext.principal(),
+            requestContext.tenantId());
+
+    return bookService.findBooks(
+            requestContext.tenantId(), limit);
+}
+```
+
+Nếu SDL có `tenantId` để chọn một tenant trong số nhiều tenant, service vẫn phải kiểm tra giá trị đó thuộc membership của principal. Không đổi `tenantId` trong context dựa trên argument trước khi authorization hoàn tất.
+
+Authorization nên có defense in depth:
+
+1. Transport/security xác thực credential.
+2. Interceptor tạo principal snapshot và tenant context.
+3. Resolver hoặc policy kiểm tra field/operation có được phép không.
+4. Service/repository áp dụng filter tenant/resource và invariant.
+5. DataLoader batch query cũng nhận policy, không lấy tất cả ID rồi lọc muộn ở client.
+
+Với nested field nhạy cảm, đừng phát một object đầy đủ vào local context rồi hy vọng serializer tự che. Có thể chặn ở `@SchemaMapping`, service, property fetcher có policy hoặc schema contract. Nếu lỗi quyền được map thành `null`, phải chắc chắn nullability và thông tin lỗi không làm lộ sự tồn tại của resource. [Authorization theo field và resolver](/docs/bao-mat-va-quan-sat/authorization-field-resolver) mô tả thêm các boundary này.
+
+### DataLoader registry trong request
+
+**DataLoader** gom các lần `load(key)` phát sinh trong một lượt execution thành batch và thường có cache trong phạm vi request. `DataLoaderRegistry` là nơi chứa các loader được dùng bởi execution. Một fetcher nested có thể lấy loader từ environment:
+
+```java
+@SchemaMapping(typeName = "Book", field = "author")
+public java.util.concurrent.CompletableFuture<Author> author(
+        Book book,
+        DataFetchingEnvironment environment) {
+
+    DataLoader<String, Author> authorLoader = environment
+            .getDataLoader("authorLoader");
+
+    return authorLoader.load(book.authorId());
+}
+```
+
+Đoạn code là minh họa tĩnh. `Book.authorId()` là property nội bộ, không cần xuất hiện trong SDL. Loader phải được đăng ký với registry của execution hiện tại. Trong Spring for GraphQL, `BatchLoaderRegistry` thường là boundary thuận tiện để khai báo batch loader; Spring quản lý việc liên kết loader với execution theo programming model của version.
+
+Pseudo-code cho một mapped batch loader có context:
+
+```java
+void registerAuthorLoader(
+        BatchLoaderRegistry registry,
+        AuthorService authorService) {
+
+    registry.forTypePair(String.class, Author.class)
+            .withName("authorLoader")
+            .registerMappedBatchLoader((authorIds, batchEnvironment) -> {
+                RequestContext requestContext = batchEnvironment
+                        .getGraphQlContext()
+                        .get("requestContext");
+
+                return authorService.findVisibleByIds(
+                        requestContext.tenantId(),
+                        requestContext.principal(),
+                        authorIds);
+            });
+}
+```
+
+Tên interface/configurer và accessor của `BatchLoaderEnvironment` có thể khác theo version; xem API của Spring GraphQL/GraphQL Java thật trước khi sao chép. Ý nghĩa không đổi: batch loader phải dùng principal/tenant của execution hiện tại, trả kết quả theo key hoặc semantics lỗi được công bố, và không chia sẻ cache giữa user.
+
+Đừng đặt một `DataLoader` hoặc `DataLoaderRegistry` singleton vào `GraphQLContext` rồi dùng cho tất cả request. Cache DataLoader thường là cache theo quyền và theo execution. Nếu cần cache lâu hơn, phải thiết kế key gồm scope security phù hợp, invalidation và giới hạn memory; đó là một cache policy riêng, không còn là mặc định an toàn của DataLoader request-scope.
+
+### Nested field và N plus 1
+
+Với response ở trên, cách resolve ngây thơ có thể tạo:
+
+```text
+1 lần gọi lấy books
+  + 1 lần gọi lấy author của book-1
+  + 1 lần gọi lấy author của book-2
+  + ...
+= 1 + N lần gọi data source
+```
+
+Nếu `Book.author` dùng DataLoader, các `load(authorId)` có thể được gom thành một batch:
+
+```text
+1 lần gọi lấy books
+  + 1 batch lấy authors của nhiều book
+= 2 nhóm gọi minh họa
+```
+
+Đây là mental model, không phải cam kết mọi query luôn có đúng hai network call. Số batch phụ thuộc selection set, lịch execution, loader, cache và data source.
+
+DataLoader không tự giải quyết authorization. Batch loader cần:
+
+- giới hạn key theo tenant/principal và policy của field;
+- xử lý ID không tồn tại, ID bị từ chối và lỗi từng phần;
+- giữ mapping key → result đúng contract, không phụ thuộc thứ tự map ngẫu nhiên;
+- giới hạn kích thước batch và thời gian chờ;
+- không trả entity của tenant A cho key từ tenant B;
+- giải phóng cache sau execution, đặc biệt khi subscription hoặc request stream sống lâu.
+
+Selection set có thể giúp implementation chọn projection, nhưng không tự sửa N+1. Đo số batch, batch size, cache hit, latency và error cùng với GraphQL field latency.
+
+## Async reactive và instrumentation
+
+### Khi resolver trả kết quả bất đồng bộ
+
+GraphQL Java có thể nhận `CompletionStage` hoặc kiểu reactive được adapter của Spring for GraphQL hỗ trợ. Trong cả hai trường hợp, `DataFetchingEnvironment` của lần gọi vẫn có `GraphQLContext`; nhưng code bất đồng bộ không nên phụ thuộc vào việc thread hiện tại còn giữ một `ThreadLocal` nào đó.
+
+Capture holder bất biến trước khi chuyển sang executor:
+
+```java
+@QueryMapping
+public java.util.concurrent.CompletableFuture<List<Book>> books(
+        @Argument("limit") Integer limit,
+        DataFetchingEnvironment environment) {
+
+    RequestContext requestContext = environment
+            .getGraphQlContext()
+            .get("requestContext");
+
+    return CompletableFuture.supplyAsync(
+            () -> catalogService.findBooks(
+                    requestContext.tenantId(), limit),
+            catalogExecutor);
+}
+```
+
+Đoạn code là minh họa. Executor cần có giới hạn queue/thread và phải phù hợp với blocking/non-blocking nature của service. Không truyền toàn bộ `DataFetchingEnvironment` vào task để đọc muộn; giữ một `RequestContext` nhỏ, immutable và giá trị argument đã bind.
+
+Với Reactor, có thể dùng Reactor Context cho propagation ở reactive pipeline, nhưng vẫn cần phân biệt nó với `GraphQLContext`:
+
+```java
+public Mono<List<Book>> findBooks(
+        RequestContext requestContext,
+        Integer limit) {
+
+    return Mono.deferContextual(reactorContext ->
+            catalogClient.findBooks(
+                    requestContext.tenantId(), limit));
+}
+```
+
+Đây là pseudo-code cho ý tưởng propagation. `GraphQLContext` là context của GraphQL execution; Reactor `Context` là context của một reactive chain. Một cái không tự biến thành cái kia. Nếu ứng dụng cần cả hai, hãy copy những giá trị đã được allow-list ở boundary rõ ràng và tránh đặt token/transport object vào Reactor Context.
+
+Với subscription, `Publisher` có thể sống lâu hơn method `@SubscriptionMapping` ban đầu. Context dùng để lọc từng event phải có policy token expiry, revocation và cancellation; không mặc định rằng auth lúc subscribe đủ cho toàn bộ thời gian stream.
+
+### Propagation không đồng nghĩa ThreadLocal
+
+`ThreadLocal` chỉ gắn dữ liệu với một thread. GraphQL execution, `CompletableFuture`, Reactor và WebFlux có thể đổi thread. Do đó, đoạn code sau dễ tạo lỗi cross-request hoặc mất context:
+
+```java
+// Không nên dùng làm nguồn authorization chính.
+currentTenant.set(requestContext.tenantId());
+return CompletableFuture.supplyAsync(() -> service.read());
+```
+
+Nếu bắt buộc dùng thư viện dựa trên `ThreadLocal`, cần dùng cơ chế context propagation/decorator phù hợp với stack, giới hạn phạm vi và xóa trong `finally`. Tốt hơn là truyền `RequestContext` explicit vào service hoặc dùng context mechanism của pipeline đã chọn.
+
+Spring Security `SecurityContextHolder` cũng không tự động có nghĩa là mọi worker thread hoặc reactive callback đều có cùng authentication. Hãy xác minh propagation của security stack thật, hoặc truyền một principal snapshot đã được kiểm tra vào service. Đừng coi việc log thấy user ở thread xử lý đầu tiên là bằng chứng async task được bảo vệ đúng.
+
+Một request context an toàn cần đáp ứng ba kiểm tra:
+
+- Hai request đồng thời không thể đọc nhầm tenant/principal của nhau.
+- Async callback vẫn nhận đúng deadline và correlation ID của execution gốc.
+- Khi request bị cancel, task/downstream resource có đường hủy hoặc timeout, không tiếp tục vô hạn.
+
+### Instrumentation quan sát execution
+
+GraphQL Java `Instrumentation` nằm quanh execution engine. Nó phù hợp để quan sát và áp dụng guardrail tổng quát ở cấp execution/field, chẳng hạn:
+
+- ghi nhận operation name, query hash, execution ID và correlation ID đã làm sạch;
+- đo thời gian parse, validation, từng `parentType.field`, DataLoader batch và execution result;
+- đếm lỗi theo error code/path, timeout, cancellation và partial data;
+- kiểm tra depth/complexity hoặc áp rate/cost policy nếu implementation dùng instrumentation cho mục đích đó;
+- tạo span con cho resolver/downstream với sampling và cardinality có kiểm soát.
+
+Một instrumentation có thể đọc `DataFetchingEnvironment` hoặc `GraphQLContext` qua tham số instrumentation tương ứng của version GraphQL Java. Pseudo-flow:
+
+```text
+begin execution
+  ├── đọc operationName + queryHash + correlationId đã redact
+  ├── begin field Query.books
+  │     └── đo duration/outcome, không log source object
+  ├── begin field Book.author
+  └── complete execution với data/error summary
+```
+
+Instrumentation **không** nên là nơi duy nhất kiểm tra quyền đọc một `Book` cụ thể. Authorization resource/tenant vẫn thuộc interceptor, resolver policy và service. Instrumentation cũng không nên dùng một map global mutable để giữ “context hiện tại”; state quan sát nên gắn với execution hoặc telemetry backend.
+
+Vì instrumentation có thể chạy cho rất nhiều field, đừng gắn raw ID, email hoặc query text vào metric label. Normalize operation hoặc dùng hash, giới hạn field cardinality và redaction trước khi ghi. [Logging và tracing](/docs/bao-mat-va-quan-sat/logging-va-tracing) và [Giới hạn độ sâu và complexity](/docs/bao-mat-va-quan-sat/depth-va-complexity-limit) là các bài nối tiếp cho policy vận hành.
+
+## Error handling cancellation và timeout
+
+### Lỗi ở DataFetcher
+
+Có thể phân loại lỗi theo thời điểm:
+
+| Lỗi | DataFetcher đã chạy chưa? | Cách xử lý |
+| --- | --- | --- |
+| Sai cú pháp, field, selection set hoặc variable type | Thường chưa | Sửa document/schema; trả top-level GraphQL error. |
+| Context thiếu hoặc credential không hợp lệ | Có thể bị chặn ở interceptor; nếu lọt tới fetcher thì fetcher phải fail closed. | Map thành authentication/authorization error an toàn. |
+| Business rule hoặc resource không được phép | Có | Service/policy quyết định error code, `null` hoặc payload theo contract. |
+| Database/downstream timeout | Có thể đã gọi service | Map lỗi tập trung, giữ `path`, không trả stack trace. |
+| DataLoader batch lỗi | Fetcher parent đã chạy; child có thể lỗi | Map lỗi theo key/field và giải phóng batch resource. |
+| Publisher phát error sau khi subscription bắt đầu | Method tạo Publisher đã chạy | Cần policy/error resolver cho stream theo version và transport. |
+
+Trong Spring for GraphQL, `DataFetcherExceptionResolver` là một extension point thường dùng để map exception từ fetcher thành `GraphQLError` an toàn. Một lỗi phát ra muộn từ `Publisher` subscription không nhất thiết đi qua cùng đường exception của lần gọi tạo Publisher. Hãy đối chiếu `SubscriptionExceptionResolver`/API tương ứng của version thật và test transport; [Xử lý lỗi tập trung](/docs/tich-hop-spring-for-graphql/xu-ly-loi-tap-trung) trình bày error boundary riêng.
+
+Raw fetcher cũng có thể trả `DataFetcherResult` để gắn data, error và local context. Đừng dùng cách này để che stack trace hoặc biến một lỗi authorization thành dữ liệu thành công:
+
+```java
+return DataFetcherResult.<Book>newResult()
+        .data(bookOrNull)
+        .error(safeGraphQlError)
+        .localContext(localPolicy)
+        .build();
+```
+
+Khi context không có principal hoặc tenant, nguyên tắc là **fail closed**: không tự chuyển sang tenant mặc định hoặc quyền anonymous rộng hơn. Error message gửi client nên ổn định và tối thiểu; log server có thể giữ chi tiết đã được kiểm soát.
+
+Client cần đọc cả `data` và `errors`. HTTP `200` hoặc việc một nhánh khác có dữ liệu không chứng minh field dùng context đã thành công. [Mô hình request/response](/docs/nen-tang/mo-hinh-request-response) giải thích thêm partial data, `path`, nullability và `extensions`.
+
+### Cancellation và timeout
+
+Có ba tín hiệu khác nhau:
+
+- **Deadline:** mốc thời gian context truyền xuống để service biết ngân sách còn lại.
+- **Timeout:** policy chủ động dừng hoặc làm fail một operation/downstream call khi vượt ngân sách.
+- **Cancellation:** client, transport hoặc parent stream không còn cần kết quả và phát tín hiệu hủy.
+
+Đặt deadline vào context không tự cancel database call. Một resolver blocking có thể tiếp tục chạy sau khi client đã đóng connection nếu driver/executor không hỗ trợ cancellation. Downstream client, pool và executor phải có timeout thật.
+
+Ví dụ khái niệm với `CompletableFuture`:
+
+```java
+RequestContext requestContext = environment
+        .getGraphQlContext()
+        .get("requestContext");
+
+Duration remaining = requestContext.remainingBudget();
+
+return catalogClient.findBooks(
+                requestContext.tenantId(), limit)
+        .orTimeout(remaining.toMillis(), TimeUnit.MILLISECONDS);
+```
+
+`orTimeout` chỉ là một lớp timeout của future. Nó không đảm bảo lời gọi HTTP/database bên dưới đã dừng; client phải có API cancel/timeout riêng và phải đo thread/connection còn sống sau timeout.
+
+Với Reactor, `timeout` và `doFinally` thường được dùng cùng resource/client hỗ trợ cancellation:
+
+```java
+return eventSource.forTenant(requestContext.tenantId())
+        .timeout(requestContext.remainingBudget())
+        .doFinally(signal -> subscriptionRegistry.release(subscriptionId));
+```
+
+Đoạn code là minh họa lifecycle. Với subscription, client gửi `complete`, WebSocket đóng, server shutdown hoặc token bị revoke đều phải truyền cancel tới `Publisher`, broker consumer, timer và queue. `doOnCancel` chỉ bao phủ một nhánh; cleanup cần bao phủ complete, error và cancel.
+
+Timeout ở HTTP endpoint, GraphQL execution, service, database, reverse proxy và WebSocket có thể khác nhau. Chọn budget từ ngoài vào trong và để log/trace chỉ ra lớp nào timeout. Không biến timeout thành `null` im lặng nếu contract cần báo lỗi cho client.
+
+### Cleanup và memory leak
+
+Context và local context giữ Java reference. Nếu chúng giữ entity graph, request object hoặc buffer lớn, mọi fetcher và callback có thể giữ heap lâu hơn dự kiến. Rủi ro tăng mạnh với subscription, retry hoặc task async không được cancel.
+
+Checklist ownership:
+
+- Interceptor tạo context; execution hoặc stream sở hữu nó; không có static owner.
+- DataLoader registry được tạo theo execution; cache được giải phóng khi execution kết thúc.
+- Async task không capture `WebGraphQlRequest`, `DataFetchingEnvironment` hoặc toàn bộ variables nếu chỉ cần vài giá trị.
+- `ThreadLocal` được xóa trong `finally` nếu thư viện bắt buộc dùng.
+- Subscription resource có cleanup cho `complete`, `error`, `cancel`, timeout, socket close và shutdown.
+- Queue/buffer có giới hạn; không dùng `unbounded` để che subscriber chậm.
+- Context không giữ transaction/session mở vượt boundary service.
+
+Một dấu hiệu nguy hiểm là số active subscription, DataLoader cache hoặc queue giảm không về mức nền sau khi client disconnect. Khi đó, xem cancellation metric, consumer count, heap reference và cleanup log. Đừng chỉ tăng heap hoặc xóa context khỏi log; cần tìm owner chưa release. [Subscription và WebSocket](/docs/query-mutation-subscription/subscription-websocket) có checklist lifecycle và backpressure chi tiết hơn.
+
+## Logging tracing và redaction
+
+### Thiết kế field log và trace
+
+Vì nhiều operation dùng chung một endpoint, log chỉ ghi URL `/graphql` không đủ. Có thể ghi các trường đã chuẩn hóa sau:
+
+| Trường | Mục đích | Cách giữ an toàn |
+| --- | --- | --- |
+| `operationName` | Nhóm use case. | Nếu thiếu, dùng query hash thay vì raw query. |
+| `queryHash` | Nhóm document ổn định. | Hash/normalize; không coi hash là authorization. |
+| `correlationId`/`traceId` | Nối gateway, interceptor, fetcher và downstream. | Không dùng làm secret hoặc permission. |
+| `parentType.field` và path | Tìm field chậm/lỗi. | Allow-list hoặc giới hạn cardinality. |
+| `tenant` | Phân tích phạm vi. | Hash/opaque ID hoặc redaction theo policy. |
+| `duration`, `batchSize`, `outcome` | Đo hiệu năng và lỗi. | Không gắn raw resource ID vào metric label. |
+| `errorCode` | Client/server phân loại lỗi. | Dùng code ổn định, message không chứa stack/SQL. |
+
+Instrumentation có thể tạo span cho execution, field và downstream. Context cung cấp correlation metadata; nó không tự tạo trace propagation tới database hoặc HTTP client. Các client phía sau phải được cấu hình tracing/context propagation riêng. Đừng đặt toàn bộ OpenTelemetry span object vào `GraphQLContext` nếu một trace accessor nhẹ hoặc framework-managed context đã đủ.
+
+Một log minh họa có thể là:
+
+```json title="Log event — minh họa tĩnh"
+{
+  "operationName": "CatalogBooks",
+  "queryHash": "hash-example",
+  "correlationId": "req-example-123",
+  "field": "Query.books",
+  "tenant": "tenant-hash-example",
+  "durationMs": 18,
+  "dataLoaderBatchSize": 2,
+  "outcome": "success"
+}
+```
+
+Đây là format minh họa, không phải log runtime của repository. Metric label nên có cardinality thấp; raw book ID, email hoặc query text động thường làm metric backend phình lớn.
+
+### Redact context và variables
+
+Không log nguyên `GraphQLContext`, vì nó có thể chứa principal snapshot mở rộng, metadata client hoặc giá trị mà một interceptor khác thêm vào sau này. Không log nguyên `variables` nếu operation có PII, token giả dạng input hoặc thông tin thanh toán. Với tracing/logging:
+
+- allow-list field được phép ghi thay vì “ghi tất cả rồi redact sau”;
+- che token, cookie, authorization header và secret trước khi serialize;
+- giữ query hash/operation name thay cho query text nếu không cần debug nội dung;
+- redact input theo tên field nhạy cảm và theo schema, nhưng vẫn coi đây là lớp bổ sung chứ không phải bảo đảm tuyệt đối;
+- không đưa source object, entity, DataLoader cache hoặc payload event vào span attributes;
+- sample field trace khi cardinality/chi phí quá cao;
+- giới hạn độ dài message và extensions trả cho client.
+
+Correlation ID do client gửi cũng cần validate format và không nên được tin như một identity. Nếu server tạo ID mới, có thể giữ ID client đã được làm sạch như parent correlation theo policy riêng. Xem [Authentication với JWT/OAuth2](/docs/bao-mat-va-quan-sat/authentication-jwt-oauth2) và [Logging và tracing](/docs/bao-mat-va-quan-sat/logging-va-tracing) khi hoàn thiện security/observability implementation.
+
+## Chọn mapping raw DataFetcher và migration
+
+### Khi dùng QueryMapping hoặc SchemaMapping
+
+Chọn annotated mapping khi contract ổn định và code thuộc programming model Spring:
+
+- Dùng `@QueryMapping` cho root field dưới `Query`.
+- Dùng `@MutationMapping` cho root field dưới `Mutation`.
+- Dùng `@SubscriptionMapping` cho root field dưới `Subscription` trả Publisher/kiểu được version hỗ trợ.
+- Dùng `@SchemaMapping` cho field nested như `Book.author`, nhất là khi cần service, authorization hoặc DataLoader.
+- Dùng `@Argument` cho input typed, và `DataFetchingEnvironment` hoặc `@ContextValue` khi cần context/selection metadata.
+
+Root-specific annotation làm intent rõ hơn `@SchemaMapping(typeName = "Query")`. Nếu root type custom, dùng mapping tường minh `typeName`/`field` theo schema thật. Không đặt `@QueryMapping` và `@SchemaMapping` lên cùng một method, cũng không dùng alias client làm tên mapping.
+
+Annotated method không nên chứa toàn bộ business rule, SQL, retry và error policy. Resolver bind input, đọc context và gọi use case; service sở hữu invariant, authorization/resource filter và transaction boundary. [Query, mutation và subscription mapping](/docs/tich-hop-spring-for-graphql/query-mutation-subscription-mapping) và [`@SchemaMapping` và nested field](/docs/tich-hop-spring-for-graphql/schema-mapping-va-nested-field) nối các lựa chọn này với controller cụ thể.
+
+### Khi dùng DataFetcher
+
+Chọn raw `DataFetcher` khi nhu cầu thực sự nằm ở GraphQL Java/runtime wiring:
+
+- schema hoặc field được tạo động trong một module composition;
+- cần một fetcher chung gắn vào nhiều field với metadata khác nhau;
+- đang triển khai custom directive, scalar hoặc adapter cấp executable schema;
+- cần trả `DataFetcherResult` với local context/error ở một boundary đã thiết kế;
+- đang di chuyển từ wiring thủ công và muốn giữ contract trước khi đổi controller.
+
+Không chọn raw fetcher chỉ vì muốn lấy `GraphQLContext`; annotated method cũng nhận được context qua environment hoặc context-value argument. Raw fetcher đổi sự tiện lợi của Spring binding lấy quyền kiểm soát trực tiếp, nên phải bổ sung test cho argument name, conversion, duplicate registration và error mapping.
+
+Một field root có thể được triển khai bởi một trong hai cách, nhưng không nên đăng ký cả hai:
+
+```text
+SDL: Query.books
+   ├── @QueryMapping CatalogQueryController.books(...)
+   └── hoặc RuntimeWiringConfigurer.dataFetcher("books", ...)
+
+Chọn một owner cho cặp type + field.
+```
+
+### Migration không đổi contract
+
+Khi chuyển raw fetcher sang annotated method, giữ SDL và response trước. Quy trình an toàn:
+
+1. Liệt kê từng cặp `parent type + field`, raw wiring hiện tại, argument, source, context key, DataLoader và error behavior.
+2. Viết test contract cho query, variables, response, `errors.path` và authorization trước khi refactor.
+3. Chuẩn hóa `RequestContext` và context creation ở interceptor. Không tạo logic đọc header riêng trong từng fetcher.
+4. Di chuyển phần nghiệp vụ vào service nếu raw fetcher đang gọi database hoặc kiểm tra quyền trực tiếp.
+5. Đổi `environment.getArgument("limit")` thành `@Argument("limit") Integer limit`; đổi `getSource()` thành tham số parent trong `@SchemaMapping`.
+6. Giữ `DataFetchingEnvironment` ở method nếu cần selection set, DataLoader hoặc context; nếu chỉ cần một context value, dùng cơ chế typed phù hợp version.
+7. Xóa raw registration cũ sau khi annotated mapping được bật. Kiểm tra startup để không có duplicate mapping.
+8. Chạy test isolation với hai tenant, test async/cancellation và so sánh trace/log đã redact.
+
+Migration ngược từ annotation sang raw fetcher cũng giữ nguyên SDL và contract. Đừng đổi tên field, nullability hoặc error code chỉ vì đổi registration mechanism. Nếu cần đổi field nested, đọc thêm [Xử lý lỗi tập trung](/docs/tich-hop-spring-for-graphql/xu-ly-loi-tap-trung) và [N+1 query](/docs/truy-cap-du-lieu-va-hieu-nang/n-plus-1-query) để không vô tình đổi semantics hoặc chi phí.
+
+## Chiến lược kiểm thử
+
+### Unit test DataFetcher và context
+
+Unit test nên kiểm tra logic context mà không cần dựng cả HTTP stack:
+
+- context có principal/tenant hợp lệ thì service nhận đúng giá trị;
+- context thiếu hoặc credential không hợp lệ thì fail closed;
+- argument `limit` được đọc đúng tên và default đã được GraphQL áp dụng;
+- client không thể đổi tenant bằng variable/argument ngoài membership;
+- source `Book` của nested fetcher được dùng đúng, không nhầm với `GraphQLContext`;
+- local context chỉ ảnh hưởng subtree dự kiến;
+- DataLoader được lấy từ registry hiện tại, không phải field singleton.
+
+Với raw fetcher, có thể dùng mock `DataFetchingEnvironment` hoặc test qua executable schema. Với annotated method, gọi method trực tiếp bằng `RequestContext`/dependency giả lập hoặc dùng slice test của Spring. Đừng biến unit test thành bằng chứng endpoint HTTP, schema location hoặc WebSocket đã expose.
+
+Một test pseudo-code cho isolation:
+
+```java
+@Test
+void doesNotUseClientTenantAsAuthority() {
+    RequestContext alice = context("alice", "tenant-a");
+    when(environment.getGraphQlContext().get("requestContext"))
+            .thenReturn(alice);
+
+    controller.books(2, environment);
+
+    verify(catalogService).findBooks("tenant-a", 2);
+    verify(catalogService, never()).findBooks("tenant-from-input", 2);
+}
+```
+
+Tên method mock và cách tạo environment chỉ là minh họa. Test thật cần khớp library mock, service contract và exception policy của project.
+
+### Integration test mapping và request
+
+Integration/slice test nên bao phủ cả schema và registration:
+
+- load SDL và xác nhận `Query.books`, `Book.author`, argument và nullability;
+- kiểm tra mỗi cặp type/field có đúng một mapping;
+- dùng `@GraphQlTest`/`GraphQlTester` hoặc API tương ứng của version để gửi operation với variables;
+- kiểm tra context được interceptor đưa vào execution;
+- kiểm tra response success, partial data, `errors`, `path` và null bubbling;
+- kiểm tra alias vẫn đi vào field gốc, không tạo mapping mới;
+- kiểm tra DataLoader batch count, key order, missing key, tenant filter và authorization;
+- kiểm tra log/trace không chứa token, variables nhạy cảm hoặc source object.
+
+Khung test Spring có thể trông như sau:
+
+```java
+@GraphQlTest(CatalogQueryController.class)
+class CatalogQueryControllerTest {
+
+    @Autowired
+    GraphQlTester graphQlTester;
+
+    @Test
+    void resolvesBooksForExecutionContext() {
+        graphQlTester.document("""
+                query CatalogBooks($limit: Int!) {
+                  books(limit: $limit) { id title }
+                }
+                """)
+                .variable("limit", 2)
+                .execute()
+                .path("books")
+                .entityList(Book.class);
+    }
+}
+```
+
+Đây là khung minh họa, không phải test đã chạy trong repository. Cần mock interceptor/security/service theo test slice thật. `GraphQlTester` kiểm tra execution/mapping, nhưng không tự kiểm tra reverse proxy, HTTP property, WebSocket handshake hoặc database transaction.
+
+### Test async cancellation và leak
+
+Async/reactive test cần chứng minh context và resource không bị mất khi đổi thread:
+
+- chạy hai execution đồng thời với tenant khác nhau và assert không có cross-talk;
+- chuyển resolver qua executor khác, kiểm tra principal snapshot, correlation ID và deadline vẫn đúng;
+- dùng Reactor test để kiểm tra `cancel` gọi cleanup của downstream;
+- tạo subscriber chậm, kiểm tra queue bounded và policy drop/coalesce/disconnect;
+- timeout một downstream call và kiểm tra connection/thread/task được giải phóng;
+- đóng subscription bằng `complete`, đóng socket và giả lập server shutdown;
+- chạy lặp nhiều request rồi kiểm tra active DataLoader/consumer/registry về baseline;
+- kiểm tra instrumentation/error resolver chỉ ghi error an toàn và không làm thay đổi authorization.
+
+Subscription mapping unit test chưa đủ để khẳng định transport hoạt động. Cần integration test protocol/HTTP streaming/WebSocket được ứng dụng chọn, như [Subscription và WebSocket](/docs/query-mutation-subscription/subscription-websocket) mô tả. Nếu dùng JPA, cũng kiểm tra transaction/lazy loading ở service boundary thay vì giữ session trong context; xem [JPA và transaction boundary](/docs/truy-cap-du-lieu-va-hieu-nang/jpa-va-transaction-boundary).
+
+## Cấu hình endpoint và version
+
+DataFetcher và `GraphQLContext` không quyết định URL HTTP. Nếu cần gửi request để kiểm tra backend thật, endpoint phải khớp Spring Boot version và cấu hình project.
+
+Với Spring Boot **3.5+**, property HTTP là:
+
+```yaml title="application.yml — Boot 3.5+"
+spring:
+  graphql:
+    http:
+      path: /graphql
+```
+
+Với Spring Boot **3.4 trở xuống**, dùng:
+
+```yaml title="application.yml — Boot <= 3.4"
+spring:
+  graphql:
+    path: /graphql
+```
+
+`/graphql` chỉ là giá trị minh họa. Không cấu hình đồng thời hai key trên cho cùng một application. Property HTTP chỉ chọn route transport; nó không tạo schema, không đăng ký DataFetcher, không tạo GraphQLContext và không bật WebSocket subscription.
+
+Khi áp dụng code, đối chiếu thêm version của `@Argument`, `@ContextValue`, `RuntimeWiringConfigurer`, `BatchLoaderRegistry`, exception resolver, reactive adapter và interceptor. Spring Boot BOM nên quản lý version tương thích của Spring for GraphQL và GraphQL Java. Xem [Thêm dependency và cấu hình](/docs/bat-dau/them-dependency-va-cau-hinh) để kiểm tra schema location, starter và endpoint trước khi debug resolver.
+
+## Checklist review
+
+- [ ] SDL đã khai báo đúng `parent type + field`, argument, output type và nullability chưa?
+- [ ] Đã chọn một owner cho mỗi field: annotated mapping **hoặc** raw `DataFetcher`, chưa?
+- [ ] `@QueryMapping` chỉ dùng cho root `Query`; `@SchemaMapping` chỉ dùng cho nested/output type phù hợp chưa?
+- [ ] Raw fetcher có đọc đúng tên argument GraphQL, không nhầm variable name chưa?
+- [ ] Controller method có nằm trong component scan và raw wiring có được đăng ký đúng lifecycle không?
+- [ ] `GraphQLContext` được tạo ở interceptor/execution boundary từ credential đã xác minh chưa?
+- [ ] Context có immutable, nhỏ và request-scoped không? Có static/global mutable state hoặc capture request trong singleton không?
+- [ ] Context có chứa principal snapshot, tenant, correlation ID, deadline hoặc metadata cần thiết; không chứa token, raw request, PII lớn, entity graph hoặc resource mở không?
+- [ ] Resolver fail closed khi context thiếu hoặc authorization không thành công chưa?
+- [ ] Không dùng `tenantId`, `userId` hoặc permission flag do client gửi làm authority chưa?
+- [ ] Source/parent, local context và execution `GraphQLContext` đã được phân biệt trong code chưa?
+- [ ] Local context có chỉ phục vụ subtree, không trở thành nơi truyền domain payload lớn không?
+- [ ] DataLoader registry/cache có scope theo execution và batch loader có tenant/principal policy chưa?
+- [ ] Đã đo N+1, batch size, cache hit, downstream latency và lỗi theo field chưa?
+- [ ] Async/reactive path có truyền explicit context hoặc propagation đúng; không phụ thuộc ThreadLocal tình cờ chưa?
+- [ ] Deadline có đi cùng timeout/cancellation thật ở downstream chưa?
+- [ ] Subscription có cleanup cho complete, error, cancel, timeout, socket close và shutdown chưa?
+- [ ] `DataFetcherExceptionResolver`/subscription error policy có map lỗi an toàn, giữ path và không trả stack trace chưa?
+- [ ] Instrumentation có đo execution/field đúng mức, giới hạn cardinality và không thay thế authorization nghiệp vụ chưa?
+- [ ] Log/trace đã redact token, variables, query text, PII, raw source và context chưa?
+- [ ] Test có bao phủ context isolation, mapping, authorization, DataLoader/N+1, async, timeout, cancellation và leak chưa?
+- [ ] Endpoint property đã đối chiếu: Boot 3.5+ dùng `spring.graphql.http.path`, Boot `<= 3.4` dùng `spring.graphql.path` chưa?
 
 ## Bước tiếp theo
 
-Sau khi trang được điền nội dung, đọc bài kế tiếp trong nhóm để tiếp tục lộ trình.
+- Đọc [Context, interceptor và request lifecycle](/docs/tich-hop-spring-for-graphql/context-interceptor-request-lifecycle) để đặt việc tạo context, auth và cleanup vào đúng lifecycle Spring.
+- Đọc [Query, mutation và subscription mapping](/docs/tich-hop-spring-for-graphql/query-mutation-subscription-mapping) để chọn mapping root và hiểu method binding.
+- Đọc [`@SchemaMapping` và nested field](/docs/tich-hop-spring-for-graphql/schema-mapping-va-nested-field) để phân biệt source/parent với request context ở field lồng nhau.
+- Đọc [Xử lý lỗi tập trung](/docs/tich-hop-spring-for-graphql/xu-ly-loi-tap-trung) để chuẩn hóa exception resolver và `GraphQLError`.
+- Đọc [Batch loading và DataLoader](/docs/truy-cap-du-lieu-va-hieu-nang/batch-loading-va-dataloader) và [N+1 query](/docs/truy-cap-du-lieu-va-hieu-nang/n-plus-1-query) để tối ưu nested field mà không làm rò tenant.
+- Đọc [Authorization theo field và resolver](/docs/bao-mat-va-quan-sat/authorization-field-resolver), [Authentication với JWT/OAuth2](/docs/bao-mat-va-quan-sat/authentication-jwt-oauth2) và [Logging và tracing](/docs/bao-mat-va-quan-sat/logging-va-tracing) trước khi đưa context vào production.
+- Nếu có subscription, đọc [Subscription và WebSocket](/docs/query-mutation-subscription/subscription-websocket) để kiểm tra context theo operation, reconnect, cancellation và backpressure.
+
+<Cards>
+  <Card title="Context và request lifecycle" href="/docs/tich-hop-spring-for-graphql/context-interceptor-request-lifecycle" description="Tạo context và chèn metadata ở interceptor đúng vòng đời." />
+  <Card title="Schema mapping và nested field" href="/docs/tich-hop-spring-for-graphql/schema-mapping-va-nested-field" description="Phân biệt source/parent và resolver của field lồng nhau." />
+  <Card title="Batch loading và DataLoader" href="/docs/truy-cap-du-lieu-va-hieu-nang/batch-loading-va-dataloader" description="Giảm N+1 với registry và batch loader theo request." />
+  <Card title="Xử lý lỗi tập trung" href="/docs/tich-hop-spring-for-graphql/xu-ly-loi-tap-trung" description="Map exception thành GraphQL error an toàn và nhất quán." />
+</Cards>

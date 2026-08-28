@@ -3,21 +3,1388 @@ title: "Kiến trúc Spring for GraphQL"
 description: "Giải thích các lớp chính của Spring for GraphQL và luồng xử lý một request trong Spring Boot."
 ---
 
-Trang này sẽ trình bày **Kiến trúc Spring for GraphQL** trong bối cảnh xây dựng GraphQL API với Spring Boot.
+Spring for GraphQL là lớp tích hợp giữa **Spring Boot** và **GraphQL Java**. Spring Boot lo việc khởi tạo ứng dụng, quản lý bean và kết nối transport; Spring for GraphQL nạp schema, đăng ký runtime wiring và đưa các handler của Spring vào GraphQL Java; GraphQL Java parse, validate, execute và hoàn tất kết quả theo schema.
+
+Nếu chỉ nhớ một câu, hãy nhớ: **schema là contract, resolver là registration, service là business boundary, còn transport chỉ là đường vận chuyển**. Một annotation như `@QueryMapping` không tạo schema, không mở endpoint và không thay thế transaction hoặc authorization.
+
+<Callout type="info" title="Phạm vi, version và trạng thái ví dụ">
+Các sơ đồ, SDL, JSON, cấu hình và Java trong bài là **minh họa tĩnh** để đọc kiến trúc. Repository này là docs-only, không có backend Spring Boot, database, broker hoặc WebSocket server để chạy kiểm chứng. Các tên API như `GraphQlSource`, adapter reactive, instrumentation và interceptor cần được đối chiếu với version Spring Boot/Spring for GraphQL/GraphQL Java thật trước khi sao chép. Bài này cố ý tập trung vào boundary và request lifecycle; binding chi tiết, context API và exception resolver có bài riêng.
+</Callout>
 
 ## Mục lục
 
-- [Nội dung dự kiến](#nội-dung-dự-kiến)
+- [Bức tranh tổng thể](#bức-tranh-tổng-thể)
+  - [Mental model một request](#mental-model-một-request)
+  - [Ba câu hỏi để đọc kiến trúc](#ba-câu-hỏi-để-đọc-kiến-trúc)
+- [Các thành phần và boundary](#các-thành-phần-và-boundary)
+  - [HTTP và WebSocket transport](#http-và-websocket-transport)
+  - [Spring Boot auto-configuration](#spring-boot-auto-configuration)
+  - [GraphQlSource và executable schema](#graphqlsource-và-executable-schema)
+  - [Schema resources trên classpath](#schema-resources-trên-classpath)
+  - [GraphQL Java execution](#graphql-java-execution)
+  - [Instrumentation](#instrumentation)
+  - [DataFetcher và controller có annotation](#datafetcher-và-controller-có-annotation)
+  - [Service repository và data source](#service-repository-và-data-source)
+  - [Response và error](#response-và-error)
+- [Schema-first và resolver registration](#schema-first-và-resolver-registration)
+  - [SDL là contract](#sdl-là-contract)
+  - [Registration là wiring](#registration-là-wiring)
+  - [Một field một owner một registration](#một-field-một-owner-một-registration)
+- [Ví dụ xuyên suốt với catalog sách](#ví-dụ-xuyên-suốt-với-catalog-sách)
+  - [SDL contract](#sdl-contract)
+  - [Cấu hình runtime](#cấu-hình-runtime)
+  - [Controller service và repository](#controller-service-và-repository)
+- [Request lifecycle từ transport tới serialization](#request-lifecycle-từ-transport-tới-serialization)
+  - [Bước 0 xây runtime lúc startup](#bước-0-xây-runtime-lúc-startup)
+  - [Bước 1 transport nhận request](#bước-1-transport-nhận-request)
+  - [Bước 2 tạo context và metadata](#bước-2-tạo-context-và-metadata)
+  - [Bước 3 parse validate và coerce](#bước-3-parse-validate-và-coerce)
+  - [Bước 4 instrumentation bao quanh execution](#bước-4-instrumentation-bao-quanh-execution)
+  - [Bước 5 gọi root và nested DataFetcher](#bước-5-gọi-root-và-nested-datafetcher)
+  - [Bước 6 đi qua service và data source](#bước-6-đi-qua-service-và-data-source)
+  - [Bước 7 hoàn tất giá trị và lỗi](#bước-7-hoàn-tất-giá-trị-và-lỗi)
+  - [Bước 8 serialize và trả response](#bước-8-serialize-và-trả-response)
+  - [Lifecycle subscription qua WebSocket](#lifecycle-subscription-qua-websocket)
+- [Context metadata và nơi đặt policy](#context-metadata-và-nơi-đặt-policy)
+  - [Context không phải input của client](#context-không-phải-input-của-client)
+  - [Authentication và authorization](#authentication-và-authorization)
+  - [Validation và guardrail](#validation-và-guardrail)
+  - [Observability](#observability)
+- [Sync async reactive và thread model](#sync-async-reactive-và-thread-model)
+  - [Ba kiểu hoàn tất giá trị](#ba-kiểu-hoàn-tất-giá-trị)
+  - [Async không tự biến blocking thành non-blocking](#async-không-tự-biến-blocking-thành-non-blocking)
+  - [Thread và context propagation](#thread-và-context-propagation)
+- [Root mapping và nested mapping](#root-mapping-và-nested-mapping)
+  - [Root mapping](#root-mapping)
+  - [Nested mapping](#nested-mapping)
+  - [Subscription mapping không bật transport](#subscription-mapping-không-bật-transport)
+- [Business boundary và dependency direction](#business-boundary-và-dependency-direction)
+  - [Ownership của từng lớp](#ownership-của-từng-lớp)
+  - [Hướng phụ thuộc](#hướng-phụ-thuộc)
+  - [Transaction boundary](#transaction-boundary)
+- [DataLoader N+1 và failure isolation](#dataloader-n1-và-failure-isolation)
+  - [Vì sao một request có thể thành N+1](#vì-sao-một-request-có-thể-thành-n1)
+  - [DataLoader theo execution](#dataloader-theo-execution)
+  - [Cô lập lỗi và partial data](#cô-lập-lỗi-và-partial-data)
+- [Version boundary và các điểm cần kiểm tra](#version-boundary-và-các-điểm-cần-kiểm-tra)
+- [Debug và test checklist](#debug-và-test-checklist)
+  - [Debug từ ngoài vào trong](#debug-từ-ngoài-vào-trong)
+  - [Test theo từng lớp](#test-theo-từng-lớp)
+  - [Checklist review production](#checklist-review-production)
 - [Bước tiếp theo](#bước-tiếp-theo)
 
-## Nội dung dự kiến
+## Bức tranh tổng thể
 
-Nội dung chi tiết sẽ bao gồm khái niệm chính, ví dụ code và các lưu ý thực hành liên quan đến chủ đề này.
+### Mental model một request
 
-<Callout type="info" title="Trang placeholder">
-Đây là trang khung. Hãy dùng skill `fumadocs-technical-writer` để viết đầy đủ trang này trong bước tiếp theo.
-</Callout>
+Một GraphQL request không đi thẳng từ HTTP vào database. Nó đi qua transport, context, schema và execution engine; sau đó field được nối vào code ứng dụng và kết quả mới được serialize về transport.
+
+```text
+Client
+  │
+  ├─ HTTP POST: query + variables + operationName
+  │
+  └─ WebSocket: Upgrade → protocol messages → subscribe
+        │
+        ▼
+┌──────────────────────────────────────────────────────────────┐
+│ Spring Boot application                                      │
+│                                                              │
+│  Transport adapter                                           │
+│    ├─ HTTP handler                                            │
+│    └─ WebSocket handler                                      │
+│              │                                               │
+│              ▼                                               │
+│  Spring for GraphQL                                         │
+│    ├─ request context / metadata                              │
+│    ├─ GraphQlSource                                          │
+│    ├─ schema resources + runtime wiring                      │
+│    └─ annotated controller → DataFetcher                     │
+│              │                                               │
+│              ▼                                               │
+│  GraphQL Java execution                                     │
+│    ├─ parse, validate, coerce                                │
+│    ├─ instrumentation                                         │
+│    ├─ root và nested field execution                          │
+│    └─ complete value, nullability, errors                     │
+└──────────────────────────────────────────────────────────────┘
+        │
+        ▼
+Service / use case → repository / gateway → database, API, cache, broker
+        │
+        ▼
+Execution result: data + errors + extensions
+        │
+        ├─ HTTP JSON response
+        └─ WebSocket next / error / complete
+```
+
+Trong một ứng dụng Spring Boot thông thường, các lớp trên có thể cùng nằm trong một process. Sơ đồ mô tả **boundary trách nhiệm**, không khẳng định mỗi lớp là một service hoặc một network hop riêng.
+
+### Ba câu hỏi để đọc kiến trúc
+
+Khi đọc code hoặc debug, hãy tách ba câu hỏi sau:
+
+1. **Contract có cho phép operation này không?** Câu trả lời nằm ở SDL, schema đã merge, field, argument, selection set và nullability.
+2. **Field đã được đăng ký với code nào chưa?** Câu trả lời nằm ở annotated controller, `DataFetcher`, runtime wiring và component scan.
+3. **Code có thực hiện use case đúng và an toàn không?** Câu trả lời nằm ở service, domain, transaction, repository, downstream policy và observability.
+
+Một lỗi ở câu hỏi thứ nhất không được chữa bằng cách sửa SQL. Một lỗi ở câu hỏi thứ hai không được chữa bằng cách đổi `@Transactional`. Một timeout ở câu hỏi thứ ba không biến thành lỗi schema chỉ vì nó được trả trong GraphQL `errors`.
+
+## Các thành phần và boundary
+
+### HTTP và WebSocket transport
+
+**Transport** là lớp đưa message giữa client và server. Nó không quyết định schema có field gì và cũng không tự thực thi business rule.
+
+| Transport | Boundary chính | Hình dạng lifecycle | Điều cần nhớ |
+| --- | --- | --- | --- |
+| HTTP | Route, method, headers, body JSON, status | Một request thường tạo một execution result | `POST /graphql` là route minh họa, không phải tên của field hay schema. |
+| WebSocket | HTTP Upgrade, subprotocol, connection, message | Một connection có thể mang nhiều operation và nhiều result | `101` chỉ xác nhận Upgrade; chưa chứng minh `connection_init`, auth hoặc subscription thành công. |
+
+Với HTTP, request envelope thường có `query`, `variables` và `operationName`:
+
+```json title="HTTP envelope — minh họa tĩnh"
+{
+  "query": "query Books($limit: Int) { books(limit: $limit) { id title } }",
+  "operationName": "Books",
+  "variables": {
+    "limit": 20
+  }
+}
+```
+
+Với WebSocket, operation GraphQL nằm trong payload của một protocol message. Nếu stack dùng protocol hiện đại `graphql-transport-ws`, message `subscribe` có thể có dạng:
+
+```json title="WebSocket subscribe — minh họa tĩnh"
+{
+  "id": "sub-1",
+  "type": "subscribe",
+  "payload": {
+    "operationName": "OnBookAdded",
+    "query": "subscription OnBookAdded($tenantId: ID!) { bookAdded(tenantId: $tenantId) { id title } }",
+    "variables": {
+      "tenantId": "tenant-7"
+    }
+  }
+}
+```
+
+`sub-1` là ID của operation trong connection, không phải ID của sách và không phải operation name. WebSocket endpoint, protocol, auth handshake, timeout và reverse proxy là các quyết định riêng. Đọc [Subscription và WebSocket](/docs/query-mutation-subscription/subscription-websocket) trước khi chọn handler hoặc công bố delivery guarantee.
+
+Không suy ra WebSocket path từ HTTP path. Một ứng dụng có HTTP endpoint `/graphql` vẫn có thể dùng WebSocket path khác, hoặc không hỗ trợ WebSocket nếu chưa cấu hình web stack và handler phù hợp.
+
+### Spring Boot auto-configuration
+
+**Auto-configuration** (tự cấu hình) là cơ chế Spring Boot tạo các bean mặc định khi dependency, classpath và property phù hợp. Với Spring for GraphQL, có thể hình dung startup theo chuỗi sau:
+
+```text
+spring-boot-starter-graphql + web starter
+                 │
+                 ▼
+Spring Boot tạo các thành phần tích hợp cần thiết
+                 │
+                 ├─ schema resource loader
+                 ├─ GraphQlSource builder/runtime
+                 ├─ annotated controller configurer
+                 ├─ HTTP GraphQL handler
+                 └─ WebSocket handler nếu transport được bật
+                 │
+                 ▼
+ApplicationContext sẵn sàng nhận request
+```
+
+Tên bean, điều kiện tạo bean và điểm thay thế cụ thể phụ thuộc version. Ý nghĩa kiến trúc ổn định hơn: Boot cung cấp **đường nối mặc định** từ classpath resources và Spring beans đến GraphQL runtime. Khi ứng dụng tự định nghĩa `GraphQlSource`, `RuntimeWiringConfigurer` hoặc transport handler, cần kiểm tra điều kiện auto-configuration để không vô tình tạo hai pipeline hoặc tắt pipeline mặc định.
+
+Auto-configuration không làm các việc sau:
+
+- không sinh SDL từ entity JPA;
+- không tạo resolver chỉ vì có một method Java tên `books`;
+- không biết service nào là owner của `Book`;
+- không mở WebSocket chỉ vì schema có `Subscription`;
+- không biến một database transaction thành transaction của toàn request.
+
+Bài [Thêm dependency và cấu hình](/docs/bat-dau/them-dependency-va-cau-hinh) đi sâu vào starter, schema location và endpoint HTTP. Bài này chỉ dùng chúng để đặt vị trí của Boot trong toàn pipeline.
+
+### GraphQlSource và executable schema
+
+`GraphQlSource` là abstraction (lớp trừu tượng) quan trọng của Spring for GraphQL để xây dựng và cung cấp GraphQL runtime từ schema resource cùng runtime wiring. Có thể đọc nó như một **điểm hợp nhất** giữa:
+
+- SDL đã được đọc và merge;
+- type system đã được kiểm tra;
+- `DataFetcher` hoặc resolver đã được đăng ký;
+- instrumentation và các cấu hình execution liên quan.
+
+**Executable schema** (schema có thể thực thi) không chỉ là văn bản SDL. Nó là schema GraphQL đã được parse, validate và nối với cách lấy giá trị cho field:
+
+```text
+SDL resources
+    │ đọc, parse, merge, kiểm tra type system
+    ▼
+GraphQL schema
+    │ runtime wiring: type resolver, DataFetcher, scalar, instrumentation
+    ▼
+Executable schema / GraphQL runtime
+    │
+    ▼
+Có thể nhận execution input và tạo execution result
+```
+
+Đừng gọi `GraphQlSource` là database hoặc một endpoint. Nó nằm ở boundary xây runtime; HTTP/WebSocket handler mới nhận message, còn service/repository mới sở hữu dữ liệu và use case.
+
+Khi cần custom wiring, code thật có thể dùng các extension point mà version Spring for GraphQL cung cấp. Trong tài liệu kiến trúc, chỉ nên cam kết quan hệ sau: **schema resource được đưa vào source builder, runtime configurer đăng ký field, rồi GraphQL Java nhận executable schema**. Tên constructor, builder method và thứ tự callback cần được kiểm tra từ reference đúng version.
+
+### Schema resources trên classpath
+
+Spring Boot thường đọc SDL từ classpath dưới `graphql/`. Ở source tree, convention có dạng:
+
+```text
+src/main/resources/
+└── graphql/
+    ├── catalog/
+    │   └── catalog.graphqls
+    ├── review/
+    │   └── review.graphqls
+    └── shared/
+        └── common.graphqls
+```
+
+Đường dẫn source `src/main/resources/graphql/` khác với location runtime `classpath:graphql/**/`. Nhiều file vẫn tạo **một** schema sau khi merge; folder không tạo namespace `catalog.Book` hay endpoint riêng cho Catalog.
+
+Ví dụ property schema có thể dùng trong một project đã chốt convention:
+
+```yaml title="application.yml — minh họa schema location"
+spring:
+  graphql:
+    schema:
+      locations:
+        - "classpath:graphql/**/"
+      file-extensions:
+        - ".graphqls"
+```
+
+Nếu dùng `extend type Query`, definition nền của `Query` phải nằm trong tập resource được nạp. Một extension bị bỏ sót vì location sai có thể làm startup/schema check thất bại; một extension trùng field có thể làm schema merge thất bại. Đọc [Tách schema theo module](/docs/schema-va-type-system/tach-schema-theo-module) để phân biệt file organization với federation và để đặt ownership của từng type/field.
+
+Schema resource được kiểm tra lúc startup, còn query cụ thể được parse/validate lúc request. Vì vậy, “application đã khởi động” và “operation này hợp lệ” là hai bằng chứng khác nhau.
+
+### GraphQL Java execution
+
+GraphQL Java là execution engine (bộ máy thực thi) phía dưới Spring for GraphQL. Ở mức kiến trúc, nó làm các việc sau:
+
+1. Parse document GraphQL thành cấu trúc thực thi.
+2. Validate field, argument, variable, selection set và type theo executable schema.
+3. Coerce (chuẩn hóa và kiểm tra) literal/variables theo kiểu GraphQL.
+4. Chọn `DataFetcher` cho root và nested field.
+5. Chờ hoặc kết hợp giá trị sync/async/reactive mà adapter hỗ trợ.
+6. Hoàn tất object, list, scalar, interface/union và nullability.
+7. Ghi lỗi với vị trí hoặc `path`, rồi tạo execution result.
+
+GraphQL Java **không phải database planner**. Nó không tự biết nên dùng SQL join hay cache nào, không bảo đảm một selection set chỉ tạo một backend call và không tự sửa N+1. Việc tối ưu nằm ở resolver/service/repository/DataLoader và phải được đo trong ứng dụng thật.
+
+GraphQL execution cũng không nên được đọc như một vòng lặp “mỗi field một lần theo đúng thứ tự file”. Query field có thể được hoàn tất độc lập; nested field, async completion và DataLoader có thể làm thứ tự quan sát được khác với thứ tự query. Không viết business logic phụ thuộc vào thứ tự gọi resolver. Với mutation, semantics GraphQL bảo đảm các top-level mutation field được thực thi tuần tự, nhưng điều đó vẫn không tạo một database transaction chung.
+
+### Instrumentation
+
+**Instrumentation** là hook (điểm móc) quanh quá trình parse, validate, execution hoặc data fetching của GraphQL Java. Nó phù hợp để đo và gắn metadata, chẳng hạn:
+
+- thời gian parse/validation/execution;
+- operation name, query hash, depth hoặc cost;
+- thời gian của `Query.books` và `Book.author`;
+- số lần gọi DataLoader, kích thước batch;
+- lỗi theo `path`, timeout và downstream;
+- trace/span liên kết với request ID.
+
+Mental model đơn giản:
+
+```text
+request context
+      │
+      ▼
+instrumentation bắt đầu
+      │
+      ├─ parse / validate
+      ├─ execution
+      │    ├─ root DataFetcher
+      │    └─ nested DataFetcher
+      └─ hoàn tất / lỗi
+      │
+      ▼
+telemetry + execution result
+```
+
+Instrumentation không thay thế authentication hoặc authorization. Nó có thể quan sát và từ chối theo một guardrail đã thiết kế, nhưng quyền đọc `Book` theo tenant vẫn phải được bảo vệ ở policy/service phù hợp. Cũng không nên dùng instrumentation để chứa business rule vì nó làm rule phụ thuộc GraphQL execution và khó tái sử dụng từ REST, job hoặc message consumer.
+
+API đăng ký instrumentation và context của từng callback có thể thay đổi theo version. Hãy kiểm tra reference trước khi tạo bean hoặc custom implementation; trong tài liệu này, `Instrumentation` chỉ là tên khái niệm của GraphQL Java.
+
+### DataFetcher và controller có annotation
+
+Trong GraphQL Java, **DataFetcher** là thành phần được execution engine gọi để lấy giá trị của một field. Trong Spring for GraphQL, annotated controller method có thể được adapter đăng ký thành `DataFetcher` thông qua runtime wiring.
+
+Một controller GraphQL thường là Spring bean có `@Controller`. Class phải nằm trong component scan, method phải có annotation mapping phù hợp và tên field phải khớp SDL hoặc mapping tường minh. Method đó không phải một HTTP endpoint riêng và không cần `@GetMapping`/`@PostMapping`.
+
+Có hai đường đăng ký chính:
+
+| Cách đăng ký | Khi phù hợp | Boundary cần giữ |
+| --- | --- | --- |
+| Annotated controller | Root/nested field gắn với method Spring, cần dependency injection và argument resolver | Spring adapter → DataFetcher → application service |
+| Explicit runtime wiring | DataFetcher đặc biệt, integration với library khác hoặc custom scalar/type resolver | Runtime wiring → DataFetcher; business logic vẫn ở service/domain |
+
+Annotation mapping chỉ trả lời “field này gọi handler nào”. Nó không trả lời “user có quyền gì”, “transaction bao phủ gì” hoặc “repository nào là nguồn sự thật”. Đọc [Query, mutation và subscription mapping](/docs/tich-hop-spring-for-graphql/query-mutation-subscription-mapping) khi cần syntax root mapping; đọc [DataFetcher và GraphQL context](/docs/tich-hop-spring-for-graphql/datafetcher-va-graphql-context) khi cần API context cụ thể.
+
+### Service repository và data source
+
+Một phân lớp thực dụng là:
+
+```text
+GraphQL transport adapter
+        │ envelope, auth boundary, context
+        ▼
+GraphQL resolver / DataFetcher
+        │ bind input, map field, gọi use case
+        ▼
+Application service / use case
+        │ invariant, authorization, transaction, composition
+        ▼
+Repository / gateway port
+        │ abstraction cho persistence hoặc downstream
+        ▼
+Database / REST / gRPC / cache / broker
+```
+
+- **Service/application layer** thực hiện use case và quy tắc nghiệp vụ. Đây là nơi phù hợp cho invariant, authorization theo resource, idempotency và transaction boundary.
+- **Repository** che chi tiết truy cập dữ liệu bền vững. Nó không nên quyết định field nào được công khai trong GraphQL.
+- **Gateway** gọi hệ thống bên ngoài và sở hữu timeout, retry, circuit breaker hoặc mapping lỗi ở boundary đó.
+- **Data source** là nguồn dữ liệu rộng hơn, có thể là database, API, cache, message store hoặc bộ nhớ.
+
+Một GraphQL field có thể được tổng hợp từ nhiều data source. Điều đó không biến chúng thành một transaction và cũng không làm downstream biết schema GraphQL. Nếu một field chậm hoặc bị lỗi, owner của field phải biết service và nguồn dữ liệu nào chịu trách nhiệm.
+
+### Response và error
+
+Sau execution, GraphQL tạo **execution result**. Response thường có:
+
+- `data`: shape theo selection set của client;
+- `errors`: lỗi parse/validation/execution/serialization theo policy;
+- `extensions`: metadata tùy implementation, chẳng hạn error code, request ID hoặc telemetry đã chọn lọc.
+
+Một response có cả `data` và `errors` là hợp lệ khi có partial data. Ví dụ dưới đây chỉ là minh họa tĩnh:
+
+```json title="Execution result — minh họa tĩnh"
+{
+  "data": {
+    "books": [
+      {
+        "id": "book-1",
+        "title": "Effective Java"
+      }
+    ],
+    "featuredBook": null
+  },
+  "errors": [
+    {
+      "message": "Không thể đọc sách nổi bật.",
+      "path": ["featuredBook"],
+      "extensions": {
+        "code": "UPSTREAM_UNAVAILABLE",
+        "requestId": "request-example-123"
+      }
+    }
+  ]
+}
+```
+
+HTTP status thuộc transport, còn `data`/`errors` thuộc GraphQL execution. HTTP `200` không chứng minh mọi field thành công; ngược lại, lỗi `404` hoặc `401` có thể xảy ra trước khi có execution result. Với WebSocket, `next` mang execution result của một event, còn `error`/`complete` thuộc lifecycle operation. Đọc [Mô hình request/response](/docs/nen-tang/mo-hinh-request-response) và [Xử lý lỗi trong mutation](/docs/query-mutation-subscription/xu-ly-loi-trong-mutation) để phân biệt các lớp lỗi sâu hơn.
+
+## Schema-first và resolver registration
+
+### SDL là contract
+
+**Schema-first** nghĩa là team chốt contract bằng SDL trước khi chọn Java class, resolver hoặc database. SDL khai báo root operation, type, field, argument, input/output và nullability:
+
+```graphql
+type Query {
+  books(limit: Int = 20): [Book!]!
+}
+```
+
+SDL không khai báo:
+
+- method Java nào sẽ được gọi;
+- table hoặc API nào là nguồn dữ liệu;
+- transaction kéo dài bao lâu;
+- user nào được đọc field;
+- field có được tối ưu bằng DataLoader hay không.
+
+Schema hợp lệ chỉ chứng minh contract có thể được parse/validate. Để execution trả dữ liệu, runtime wiring phải có DataFetcher phù hợp hoặc object source có property fetcher mặc định phù hợp.
+
+### Registration là wiring
+
+**Resolver registration** (đăng ký resolver) là bước nối cặp `parent type + field` trong schema với code thực thi. Ví dụ, `Query.books` có thể được đăng ký bởi `@QueryMapping`, explicit `DataFetcher` hoặc cơ chế khác của runtime wiring.
+
+```text
+SDL: Query.books: [Book!]!
+              │
+              ├─ runtime wiring
+              │
+              ▼
+DataFetcher
+              │
+              ▼
+method controller → CatalogService.listBooks()
+```
+
+Nếu thêm method `books()` nhưng SDL không có `Query.books`, client vẫn không thể query field đó. Nếu SDL có `Query.books` nhưng không có registration hoặc default fetcher phù hợp, operation có thể hợp lệ ở validation nhưng thất bại/nhận giá trị không mong đợi ở execution. Đừng dùng annotation để “sửa” một contract chưa được review.
+
+Schema resources có thể chia theo module và được merge thành một graph; resolver Java cũng có thể chia theo nhiều controller. Folder hoặc class name không tạo namespace GraphQL. Bài [SDL và nguyên tắc thiết kế schema](/docs/schema-va-type-system/sdl-va-thiet-ke-schema) giải thích ownership và contract-first; bài [Tách schema theo module](/docs/schema-va-type-system/tach-schema-theo-module) giải thích `type` và `extend type`.
+
+### Một field một owner một registration
+
+Một nguyên tắc vận hành hữu ích là mỗi field public có:
+
+1. một owner chịu trách nhiệm về semantics, quyền, chi phí và vòng đời;
+2. một contract SDL canonical trong schema hợp nhất;
+3. một registration chính cho `parent type + field`.
+
+Hai controller khác class nhưng cùng đăng ký `Query.books` không tạo overload GraphQL. Thứ tự component scan không phải policy chọn handler đáng tin cậy; mapping collision nên được sửa bằng cách chọn một owner hoặc đổi contract có chủ đích.
+
+Tương tự, hai file SDL cùng khai báo `type Book` hoặc cùng thêm `Query.books` không tạo `catalog.Book` và `review.Book`. Chúng tạo duplicate definition/field trong một graph. Ownership phải được review ở cả SDL và Java wiring.
+
+## Ví dụ xuyên suốt với catalog sách
+
+Các ví dụ trong phần này cùng dùng catalog sách. Chúng là code minh họa tĩnh, không phải source code đang tồn tại trong repository.
+
+### SDL contract
+
+```graphql title="schema.graphqls — minh họa tĩnh"
+schema {
+  query: Query
+  mutation: Mutation
+  subscription: Subscription
+}
+
+type Query {
+  book(id: ID!): Book
+  books(limit: Int = 20): [Book!]!
+}
+
+type Mutation {
+  createBook(input: CreateBookInput!): CreateBookPayload!
+}
+
+type Subscription {
+  bookAdded(tenantId: ID!): Book!
+}
+
+input CreateBookInput {
+  tenantId: ID!
+  title: String!
+  authorId: ID!
+}
+
+type CreateBookPayload {
+  book: Book
+  userErrors: [UserError!]!
+}
+
+type UserError {
+  code: String!
+  message: String!
+  inputPath: [String!]!
+}
+
+type Book {
+  id: ID!
+  tenantId: ID!
+  title: String!
+  author: Author!
+}
+
+type Author {
+  id: ID!
+  displayName: String!
+}
+```
+
+Có thể đọc ownership của SDL như sau:
+
+- `Query.book` và `Query.books` là root field của Catalog.
+- `Book.author` là nested field; nó có thể đọc từ property có sẵn hoặc cần resolver riêng.
+- `Mutation.createBook` công khai outcome `CreateBookPayload`; transaction vẫn thuộc service.
+- `Subscription.bookAdded` công khai stream; schema không tự tạo event source hoặc WebSocket.
+- `[UserError!]!` cam kết dùng list rỗng cho không có lỗi và không có phần tử lỗi `null` trong outcome hợp lệ.
+
+### Cấu hình runtime
+
+Endpoint HTTP phải dùng key theo dòng Spring Boot của project:
+
+| Dòng Spring Boot | Property endpoint HTTP |
+| --- | --- |
+| 3.5+ | `spring.graphql.http.path` |
+| 3.4 trở xuống | `spring.graphql.path` |
+
+Cấu hình minh họa cho Boot 3.5+:
+
+```yaml title="application.yml — Boot 3.5+"
+spring:
+  graphql:
+    http:
+      path: /graphql
+    schema:
+      locations:
+        - "classpath:graphql/**/"
+      file-extensions:
+        - ".graphqls"
+```
+
+Với Boot 3.4 trở xuống, thay riêng phần endpoint bằng:
+
+```yaml title="application.yml — Boot 3.4 trở xuống"
+spring:
+  graphql:
+    path: /graphql
+```
+
+Không cấu hình đồng thời hai key endpoint cho cùng project. `spring.graphql.http.path`/`spring.graphql.path` chỉ nói về HTTP; không suy ra WebSocket path từ đó. WebSocket path, dependency và protocol phải được kiểm tra theo web stack/version, như phần [Subscription và WebSocket](/docs/query-mutation-subscription/subscription-websocket) đã lưu ý.
+
+### Controller service và repository
+
+Java dưới đây chỉ là pseudo-code có chủ đích: tên kiểu, parameter resolver và return adapter cần được đối chiếu trước khi chạy.
+
+```java title="GraphQL adapter — pseudo-code minh họa tĩnh"
+@Controller
+final class CatalogGraphQlController {
+
+    private final CatalogService catalogService;
+
+    CatalogGraphQlController(CatalogService catalogService) {
+        this.catalogService = catalogService;
+    }
+
+    @QueryMapping
+    List<BookView> books(@Argument("limit") Integer limit,
+                         RequestActor actor) {
+        return catalogService.listBooks(actor, limit);
+    }
+
+    @QueryMapping
+    BookView book(@Argument("id") String id,
+                  RequestActor actor) {
+        return catalogService.findVisibleBook(actor, id);
+    }
+
+    @MutationMapping
+    CreateBookPayload createBook(
+            @Argument("input") CreateBookInput input,
+            RequestActor actor) {
+        return catalogService.createBook(actor, input);
+    }
+
+    @SubscriptionMapping
+    Publisher<BookView> bookAdded(
+            @Argument("tenantId") String tenantId,
+            RequestActor actor) {
+        return catalogService.authorizedBookEvents(actor, tenantId);
+    }
+}
+```
+
+```java title="Nested field — pseudo-code minh họa tĩnh"
+@Controller
+final class BookFieldController {
+
+    private final AuthorService authorService;
+
+    BookFieldController(AuthorService authorService) {
+        this.authorService = authorService;
+    }
+
+    @SchemaMapping(typeName = "Book", field = "author")
+    AuthorView author(BookView source, RequestActor actor) {
+        return authorService.findVisibleAuthor(actor, source.authorId());
+    }
+}
+```
+
+```java title="Application và data boundary — pseudo-code minh họa tĩnh"
+@Service
+final class CatalogService {
+
+    @Transactional
+    CreateBookPayload createBook(RequestActor actor, CreateBookInput input) {
+        // Business validation, authorization, invariant và transaction.
+        // Repository chỉ được gọi sau khi policy của use case đã rõ.
+        return createBookUseCase.execute(actor, input);
+    }
+}
+
+interface CatalogRepository {
+    List<BookRow> findBooksFor(RequestActor actor, int limit);
+}
+```
+
+Các tên `BookView`, `RequestActor`, `AuthorService`, `Publisher`, `CreateBookInput` và `createBookUseCase` là kiểu đại diện trong ví dụ. `RequestActor` biểu diễn principal/tenant đã được server xác thực, không phải giá trị được tin trực tiếp từ variables. `@Transactional` ở đây chỉ minh họa vị trí application service; nó không bao phủ mặc định mọi lời gọi async, nested resolver hoặc downstream HTTP.
+
+Đọc [Binding arguments và input](/docs/tich-hop-spring-for-graphql/binding-arguments-input) để đi sâu vào `@Argument` và input binder, [Schema mapping và nested field](/docs/tich-hop-spring-for-graphql/schema-mapping-va-nested-field) để đi sâu vào source object, và [Context, interceptor và request lifecycle](/docs/tich-hop-spring-for-graphql/context-interceptor-request-lifecycle) khi cần chọn hook Spring cụ thể.
+
+## Request lifecycle từ transport tới serialization
+
+Luồng sau dùng query HTTP làm trục chính. WebSocket có thêm connection/protocol lifecycle nhưng mỗi `subscribe` vẫn đi qua parse, validation, execution và serialization tương tự.
+
+```text
+HTTP/WebSocket boundary
+        │
+        ▼
+request envelope + trusted metadata
+        │
+        ▼
+parse → validate → coerce variables
+        │
+        ▼
+instrumentation / guardrails
+        │
+        ▼
+root DataFetcher → nested DataFetcher
+        │
+        ▼
+service/use case → repository/gateway → data source
+        │
+        ▼
+complete type + nullability + errors
+        │
+        ▼
+serialize JSON hoặc protocol message
+```
+
+### Bước 0 xây runtime lúc startup
+
+Trước khi có request, Spring Boot và Spring for GraphQL thường thực hiện chuỗi khái niệm sau:
+
+1. Tạo `ApplicationContext` và các bean từ component scan/auto-configuration.
+2. Tìm schema resources trên classpath theo location và extension.
+3. Parse, merge và kiểm tra SDL thành GraphQL schema.
+4. Chạy runtime wiring configurer, gồm annotated controller discovery, explicit DataFetcher, scalar/type resolver và instrumentation nếu project đăng ký.
+5. Tạo GraphQL runtime thông qua `GraphQlSource` hoặc cấu hình tương đương.
+6. Đăng ký HTTP handler; đăng ký WebSocket handler chỉ khi transport và version/configuration hỗ trợ.
+
+Có thể hình dung:
+
+```text
+classpath SDL + Spring beans
+          │
+          ▼
+GraphQlSource / runtime builder
+          │
+          ├─ GraphQL schema
+          ├─ DataFetcher registration
+          ├─ instrumentation
+          └─ transport adapters
+          │
+          ▼
+server ready
+```
+
+Lỗi parse SDL, duplicate type/field, thiếu type reference hoặc runtime wiring collision thường cần được xử lý ở startup/build schema. Lỗi data source, authorization resource hoặc timeout chỉ xuất hiện khi execution chạm nhánh tương ứng. Không dùng “startup thành công” làm bằng chứng mọi field đã được kiểm thử.
+
+### Bước 1 transport nhận request
+
+**HTTP**
+
+1. Client gửi request đến URL đã cấu hình, thường bằng `POST` và `Content-Type: application/json`.
+2. HTTP layer kiểm tra route, method, body size, JSON syntax, TLS, CORS/rate limit và các filter/security policy.
+3. Spring for GraphQL lấy document, variables, operation name và metadata để tạo input cho execution.
+
+**WebSocket**
+
+1. Client thực hiện HTTP Upgrade; proxy phải chuyển tiếp Upgrade headers.
+2. Server thương lượng subprotocol, nếu stack yêu cầu.
+3. Protocol handshake như `connection_init`/`connection_ack` xác nhận metadata/authentication.
+4. Mỗi message `subscribe` tạo một GraphQL execution; một connection có thể có nhiều operation.
+
+Nếu request bị từ chối ở route, body JSON, TLS, CORS hoặc authentication biên, resolver chưa chạy. Đừng tìm lỗi trong `@QueryMapping` trước khi xác nhận request đã tới đúng handler. [Mô hình request/response](/docs/nen-tang/mo-hinh-request-response) giải thích request envelope và HTTP status; [Kiểm thử request bằng curl/Postman](/docs/bat-dau/kiem-thu-request-curl-postman) có checklist request HTTP.
+
+### Bước 2 tạo context và metadata
+
+Server tạo metadata đáng tin cậy cho lần execution, thường gồm:
+
+- principal hoặc `Authentication` sau khi credential được kiểm tra;
+- tenant đã được suy ra từ principal/policy;
+- correlation ID, trace ID và operation name;
+- locale, deadline, feature flag hoặc request budget;
+- DataLoader registry theo execution;
+- thông tin connection/operation đối với WebSocket.
+
+Metadata đi theo flow như sau:
+
+```text
+HTTP headers / WebSocket handshake
+              │
+              ▼
+Spring Security + transport/interceptor
+              │  xác thực và làm sạch
+              ▼
+GraphQL execution context
+              │
+              ├─ resolver đọc principal/tenant/request ID
+              ├─ service nhận dữ liệu typed cần thiết
+              └─ instrumentation nối trace/metric
+```
+
+Context nên chứa metadata request và các capability có kiểm soát, không phải toàn bộ domain state. Nếu service cần actor, truyền một kiểu ứng dụng như `RequestActor` thay vì truyền `HttpServletRequest` hoặc `DataFetchingEnvironment` xuống domain. Chi tiết `GraphQLContext`, `@ContextValue` và local context phụ thuộc API version; xem [DataFetcher và GraphQL context](/docs/tich-hop-spring-for-graphql/datafetcher-va-graphql-context) và [Context, interceptor và request lifecycle](/docs/tich-hop-spring-for-graphql/context-interceptor-request-lifecycle).
+
+Với WebSocket, context của connection không nên được hiểu là giấy phép vĩnh viễn cho mọi operation. Mỗi `subscribe` cần kiểm tra argument/selection theo principal hiện tại; stream dài hạn có thể cần xử lý token expiry hoặc quyền bị thu hồi.
+
+### Bước 3 parse validate và coerce
+
+GraphQL Java parse document rồi validate với executable schema. Các kiểm tra thường gồm:
+
+- field có tồn tại trên type hiện tại không;
+- object/list object có selection set không;
+- scalar có bị mở selection set không;
+- argument và variable có tên, kiểu, default và nullability tương thích không;
+- input object/enum có hợp lệ không;
+- operation name có chọn đúng operation không.
+
+Sau đó, GraphQL coerce giá trị variables/literal theo kiểu SDL. `"20"` không tự trở thành `Int` chỉ vì Java method nhận `Integer`; `tenantId` đúng kiểu cũng không chứng minh caller có quyền với tenant đó.
+
+```text
+parse document
+      │ lỗi cú pháp → errors, chưa vào resolver
+      ▼
+validate schema
+      │ field/selection/argument sai → errors, chưa vào resolver
+      ▼
+coerce variables
+      │ kiểu/nullability sai → errors, chưa thực hiện use case
+      ▼
+operation hợp lệ → bắt đầu execution
+```
+
+Structural validation (kiểm tra cấu trúc) thuộc schema/execution boundary. Business validation như “limit không vượt quá 100”, “ID thuộc tenant” hoặc “trạng thái cho phép update” thuộc policy/service. Không làm schema quá nullable chỉ để che lỗi domain, và không biến mọi business rule thành custom GraphQL directive nếu service cũng cần bảo vệ chúng.
+
+### Bước 4 instrumentation bao quanh execution
+
+Khi operation đã được chọn, instrumentation có thể ghi nhận hoặc áp dụng guardrail theo cấu hình. Một pipeline quan sát thường theo dõi:
+
+```text
+operationName + query hash + request ID
+                 │
+                 ▼
+parse/validation timing
+                 │
+                 ▼
+root field timing → nested field timing
+                 │
+                 ▼
+service/downstream timing + DataLoader batch
+                 │
+                 ▼
+result status, GraphQL errors, response timing
+```
+
+Query depth/complexity, document size, persisted-operation allow-list hoặc timeout có thể được đặt ở gateway, transport, validation policy hoặc instrumentation tùy implementation. Hãy đặt guardrail càng sớm càng tốt nhưng vẫn giữ authorization ở service/field boundary.
+
+Instrumentation phải tránh side effect nghiệp vụ. Một callback đo thời gian không được tự ghi database; một metric không được trở thành nguồn duy nhất để quyết định user có được xem resource hay không. Khi có nhiều instrumentation, thứ tự callback và API context cần được kiểm tra theo GraphQL Java version.
+
+### Bước 5 gọi root và nested DataFetcher
+
+Execution engine bắt đầu từ root operation:
+
+```text
+Query.books(limit: 20)
+        │
+        ▼
+@QueryMapping books(...) → CatalogService.listBooks(...)
+        │
+        ▼
+List<BookView>
+        │
+        ├─ Book.id       → property/default fetcher
+        ├─ Book.title    → property/default fetcher
+        └─ Book.author   → @SchemaMapping hoặc DataLoader
+```
+
+Root field `Query.books` không có source object `Book`; nó nhận arguments/context. Khi kết quả là `Book`, nested field `Book.author` mới có parent/source object. Nhầm hai vị trí này là nguyên nhân phổ biến của mapping sai và N+1.
+
+Execution chỉ hoàn tất field trong selection set. Java object có thêm property không làm field tự xuất hiện trong response, còn selection set có field không được schema khai báo sẽ bị chặn ở validation. [Query, selection set và alias](/docs/query-mutation-subscription/query-selection-set-alias) giải thích response shape; [Viết query đầu tiên](/docs/bat-dau/viet-query-dau-tien) cho flow nhập môn từ SDL đến resolver.
+
+### Bước 6 đi qua service và data source
+
+Resolver nên chuyển yêu cầu đã bind và metadata cần thiết vào use case. Một flow đọc có thể là:
+
+```text
+DataFetcher Query.book
+        │
+        ▼
+CatalogService.findVisibleBook(actor, id)
+        │
+        ├─ authorization resource/tenant
+        ├─ cache policy hoặc read model
+        └─ CatalogRepository.findById(...)
+                    │
+                    ▼
+              database / API downstream
+```
+
+Một flow ghi có thể là:
+
+```text
+DataFetcher Mutation.createBook
+        │
+        ▼
+CatalogService.createBook(actor, input)
+        │
+        ├─ validation và invariant
+        ├─ transaction database
+        ├─ outbox/event sau commit nếu cần
+        └─ payload hoặc domain exception
+```
+
+Một request GraphQL có thể gọi nhiều service và data source. Không đánh giá hiệu năng chỉ bằng số HTTP request từ client. Hãy đo resolver count, downstream call count, batch size, DB query count, latency và payload size.
+
+### Bước 7 hoàn tất giá trị và lỗi
+
+GraphQL Java hoàn tất giá trị theo kiểu SDL:
+
+- object được đi vào selection set con;
+- list được hoàn tất từng phần tử;
+- scalar/custom scalar được serialize theo type resolver;
+- interface/union cần xác định concrete type;
+- `!` được kiểm tra và có thể làm lỗi bubble lên parent.
+
+Bốn nhóm lỗi cần phân biệt:
+
+| Lớp lỗi | Resolver field đã chạy? | Tín hiệu thường thấy |
+| --- | --- | --- |
+| Transport | Thường chưa | `404`, `401`, timeout kết nối, không có GraphQL body |
+| Parse/validation/coercion | Chưa vào field bị lỗi | Top-level `errors`, thường không có `data` |
+| Business/domain | Có | Payload typed như `userErrors`, hoặc domain exception theo policy |
+| Execution/serialization | Có thể có | `errors.path`, partial data, null bubbling |
+
+Đừng bắt mọi exception rồi trả `null`. Nếu field là nullable, việc đó có thể che outage; nếu field là non-null, GraphQL vẫn có thể tạo error và bubble. Error mapping nên đưa code/message an toàn ra client, còn stack trace, SQL và chi tiết downstream ở log/trace nội bộ. [Xử lý lỗi tập trung](/docs/tich-hop-spring-for-graphql/xu-ly-loi-tap-trung) dành cho implementation error boundary.
+
+### Bước 8 serialize và trả response
+
+Sau khi execution hoàn tất, Spring for GraphQL adapter chuyển execution result thành response của transport:
+
+```text
+Java value / CompletionStage / Publisher item
+                │
+                ▼
+GraphQL completion + scalar serialization
+                │
+                ▼
+ExecutionResult: data/errors/extensions
+                │
+                ├─ HTTP adapter → JSON body + HTTP status/header policy
+                └─ WebSocket adapter → next/error/complete message
+```
+
+Serialization xảy ra sau khi resolver/service có thể đã kết thúc transaction. Vì thế, không nên trả entity JPA còn lazy relation chưa được materialize rồi kỳ vọng session luôn còn mở; ưu tiên DTO/projection hoặc boundary transaction/read model rõ ràng.
+
+JSON response chỉ có field được chọn. HTTP status vẫn do adapter/security/gateway policy quyết định. Một client đúng phải đọc status, body `data`, top-level `errors` và metadata đã được tài liệu hóa; không dùng status `200` làm tín hiệu thành công duy nhất.
+
+### Lifecycle subscription qua WebSocket
+
+Subscription có hai lifecycle lồng nhau:
+
+```text
+HTTP Upgrade
+    │
+    ▼
+WebSocket connection
+    │ connection_init → authentication → connection_ack
+    ▼
+subscribe operation
+    │ parse/validate/coerce + authorization
+    ▼
+@SubscriptionMapping tạo Publisher
+    │
+    ├─ event 1 → execute selection → next
+    ├─ event 2 → execute selection → next
+    ├─ Publisher error → error theo policy
+    ├─ complete → complete operation
+    └─ client/socket cancel → cleanup event source
+```
+
+`@SubscriptionMapping` chỉ tạo điểm nối tới `Publisher`; nó không tạo broker, không mở WebSocket, không đảm bảo fan-out, replay hoặc backpressure. Event source phải có policy cho tenant, ordering, duplicate, subscriber chậm và shutdown.
+
+Khi một event làm nested resolver lỗi, server cần quyết định giữ stream, gửi execution error trong result tiếp theo hay kết thúc operation. Khi token bị thu hồi, cần hủy stream và giải phóng consumer theo security policy. Đọc [Subscription và WebSocket](/docs/query-mutation-subscription/subscription-websocket) và [Subscription WebSocket khi deploy](/docs/trien-khai/subscription-websocket-deployment) để đi sâu vào protocol, proxy và cleanup.
+
+## Context metadata và nơi đặt policy
+
+### Context không phải input của client
+
+Variables là dữ liệu client gửi; context là metadata server tạo hoặc kiểm soát. Hai thứ có thể cùng xuất hiện trong một resolver nhưng không có cùng mức độ tin cậy:
+
+```text
+variables.tenantId ───────────────┐
+                                  ├─ input cần kiểm tra
+security principal / claims ──────┘
+                                  │
+                                  ▼
+                         application authorization
+```
+
+Không cấp quyền chỉ vì client gửi `tenantId: "tenant-7"`, `userId` của chính mình hoặc một key trong `extensions`. Server phải lấy principal từ credential đã xác minh, áp policy membership/resource và truyền kết quả xuống service. Context cũng không nên là một `Map` toàn cục dùng chung giữa request; DataLoader, request ID và deadline phải có scope rõ.
+
+Context có thể gồm:
+
+- **request-scoped metadata:** request ID, trace ID, locale, deadline;
+- **security metadata:** principal, authorities, tenant scope;
+- **execution helpers:** DataLoader registry, request cache, budget;
+- **connection metadata:** WebSocket connection ID, protocol state, generation.
+
+Với async/reactive, đừng dựa vào ThreadLocal để truyền mọi metadata. Hãy dùng context propagation của stack hoặc truyền một value typed ở boundary đã chọn. Nếu dùng WebSocket, phân biệt context cấp connection với context cấp từng execution.
+
+### Authentication và authorization
+
+**Authentication** trả lời “request thuộc về ai”; **authorization** trả lời “principal đó được làm gì và đọc gì”. Chúng nên được đặt ở các boundary khác nhau:
+
+| Điểm đặt | Trách nhiệm phù hợp | Không nên ủy thác toàn bộ |
+| --- | --- | --- |
+| Gateway/HTTP/WebSocket handshake | TLS, route, credential extraction, rate limit, auth sớm | Business authorization của từng resource |
+| Security/interceptor | Xác thực token/session, tạo principal | Tin mọi variables là scope hợp lệ |
+| GraphQL validation/field policy | Operation allow-list, field policy, query cost | Thay thế invariant trong service |
+| Resolver adapter | Chuyển context/actor vào use case, field check nhẹ nếu cần | Sao chép business rule ở nhiều controller |
+| Service/domain | Authorization theo resource/tenant, invariant, state transition | Phụ thuộc trực tiếp vào HTTP/GraphQL API |
+| Repository/gateway | Defense in depth, tenant filter, downstream credential | Quyết định public schema |
+
+Một query nhỏ vẫn có thể đọc dữ liệu trái quyền. Tắt introspection hoặc ẩn field khỏi GraphiQL không phải authorization. Đọc [Authentication với JWT/OAuth2](/docs/bao-mat-va-quan-sat/authentication-jwt-oauth2) và [Authorization theo field và resolver](/docs/bao-mat-va-quan-sat/authorization-field-resolver) khi triển khai security cụ thể.
+
+### Validation và guardrail
+
+Tách validation theo thời điểm giúp đặt đúng owner:
+
+1. **Transport validation:** route, method, body size, JSON, protocol, origin và credential format.
+2. **GraphQL structural validation:** parse document, schema field, selection set, variable, argument, input, enum và nullability.
+3. **Query guardrail:** depth, complexity, tổng node, page size, persisted operation, timeout và rate limit.
+4. **Business validation:** title không trắng, state transition hợp lệ, resource thuộc tenant, quota và invariant.
+5. **Data validation:** constraint database, response downstream, scalar serialization và nullability output.
+
+Complexity là ước lượng chi phí CPU/I/O/memory hoặc số node; nó không tự thay thế pagination hay authorization. `limit: 20` đúng kiểu vẫn có thể gây tải lớn nếu nested field tạo nhiều downstream call. Đặt giới hạn ở schema/policy/service và đo thực tế bằng instrumentation. Đọc [Giới hạn độ sâu và complexity](/docs/bao-mat-va-quan-sat/depth-va-complexity-limit) khi cần thiết kế guardrail.
+
+### Observability
+
+GraphQL thường dùng một endpoint chung, nên chỉ log URL `/graphql` là không đủ. Một telemetry tối thiểu nên nối được:
+
+```text
+request ID / trace ID
+        │
+        ▼
+operationName + query hash
+        │
+        ▼
+GraphQL execution
+  ├─ resolver parent.field timing
+  ├─ DataLoader batch size / cache hit
+  ├─ service / downstream timing
+  └─ errors.path + error code
+        │
+        ▼
+response / WebSocket operation lifecycle
+```
+
+Nên theo dõi:
+
+- request count, duration, validation reject và timeout theo operation/hash;
+- resolver timing theo `parentType.field`, không đưa raw query text vào metric label;
+- database query count, downstream latency, retry/circuit-breaker và batch size;
+- error code/path, partial data, null bubbling và serialization failure;
+- active WebSocket connections/operations, event lag, queue depth, cancel và cleanup.
+
+Không log access token, toàn bộ variables chứa PII (thông tin nhận dạng cá nhân), payload `connection_init` hoặc event nhạy cảm. Query hash/operation name có thể giúp nhóm metrics nhưng không thay thế redaction. [Logging và tracing](/docs/bao-mat-va-quan-sat/logging-va-tracing) là bài nối tiếp cho observability; phần này chỉ đặt vị trí của nó trong lifecycle.
+
+## Sync async reactive và thread model
+
+### Ba kiểu hoàn tất giá trị
+
+Resolver có thể hoàn tất theo nhiều hình thức. Tên return type và adapter được hỗ trợ cần được đối chiếu version; bảng này mô tả semantics:
+
+| Hình thức | Semantics | Cạm bẫy |
+| --- | --- | --- |
+| Giá trị đồng bộ | Method trả `BookView`, `List<BookView>` hoặc scalar; execution nhận kết quả ngay theo call | Lời gọi blocking giữ thread đang thực thi |
+| Một kết quả bất đồng bộ | `CompletionStage`/`CompletableFuture` hoàn tất một giá trị sau | Async chỉ có ích nếu công việc thật sự chạy trên executor phù hợp |
+| Reactive một kết quả | `Mono<BookView>` hoặc adapter tương đương | Reactive wrapper không làm code blocking bên trong thành non-blocking |
+| Reactive stream | `Publisher<BookView>`/`Flux<BookView>` phát nhiều item | Cần cancellation, backpressure, cleanup và transport phù hợp |
+
+Pseudo-code minh họa:
+
+```java title="Sync/async/reactive — pseudo-code minh họa tĩnh"
+@QueryMapping
+BookView book(...) {
+    return service.find(...);                 // sync
+}
+
+@QueryMapping
+CompletionStage<BookView> bookAsync(...) {
+    return service.findAsync(...);            // one async result
+}
+
+@QueryMapping
+Mono<BookView> bookReactive(...) {
+    return service.findReactive(...);         // one reactive result
+}
+
+@SubscriptionMapping
+Publisher<BookView> bookAdded(...) {
+    return eventSource.forTenant(...);        // many results
+}
+```
+
+Không nên dùng `Publisher` để che một method trả list blocking hoặc một event source không có lifecycle. Với subscription, `Publisher` phải phản ứng với `cancel`, `error` và `complete`; với query, reactive return vẫn cần timeout và giới hạn tài nguyên.
+
+### Async không tự biến blocking thành non-blocking
+
+Ví dụ sai về mặt ý tưởng:
+
+```java
+// Không phải non-blocking: lời gọi database đã block trước khi future được tạo.
+return CompletableFuture.completedFuture(jdbcRepository.findById(id));
+```
+
+Bọc một kết quả đã lấy bằng `completedFuture`, `Mono.just` hoặc một wrapper tương tự không di chuyển lời gọi blocking sang thread khác. Nếu dùng Spring WebFlux, JDBC/JPA/blocking HTTP client trên event-loop có thể làm nghẽn nhiều request khác. Các lựa chọn thường là:
+
+- dùng stack servlet/MVC nếu use case chủ yếu blocking;
+- dùng reactive driver/client xuyên suốt chain nếu cần non-blocking;
+- đẩy phần blocking có chủ đích sang bounded executor phù hợp và giới hạn queue;
+- đo thread utilization, queue wait, downstream latency và timeout;
+- không tạo một thread mới vô hạn cho mỗi field hoặc subscription.
+
+Ngược lại, dùng `supplyAsync` với executor không giới hạn cũng có thể làm cạn thread/memory. Async là quyết định về scheduler, backpressure và resource budget, không phải chỉ đổi return type.
+
+Bài [Async và reactive](/docs/truy-cap-du-lieu-va-hieu-nang/async-va-reactive) được dành cho trade-off implementation. Bài này chỉ cần giữ nguyên tắc: **tính chất blocking/non-blocking của toàn chuỗi quan trọng hơn kiểu wrapper ở controller**.
+
+### Thread và context propagation
+
+Không nên giả định:
+
+- mọi field chạy trên cùng một thread;
+- thread-local security context tự xuất hiện trong mọi callback;
+- transaction thread-bound tự kéo dài qua `CompletionStage`/`Publisher`;
+- một `Flux` tự truyền backpressure xuyên proxy và browser.
+
+Hãy truyền hoặc khôi phục context bằng cơ chế mà web stack/reactive stack cung cấp, đặt deadline ở boundary và kiểm tra cancellation. Với subscriber chậm, cần queue bounded, drop/coalesce/disconnect hoặc durable replay theo contract; buffer vô hạn không phải failure policy.
+
+Nếu một execution cần giữ snapshot nhất quán, hãy thiết kế read model hoặc transaction scope rõ ràng. Đừng dựa vào thứ tự resolver hoặc một ThreadLocal tình cờ còn tồn tại.
+
+## Root mapping và nested mapping
+
+### Root mapping
+
+Root mapping nối field dưới `Query`, `Mutation` hoặc `Subscription` với handler:
+
+| SDL field | Annotation thường dùng | Ý nghĩa |
+| --- | --- | --- |
+| `Query.books` | `@QueryMapping` | Đọc root field; không có parent `Book` |
+| `Mutation.createBook` | `@MutationMapping` | Gọi use case thay đổi trạng thái |
+| `Subscription.bookAdded` | `@SubscriptionMapping` | Tạo/nhận `Publisher` cho event stream |
+
+Các annotation root-specific là shortcut có ngữ nghĩa rõ cho schema mapping. Về ý tưởng, `@QueryMapping` nhắm root type `Query`, `@MutationMapping` nhắm `Mutation`, còn `@SubscriptionMapping` nhắm `Subscription`. Nếu root type trong SDL đã đổi tên, mapping tường minh với `@SchemaMapping` có thể cần thiết; shortcut không nên được giả định là tự suy ra tên custom.
+
+Operation name và alias của client không được dùng để tìm method. Resolver map theo field schema, ví dụ `Query.books`, không theo `query BooksPage` hay alias `items: books`. Đọc [Query, mutation và subscription mapping](/docs/tich-hop-spring-for-graphql/query-mutation-subscription-mapping) để xem collision, argument và return type chi tiết.
+
+### Nested mapping
+
+Nested mapping nối field của output type, ví dụ `Book.author`, sau khi root resolver đã tạo `Book`:
+
+```text
+Query.book
+    │ trả BookView
+    ▼
+Book.id / Book.title      → property/default fetcher
+Book.author              → @SchemaMapping hoặc DataFetcher riêng
+    │ nhận source BookView
+    ▼
+AuthorView
+```
+
+`@SchemaMapping(typeName = "Book", field = "author")` có ý nghĩa khác `@QueryMapping`: nó không nhắm root `Query`. Chỉ thêm nested mapping khi cần gọi service, authorization, tính toán, batch loading hoặc chuyển đổi có chủ đích; field scalar đơn giản có thể dùng property fetcher mặc định nếu DTO phù hợp.
+
+Root mapping và nested mapping cùng nằm trong executable schema, nhưng có source và ownership khác nhau. Root resolver không nên nhận `Book` parent chỉ vì kết quả cuối cùng là `Book`; nested resolver mới nhận source object. Bài [Schema mapping và nested field](/docs/tich-hop-spring-for-graphql/schema-mapping-va-nested-field) dành cho chi tiết này.
+
+### Subscription mapping không bật transport
+
+`@SubscriptionMapping` chỉ đăng ký handler cho root subscription field. Để client thật sự nhận event còn cần:
+
+```text
+Subscription SDL
+      +
+@SubscriptionMapping → Publisher
+      +
+WebSocket/SSE (Server-Sent Events, luồng server đẩy một chiều)/HTTP streaming transport
+      +
+protocol + auth + proxy + event source
+```
+
+Vì vậy, test mapping thành công không chứng minh WebSocket endpoint đã mở. Cần test handshake, protocol `subscribe`, event `next`, `error`, `complete`, reconnect và cancellation ở transport integration boundary.
+
+## Business boundary và dependency direction
+
+### Ownership của từng lớp
+
+Ownership (quyền sở hữu trách nhiệm) không đồng nghĩa với việc ai tạo file. Owner là người chịu trách nhiệm cuối cùng khi semantics, dữ liệu, quyền, latency hoặc compatibility của một field gặp vấn đề.
+
+| Lớp | Sở hữu chính | Không nên âm thầm sở hữu |
+| --- | --- | --- |
+| Schema/SDL owner | Type, field, input/output, nullability, mô tả, evolution | SQL, thread pool hoặc credential runtime |
+| Transport/platform | Route, protocol, TLS, body limit, connection, status policy | Quy tắc “sách nào được hiển thị” |
+| GraphQL adapter | Mapping, binding, context bridge, response/error adapter | Invariant phải đúng ngoài GraphQL |
+| Application service | Use case, authorization resource, invariant, transaction, idempotency | HTTP envelope và field syntax |
+| Repository/gateway | Persistence/downstream access, timeout và mapping nguồn | Public schema và selection set |
+| Data source owner | Availability, consistency, capacity, event semantics | Tự mở public GraphQL field |
+| Observability/platform | Trace, metric, redaction, alerting và SLO | Quyết định nghiệp vụ thay domain owner |
+
+Một team có thể gộp nhiều lớp trong project nhỏ. Điều cần giữ là ownership vẫn được gọi tên. Nếu `Book.reviews` gọi Review service, owner phải biết chi phí nested field, policy quyền và failure mode của Review service.
+
+### Hướng phụ thuộc
+
+Hướng phụ thuộc nên đi từ adapter vào application port, rồi tới infrastructure; domain không phụ thuộc GraphQL:
+
+```text
+HTTP / WebSocket adapter
+          │
+          ▼
+GraphQL adapter: schema mapping, context, error mapping
+          │
+          ▼
+Application use case / service interface
+          │
+          ├─ domain model / policy
+          └─ repository or gateway port
+                    │
+                    ▼
+          JPA / JDBC / HTTP client / broker adapter
+```
+
+GraphQL adapter có thể phụ thuộc vào service. Service không nên nhận `DataFetchingEnvironment`, `HttpServletRequest` hoặc protocol WebSocket làm dependency bắt buộc. Nếu service cần actor, tenant hoặc deadline, định nghĩa value/port ở application boundary.
+
+Hướng phụ thuộc này giúp cùng một use case được gọi từ GraphQL, REST, job hoặc message consumer. Nó cũng làm test service không cần dựng `ApplicationContext` hoặc một GraphQL document. Schema có thể tham chiếu type domain theo graph, nhưng điều đó không buộc Java module phải tạo dependency vòng vào implementation nội bộ của nhau.
+
+### Transaction boundary
+
+`type Mutation` và `@MutationMapping` không tự mở transaction. Transaction là boundary của use case, thường nằm ở application service khi use case cần atomicity trong phạm vi transaction manager đã chọn.
+
+Các câu hỏi cần trả lời:
+
+- Transaction bao phủ database/resource nào?
+- DTO đã được materialize trước khi transaction kết thúc chưa?
+- Event có phát trước hay sau commit?
+- Downstream HTTP/broker có được rollback không? Thông thường không.
+- Timeout sau commit được client xử lý thế nào?
+- Retry có idempotency hoặc cách kiểm tra trạng thái không?
+
+Một mutation ghi database rồi gửi message thường cần outbox hoặc workflow/compensation nếu event không được phép mất. Không nói mutation “atomic” chỉ vì nó nằm dưới root `Mutation`.
+
+Với query JPA, nested resolver chạy sau service root có thể chạm lazy relation khi transaction đã đóng. Ưu tiên projection/DTO, fetch plan hoặc DataLoader có transaction/batch boundary rõ thay vì dựa mơ hồ vào Open Session in View. Với reactive transaction, transaction context phải đi xuyên reactive chain và dùng reactive transaction manager phù hợp; `@Transactional` imperative không tự bao phủ mọi `Publisher`.
+
+Nếu một request chứa nhiều root query field, không mặc định coi chúng nằm trong một transaction chung. Nếu cần consistency toàn màn hình, tạo một read use case/snapshot có chủ đích. Với top-level mutation field thực thi tuần tự, vẫn phải đặt mỗi use case và transaction boundary rõ; tuần tự không đồng nghĩa rollback chung.
+
+## DataLoader N+1 và failure isolation
+
+### Vì sao một request có thể thành N+1
+
+GraphQL cho phép client chọn nested field, nhưng selection set không tự tối ưu data source. Với query:
+
+```graphql
+query BookDetails {
+  books(limit: 20) {
+    id
+    title
+    author {
+      id
+      displayName
+    }
+  }
+}
+```
+
+Implementation ngây thơ có thể tạo:
+
+```text
+1 query lấy 20 books
++ 1 query lấy author của book-1
++ 1 query lấy author của book-2
++ ...
++ 1 query lấy author của book-20
+= 21 query (N + 1)
+```
+
+Đó là một HTTP request nhưng nhiều backend calls. Alias, fragment hoặc việc dùng GraphQL không tự giảm số query.
+
+### DataLoader theo execution
+
+**DataLoader** là cơ chế gom các key được yêu cầu trong cùng execution thành batch và thường cache trong phạm vi execution đó. Flow khái niệm:
+
+```text
+Book.author của nhiều parent
+          │
+          ├─ load(tenant-7, author-1)
+          ├─ load(tenant-7, author-2)
+          └─ load(tenant-7, author-3)
+          │
+          ▼ dispatch batch
+repository.findAuthorsByKeys([key1, key2, key3])
+          │
+          ▼
+map kết quả theo đúng key → từng nested field
+```
+
+Một batch loader production cần:
+
+- registry mới theo mỗi GraphQL execution/request, không dùng global cache giữa user/tenant;
+- key chứa đủ scope bảo mật, chẳng hạn `(tenantId, authorId)` khi ID không toàn cục;
+- giữ thứ tự/mapping key → result đúng contract của loader;
+- xử lý key không tìm thấy, duplicate key và lỗi từng phần;
+- giới hạn batch size, timeout và memory;
+- ghi metric batch size, cache hit, miss và backend call;
+- không bỏ qua authorization chỉ vì nhiều key được gom chung.
+
+DataLoader giảm N+1 nhưng không thay thế query complexity, pagination, transaction hoặc policy quyền. Với subscription, scope DataLoader và context phải được xác định cho từng execution/event; không giữ registry của một client trong cache toàn process.
+
+Bài [N+1 query](/docs/truy-cap-du-lieu-va-hieu-nang/n-plus-1-query) và [Batch loading và DataLoader](/docs/truy-cap-du-lieu-va-hieu-nang/batch-loading-va-dataloader) sẽ đi sâu hơn khi các trang đó được áp dụng vào data layer thật.
+
+### Cô lập lỗi và partial data
+
+Failure isolation (cô lập lỗi) nghĩa là lỗi ở một downstream/field không tự làm mất mọi dữ liệu nếu contract cho phép giữ các nhánh độc lập. Có thể áp dụng các cơ chế sau:
+
+- timeout riêng cho từng downstream hoặc field có chi phí cao;
+- bulkhead (ngăn tài nguyên riêng) cho pool/consumer quan trọng;
+- circuit breaker/rate limit ở gateway phù hợp;
+- fallback/cache chỉ khi semantics cho phép và được đánh dấu rõ;
+- payload typed cho business outcome dự kiến;
+- exception resolver và redaction cho execution failure;
+- cancellation/cleanup cho async và subscription.
+
+Nullability quyết định phạm vi dữ liệu bị mất. Nếu `Book.author: Author!` lỗi, lỗi có thể bubble lên `Book` hoặc list tùy wrapper; nếu field là nullable, các field sibling có thể còn lại. Không biến mọi lỗi thành `null` im lặng để “giữ partial data”; client cần biết dữ liệu đang thiếu vì không có record hay vì upstream unavailable.
+
+```text
+nested field lỗi
+      │
+      ├─ field nullable → có thể giữ parent/sibling + errors.path
+      └─ field non-null → null bubbling lên parent gần nhất nullable
+                                      │
+                                      ▼
+                         partial data nhỏ hơn hoặc data = null
+```
+
+Với subscription, failure isolation còn phải quyết định lỗi làm mất một event, kết thúc operation hay đóng connection. Cần gắn event ID/sequence nếu client phải catch-up sau reconnect. Đọc [Xử lý lỗi tập trung](/docs/tich-hop-spring-for-graphql/xu-ly-loi-tap-trung) và [Subscription và WebSocket](/docs/query-mutation-subscription/subscription-websocket) để nối error contract với lifecycle cụ thể.
+
+## Version boundary và các điểm cần kiểm tra
+
+Spring Boot quản lý version tương thích của Spring for GraphQL và GraphQL Java qua parent/BOM trong project thông thường. Không tự override một version `graphql-java` hoặc `spring-graphql` chỉ để làm snippet biên dịch nếu chưa kiểm tra compatibility.
+
+Trước khi áp dụng một ví dụ, xác nhận:
+
+- dòng Spring Boot và JDK;
+- web stack MVC hay WebFlux;
+- property schema location và file extension;
+- property endpoint HTTP đúng dòng version;
+- annotation/package mapping và argument resolver;
+- return adapter cho `CompletionStage`, `Mono`, `Flux`, `Publisher`;
+- cách đăng ký `GraphQlSource`, runtime wiring và instrumentation;
+- `DataFetcherExceptionResolver`/subscription exception hook nếu cần;
+- WebSocket handler, path, subprotocol và reverse proxy;
+- behavior của context propagation, DataLoader và transaction manager.
+
+Bảng endpoint cần giữ nhất quán trong nhóm tài liệu:
+
+| Version Spring Boot | Key HTTP endpoint |
+| --- | --- |
+| 3.5+ | `spring.graphql.http.path` |
+| 3.4 trở xuống | `spring.graphql.path` |
+
+Giá trị `/graphql` chỉ là ví dụ khi project cấu hình path đó. `spring.graphql.graphiql.enabled` nếu được dùng chỉ bật UI phát triển; GraphiQL không phải GraphQL endpoint khác. WebSocket path không được suy ra từ hai key HTTP trên. Khi property không bind hoặc handler không tạo, xem configuration metadata/reference đúng version thay vì đoán.
+
+## Debug và test checklist
+
+### Debug từ ngoài vào trong
+
+Khi request không chạy, giữ một request có thể tái lập với variables/headers đã redaction rồi đi theo thứ tự:
+
+1. **Transport:** URL, port, context path, HTTP method, `Content-Type`, TLS, CORS, status và response body. Với WebSocket, kiểm tra `101`, negotiated subprotocol, `connection_init` và `connection_ack`.
+2. **Schema resource:** startup log, classpath location, extension, SDL parse/merge, root type và field. Kiểm tra introspection hoặc schema snapshot trong backend thật.
+3. **Operation validation:** `operationName`, query document, selection set, variables, argument name, enum/input và nullability. Lỗi `Cannot query field` thường chưa vào resolver.
+4. **Registration:** `@Controller`, component scan, annotation đúng root/nested, mapping name và duplicate registration. Log entry ở handler nếu cần; không log secret.
+5. **Context/security:** principal, tenant scope, request ID, deadline và DataLoader registry có được tạo đúng scope không. Không dùng variables làm bằng chứng quyền.
+6. **Service/data source:** invariant, transaction, query count, downstream URL/policy, timeout, retry và circuit state. Đọc trace thay vì đoán từ response shape.
+7. **Completion/error:** `errors.path`, `extensions.code`, nullability, null bubbling, serialization và HTTP status. Phân biệt `data` một phần với payload `userErrors`.
+8. **Async/subscription:** thread pool, reactive signal, backpressure, cancel, event source, broker lag và cleanup. Nếu reconnect, kiểm tra duplicate event và consumer cũ.
+
+Bảng định vị nhanh:
+
+| Dấu hiệu | Nghi ngờ đầu tiên | Bằng chứng |
+| --- | --- | --- |
+| `404`, `405`, connection refused | Route/transport/property | URL, method, port, proxy log |
+| `Cannot query field` | Schema/query validation | SDL, introspection, operation |
+| Handler không được gọi | Component scan/mapping | startup log, mapping registration |
+| `data` có `null` và `errors.path` | Execution/data source/nullability | trace, service log, schema wrapper |
+| Query chậm | N+1/complexity/downstream/blocking | resolver timing, DB calls, batch, thread |
+| Chỉ WebSocket lỗi | Upgrade/protocol/auth/cleanup | Network handshake, protocol message, proxy |
+| Memory tăng sau disconnect | Queue/Publisher/consumer leak | active operation, queue, cancel, cleanup metric |
+
+### Test theo từng lớp
+
+Đừng dùng một request thành công để kết luận toàn kiến trúc đúng. Bộ test production nên có các lớp sau:
+
+| Lớp test | Mục tiêu | Ví dụ kiểm tra |
+| --- | --- | --- |
+| SDL/schema contract | Contract và merge đúng | Root, field, input/output, nullability, duplicate, `extend type` |
+| Operation validation | Query của client còn hợp lệ | Variables, selection set, operation name, persisted operation |
+| Service/domain unit | Business rule độc lập GraphQL | Authorization, invariant, idempotency, error outcome |
+| Repository/gateway integration | Nguồn dữ liệu và policy nguồn | Query plan, timeout, tenant filter, mapping, constraint |
+| GraphQL mapping/slice | Controller được đăng ký đúng | Root/nested mapping, argument, `data`/`errors`, nullability |
+| Full HTTP integration | Boot + schema + handler thật | Endpoint, auth filter, serialization, status/body |
+| WebSocket integration | Connection và stream | Upgrade, protocol, ACK, subscribe, next, error, complete, cancel |
+| Failure/performance | Production behavior | Downstream timeout, partial data, N+1, batch, backpressure, shutdown |
+
+Trong backend thật, `@GraphQlTest`/`GraphQlTester` có thể là lựa chọn phù hợp cho mapping slice tùy version. Hãy kiểm tra test slice, bean filter và API của version đang dùng; một slice test không chứng minh transaction, broker, reverse proxy hoặc WebSocket deployment đúng. Test full context hoặc integration test mới kiểm tra các boundary đó.
+
+Subscription cần test riêng resolver, Publisher và transport:
+
+- event source phát event đúng tenant/principal;
+- Publisher nhận `complete`, `error` và cancel;
+- socket đóng giải phóng consumer/queue/registry;
+- subscriber chậm tuân policy bounded/drop/coalesce/disconnect;
+- reconnect không tạo stream cũ song song hoặc duplicate không xử lý;
+- token expiry/revocation kết thúc đúng operation/connection;
+- multi-instance nhận event theo fan-out/replay contract.
+
+### Checklist review production
+
+- [ ] SDL được review trước controller; schema resources hợp nhất thành một graph hợp lệ.
+- [ ] Mỗi type/field có owner, source dữ liệu, chi phí và policy quyền rõ.
+- [ ] `GraphQlSource`/runtime wiring không bị cấu hình trùng với auto-configuration ngoài chủ ý.
+- [ ] `@QueryMapping`, `@MutationMapping`, `@SubscriptionMapping` chỉ map root; nested field dùng mapping phù hợp.
+- [ ] Không nhầm operation name/alias với field schema hoặc method resolver.
+- [ ] HTTP endpoint dùng đúng property: Boot 3.5+ là `spring.graphql.http.path`, Boot 3.4 trở xuống là `spring.graphql.path`.
+- [ ] HTTP và WebSocket có route, auth, timeout, protocol và test riêng; annotation subscription không bị coi là enablement.
+- [ ] Context được server tạo từ credential đã xác minh; variables không được dùng trực tiếp làm authorization.
+- [ ] Structural validation, query complexity, business validation và data validation có owner riêng.
+- [ ] Resolver mỏng ở boundary; invariant, transaction, idempotency và resource authorization nằm ở service/domain.
+- [ ] Blocking call không chạy vô tình trên event-loop; executor/bounded queue/timeout đã được đo.
+- [ ] Transaction trả DTO/projection đã materialize; lazy loading không phụ thuộc vào session sau resolver.
+- [ ] DataLoader registry là request/execution-scoped, key có tenant scope và batch có giới hạn.
+- [ ] N+1 được đo bằng backend call/query count, không chỉ đo GraphQL duration.
+- [ ] Downstream có timeout, retry/circuit/bulkhead và error mapping phù hợp; không nuốt exception thành `null`.
+- [ ] Client đọc `data`, `errors`, `path`, metadata và HTTP status; code không parse message tự do.
+- [ ] Instrumentation có operation/hash, resolver/downstream timing, batch, error và subscription metrics với redaction.
+- [ ] Test có positive, negative, partial data, null bubbling, timeout, cancellation, reconnect và shutdown.
+- [ ] Mọi API/property trong code đã được kiểm tra theo Spring Boot/Spring for GraphQL version thật.
 
 ## Bước tiếp theo
 
-Sau khi trang được điền nội dung, đọc bài kế tiếp trong nhóm để tiếp tục lộ trình.
+- Ôn [Kiến trúc GraphQL](/docs/nen-tang/kien-truc-graphql) để phân biệt transport, schema, resolver, service và data source ở mức nền tảng.
+- Đọc [Thêm dependency và cấu hình](/docs/bat-dau/them-dependency-va-cau-hinh) để đặt starter, schema location và HTTP endpoint đúng version.
+- Xem [SDL và nguyên tắc thiết kế schema](/docs/schema-va-type-system/sdl-va-thiet-ke-schema) và [Tách schema theo module](/docs/schema-va-type-system/tach-schema-theo-module) trước khi mở rộng contract.
+- Thực hành [Viết query đầu tiên](/docs/bat-dau/viet-query-dau-tien), rồi đọc [Query, mutation và subscription mapping](/docs/tich-hop-spring-for-graphql/query-mutation-subscription-mapping) để nối root field với controller.
+- Đọc [Binding arguments và input](/docs/tich-hop-spring-for-graphql/binding-arguments-input) và [Schema mapping và nested field](/docs/tich-hop-spring-for-graphql/schema-mapping-va-nested-field) khi cần implementation detail.
+- Đọc [DataFetcher và GraphQL context](/docs/tich-hop-spring-for-graphql/datafetcher-va-graphql-context) cùng [Context, interceptor và request lifecycle](/docs/tich-hop-spring-for-graphql/context-interceptor-request-lifecycle) để chọn context/interceptor hook.
+- Khi làm mutation, xem [Mutation và input/payload](/docs/query-mutation-subscription/mutation-input-payload) và [Xử lý lỗi trong mutation](/docs/query-mutation-subscription/xu-ly-loi-trong-mutation).
+- Khi làm realtime, xem [Subscription và WebSocket](/docs/query-mutation-subscription/subscription-websocket) trước khi cấu hình WebSocket hoặc deployment.
+- Khi tối ưu data access, đi tiếp với [N+1 query](/docs/truy-cap-du-lieu-va-hieu-nang/n-plus-1-query) và [Batch loading và DataLoader](/docs/truy-cap-du-lieu-va-hieu-nang/batch-loading-va-dataloader).
+
+<Cards>
+  <Card title="Thêm dependency và cấu hình" href="/docs/bat-dau/them-dependency-va-cau-hinh" description="Nối starter, schema resources và HTTP endpoint của Spring Boot." />
+  <Card title="Query, mutation và subscription mapping" href="/docs/tich-hop-spring-for-graphql/query-mutation-subscription-mapping" description="Phân biệt root mapping, nested mapping và Publisher." />
+  <Card title="Subscription và WebSocket" href="/docs/query-mutation-subscription/subscription-websocket" description="Theo dõi protocol, connection lifecycle, auth và cleanup." />
+  <Card title="Batch loading và DataLoader" href="/docs/truy-cap-du-lieu-va-hieu-nang/batch-loading-va-dataloader" description="Giảm N+1 và đặt batch theo execution boundary." />
+</Cards>

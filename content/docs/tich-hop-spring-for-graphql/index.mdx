@@ -3,33 +3,237 @@ title: "Tích hợp Spring for GraphQL"
 description: "Cách ánh xạ schema GraphQL vào controller, service và lifecycle của Spring Boot."
 ---
 
-Đây là trang khung của nhóm **Tích hợp Spring for GraphQL** trong lộ trình học GraphQL với Spring Boot. Nội dung chi tiết sẽ được bổ sung theo từng bài bên dưới.
+Nhóm **Tích hợp Spring for GraphQL** giải thích cách một contract GraphQL trở thành phần có thể thực thi trong ứng dụng Spring Boot. Bạn sẽ đi từ schema đã được thiết kế, qua controller và data fetching, rồi đến service, repository hoặc event source phía sau. Trọng tâm của nhóm là boundary và trách nhiệm của từng lớp, không phải việc sao chép một resolver mà không hiểu luồng request.
 
-<Callout type="info" title="Trạng thái nội dung">
-Các bài trong nhóm hiện là placeholder. Hãy đi theo thứ tự sidebar để giữ mạch học đề xuất.
+<Callout type="info" title="Phạm vi và giả định">
+Nhóm này tập trung vào tích hợp framework: mapping, binding, context, data fetching, error handling, custom scalar/directive và request lifecycle. Contract GraphQL vẫn thuộc nhóm [Schema và type system](/docs/schema-va-type-system), còn cách client viết query, mutation và subscription thuộc nhóm [Query, mutation và subscription](/docs/query-mutation-subscription). Repository hiện là docs-only, không có backend Spring Boot runnable; các SDL, Java fragment, route và response trong bài là ví dụ tĩnh. Khi áp dụng vào project thật, hãy đối chiếu version Spring Boot/Spring for GraphQL, schema đang nạp và web stack.
 </Callout>
 
 ## Mục lục
 
-- [Phạm vi dự kiến](#phạm-vi-dự-kiến)
-- [Các bài trong nhóm](#các-bài-trong-nhóm)
+- [Trang này dành cho ai](#trang-này-dành-cho-ai)
+- [Điều kiện tiên quyết](#điều-kiện-tiên-quyết)
+- [Mục tiêu học tập](#mục-tiêu-học-tập)
+- [Ranh giới của nhóm](#ranh-giới-của-nhóm)
+  - [Phần nhóm này chịu trách nhiệm](#phần-nhóm-này-chịu-trách-nhiệm)
+  - [Phần nhóm này không thay thế](#phần-nhóm-này-không-thay-thế)
+- [Mental model luồng xử lý](#mental-model-luồng-xử-lý)
+  - [Từ GraphQL operation đến controller](#từ-graphql-operation-đến-controller)
+  - [Từ data fetching đến service và repository](#từ-data-fetching-đến-service-và-repository)
+  - [Route và transport là boundary riêng](#route-và-transport-là-boundary-riêng)
+- [Thứ tự học đề xuất](#thứ-tự-học-đề-xuất)
+- [Kết quả đầu ra](#kết-quả-đầu-ra)
+- [Cách học khi repository không có backend](#cách-học-khi-repository-không-có-backend)
+- [Tự kiểm tra](#tự-kiểm-tra)
 - [Bước tiếp theo](#bước-tiếp-theo)
 
-## Phạm vi dự kiến
+## Trang này dành cho ai
 
-Tập trung vào API của Spring for GraphQL: annotation mapping, data fetching, context, interceptor và error handling.
+Trang này phù hợp với:
 
-## Các bài trong nhóm
+- Người đã biết schema là contract, hiểu root operation, selection set, variables và execution result.
+- Java/Spring developer muốn biết `@QueryMapping`, `@MutationMapping`, `@SubscriptionMapping` và `@SchemaMapping` nối vào GraphQL runtime ra sao.
+- Người review controller hoặc resolver và cần phân biệt logic mapping với validation, authorization, transaction và data access.
+- Người muốn chuẩn bị cho các chủ đề nâng cao như context theo request, xử lý lỗi tập trung, subscription stream hoặc interceptor.
 
-- [Kiến trúc Spring for GraphQL](/docs/tich-hop-spring-for-graphql/kien-truc-spring-for-graphql) — Giải thích các lớp chính của Spring for GraphQL và luồng xử lý một request trong Spring Boot.
-- [`@QueryMapping`, `@MutationMapping`, `@SubscriptionMapping`](/docs/tich-hop-spring-for-graphql/query-mutation-subscription-mapping) — Ánh xạ ba loại operation vào method của controller và chọn annotation phù hợp.
-- [Binding arguments và input](/docs/tich-hop-spring-for-graphql/binding-arguments-input) — Bind argument, input object, variables và kiểu Java trong method resolver.
-- [`@SchemaMapping` và nested field](/docs/tich-hop-spring-for-graphql/schema-mapping-va-nested-field) — Resolve nested field và liên kết field trong schema với method hoặc service tương ứng.
-- [DataFetcher và GraphQL context](/docs/tich-hop-spring-for-graphql/datafetcher-va-graphql-context) — Dùng DataFetcher, local context và request context khi resolver cần thêm thông tin runtime.
-- [Xử lý lỗi tập trung](/docs/tich-hop-spring-for-graphql/xu-ly-loi-tap-trung) — Chuẩn hóa GraphQLError, exception resolver và error response trong ứng dụng Spring.
-- [Custom scalar và directive](/docs/tich-hop-spring-for-graphql/custom-scalar-va-directive) — Đăng ký kiểu scalar riêng và áp dụng directive để bổ sung quy tắc cho schema.
-- [Context, interceptor và request lifecycle](/docs/tich-hop-spring-for-graphql/context-interceptor-request-lifecycle) — Theo dõi lifecycle request, truyền metadata và chèn logic dùng chung bằng interceptor.
+Nếu GraphQL còn mới, hãy bắt đầu từ [GraphQL là gì?](/docs/nen-tang/graphql-la-gi), [Mô hình request/response](/docs/nen-tang/mo-hinh-request-response) và [Bắt đầu](/docs/bat-dau). Nếu đã có schema và một project Spring Boot, bạn có thể dùng trang này như bản đồ trước khi đọc từng bài chuyên đề.
+
+## Điều kiện tiên quyết
+
+Bạn nên có các nền tảng sau trước khi đi vào tích hợp:
+
+- **GraphQL:** đọc được SDL, biết output object khác input object, hiểu nullability và biết object hoặc list object cần selection set. Có thể ôn [SDL và nguyên tắc thiết kế schema](/docs/schema-va-type-system/sdl-va-thiet-ke-schema), [Scalar, object và field](/docs/schema-va-type-system/scalar-object-field) và [List và nullable](/docs/schema-va-type-system/list-va-nullable).
+- **Operation:** phân biệt `query`, `mutation` và `subscription`; hiểu operation name, argument, variable và selection set. Nếu còn lẫn `$variable` với tên argument, đọc [Variables, arguments và fragments](/docs/query-mutation-subscription/variables-arguments-fragments).
+- **Java và Spring:** biết class, method, interface, dependency injection và vai trò khái quát của `@Controller`, service, repository. Không cần biết trước GraphQL Java hoặc Reactor; các thuật ngữ đó sẽ được giới thiệu trong từng bài.
+- **HTTP cơ bản:** biết một request GraphQL thường đi qua route `/graphql` khi ứng dụng cấu hình route đó, còn GraphiQL là giao diện riêng. [Thêm dependency và cấu hình](/docs/bat-dau/them-dependency-va-cau-hinh) cung cấp bối cảnh về endpoint và schema location.
+- **Version awareness:** xác định version Spring Boot/Spring for GraphQL của project trước khi sao chép API, property hoặc import. Cùng một ý tưởng có thể có tên hook hoặc cấu hình khác giữa các version.
+
+Không cần backend runnable để đọc mental model. Nhưng muốn xác nhận startup, mapping, response, WebSocket hoặc transaction, bạn phải kiểm tra trong một project Spring Boot thật.
+
+## Mục tiêu học tập
+
+Sau khi hoàn thành nhóm này, bạn có thể:
+
+- Theo dõi một operation từ schema và execution engine đến method trong Spring controller.
+- Chọn annotation mapping theo vị trí của field: root `Query`, `Mutation`, `Subscription` hay nested field trên một output type.
+- Giải thích `@Argument` bind named argument như thế nào, và vì sao tên variable trong operation không thay thế tên argument trong SDL.
+- Đặt data fetching ở đúng boundary: controller điều phối, service giữ quy tắc nghiệp vụ, repository hoặc event source cung cấp dữ liệu.
+- Sử dụng context server tạo cho principal, tenant, correlation ID hoặc metadata runtime thay vì tin dữ liệu quyền do client gửi.
+- Phân biệt lỗi parse/validation/coercion, lỗi binding, lỗi nghiệp vụ và lỗi execution; chọn payload error hoặc GraphQL `errors` có chủ đích.
+- Nhận biết custom scalar/directive và interceptor là phần mở rộng cần wiring, không tự có hiệu lực chỉ vì đã xuất hiện trong SDL hoặc annotation.
+- Đọc request lifecycle, cancellation và cleanup như một chuỗi boundary riêng, đặc biệt với subscription và transport dài hạn.
+
+## Ranh giới của nhóm
+
+### Phần nhóm này chịu trách nhiệm
+
+Nhóm này trả lời câu hỏi: **Sau khi contract đã tồn tại, Spring for GraphQL nối và thực thi contract đó như thế nào?** Các chủ đề chính gồm:
+
+- schema resource được nạp thành executable schema và được wiring với data fetcher;
+- controller method được phát hiện, đăng ký và map vào cặp `type + field`;
+- argument, input object, context và kiểu trả về đi qua resolver;
+- nested field, `DataFetcher`, `Publisher`, exception resolver và error response được đặt vào đúng lớp;
+- scalar/directive, interceptor và lifecycle được cấu hình theo version cùng web stack phù hợp.
+
+Đây là cách nhìn theo trách nhiệm. Một method ngắn không có nghĩa framework đã làm thay service, repository, authorization hoặc transaction.
+
+### Phần nhóm này không thay thế
+
+- [Schema và type system](/docs/schema-va-type-system) quyết định type, field, input/output, enum, list, nullability, ownership và tiến hóa contract.
+- [Query, mutation và subscription](/docs/query-mutation-subscription) quyết định client chọn field ra sao, dùng variables/arguments thế nào, thiết kế payload, pagination, filtering và protocol ở mức operation.
+- [Truy cập dữ liệu và hiệu năng](/docs/truy-cap-du-lieu-va-hieu-nang) đi sâu vào JPA, transaction boundary, batching, DataLoader, N+1 và chiến lược data layer.
+- Nhóm bảo mật và vận hành quyết định policy authentication, authorization, rate limit, logging, metrics và deployment. Controller hoặc interceptor chỉ là một điểm tích hợp vào các policy đó.
+
+Vì vậy, `@QueryMapping` không tạo thêm field chưa có trong SDL, `@MutationMapping` không tự mở transaction, và `@SubscriptionMapping` không tự mở WebSocket. Giữ các ranh giới này rõ giúp code dễ review và dễ thay đổi hơn.
+
+## Mental model luồng xử lý
+
+Hãy dùng sơ đồ chữ dưới đây như bản đồ đọc các bài trong nhóm:
+
+```text
+Client
+  operation + variables + selection set
+                  │
+                  ▼
+GraphQL schema và execution
+  parse • validate • coerce • chọn field
+                  │
+                  ▼
+Spring for GraphQL controller
+  mapping • argument binding • context
+                  │
+                  ▼
+Data fetching
+  DataFetcher • nested resolver • Publisher
+                  │
+                  ▼
+Service / use case
+  validation • authorization • transaction policy
+                  │
+                  ▼
+Repository / external source / event source
+                  │
+                  ▼
+Execution result: data + errors (+ extensions)
+```
+
+Mỗi request không nhất thiết đi qua đúng một method hoặc đúng một lời gọi database. Selection set quyết định field nào cần hoàn tất; nested field có thể tạo thêm data fetching. Sơ đồ chỉ biểu diễn hướng trách nhiệm, không phải cam kết về số lần gọi, thứ tự tối ưu hoặc transaction thực tế.
+
+### Từ GraphQL operation đến controller
+
+Spring for GraphQL map theo field trong schema, không map theo operation name hoặc alias của client:
+
+| Field trong schema | Annotation thường dùng | Ý nghĩa ở controller |
+| --- | --- | --- |
+| `Query.book` | `@QueryMapping` | Điểm vào cho thao tác đọc. |
+| `Mutation.createBook` | `@MutationMapping` | Điểm vào cho use case thay đổi trạng thái. |
+| `Subscription.bookAdded` | `@SubscriptionMapping` | Điểm vào tạo hoặc trả về stream sự kiện. |
+| `Book.author` | `@SchemaMapping` | Field nested cần source object `Book` hoặc logic riêng. |
+
+Một fragment root mapping có thể trông như sau:
+
+```java
+@Controller
+public class CatalogController {
+
+    @QueryMapping
+    public Book book(@Argument("id") String id) {
+        return catalogService.findById(id);
+    }
+}
+```
+
+`@Argument("id")` đọc argument GraphQL tên `id` sau khi GraphQL đã kiểm tra và coerce input. Nếu operation khai báo `$bookId` rồi gọi `book(id: $bookId)`, `$bookId` là tên variable còn `id` mới là tên argument. Tương tự, alias như `primary: book(...)` chỉ đổi response key; mapping vẫn là `Query.book`.
+
+### Từ data fetching đến service và repository
+
+**Data fetching** là công việc lấy hoặc tính giá trị cho một field trong execution. Spring có thể dùng property/default fetcher cho dữ liệu đơn giản, hoặc gọi method được map tường minh khi field cần service riêng, authorization, batching hay chuyển đổi dữ liệu.
+
+Một boundary dễ giữ là:
+
+- **Controller/resolver:** nhận input đã bind, lấy context cần thiết và gọi use case.
+- **Service/application layer:** giữ invariant, authorization, transaction, idempotency và chính sách retry.
+- **Repository/data source:** đọc hoặc ghi nguồn dữ liệu; không nên làm lộ chi tiết persistence vào schema.
+- **Event source:** phát dữ liệu cho `Publisher` khi subscription cần stream; phải có policy về cancellation, backpressure và cleanup.
+
+`GraphQLContext` là nơi server có thể đặt principal đã xác thực, tenant đã xác định, correlation ID hoặc deadline. Client không thể tự cấp quyền bằng cách gửi một key tương tự trong variables. Khi resolver cần thông tin runtime, hãy lần theo [DataFetcher và GraphQL context](/docs/tich-hop-spring-for-graphql/datafetcher-va-graphql-context) và [Context, interceptor và request lifecycle](/docs/tich-hop-spring-for-graphql/context-interceptor-request-lifecycle).
+
+### Route và transport là boundary riêng
+
+Nhiều query và mutation có thể đi qua cùng một GraphQL HTTP route, thường là `/graphql` nếu project cấu hình như vậy. Tên method Java, operation name và alias không trở thành URL riêng. Đây là khác biệt quan trọng so với controller REST.
+
+Subscription còn có transport riêng. `@SubscriptionMapping` chỉ nối root field với `Publisher`; nó không tự bật endpoint WebSocket, không tự tạo broker và không đảm bảo reconnect. HTTP, WebSocket hoặc SSE, handshake, protocol, proxy và timeout cần được cấu hình và kiểm thử ở boundary transport. Xem [Subscription và WebSocket](/docs/query-mutation-subscription/subscription-websocket) trước khi công bố delivery guarantee.
+
+## Thứ tự học đề xuất
+
+Đọc theo đúng thứ tự dưới đây. Mỗi bài thêm một boundary mới, từ cách framework dựng runtime đến lifecycle của request:
+
+| Bước | Bài | Câu hỏi cần trả lời trước khi chuyển bài |
+| --- | --- | --- |
+| 1 | [Kiến trúc Spring for GraphQL](/docs/tich-hop-spring-for-graphql/kien-truc-spring-for-graphql) | Schema, execution engine, controller, service và data source nối với nhau ở đâu? |
+| 2 | [`@QueryMapping`, `@MutationMapping`, `@SubscriptionMapping`](/docs/tich-hop-spring-for-graphql/query-mutation-subscription-mapping) | Root field nào dùng annotation nào, và annotation không làm thay việc gì? |
+| 3 | [Binding arguments và input](/docs/tich-hop-spring-for-graphql/binding-arguments-input) | Argument, variables, input object, enum và omitted/null được bind vào Java ra sao? |
+| 4 | [`@SchemaMapping` và nested field](/docs/tich-hop-spring-for-graphql/schema-mapping-va-nested-field) | Khi nào property mặc định đủ, khi nào cần source object và resolver nested riêng? |
+| 5 | [DataFetcher và GraphQL context](/docs/tich-hop-spring-for-graphql/datafetcher-va-graphql-context) | DataFetcher lấy dữ liệu thế nào và context runtime đi qua execution ra sao? |
+| 6 | [Xử lý lỗi tập trung](/docs/tich-hop-spring-for-graphql/xu-ly-loi-tap-trung) | Lỗi request, lỗi nghiệp vụ và lỗi execution được phân loại, làm sạch và trả về thế nào? |
+| 7 | [Custom scalar và directive](/docs/tich-hop-spring-for-graphql/custom-scalar-va-directive) | Kiểu scalar hoặc directive riêng cần implementation và wiring nào ngoài SDL? |
+| 8 | [Context, interceptor và request lifecycle](/docs/tich-hop-spring-for-graphql/context-interceptor-request-lifecycle) | Metadata, authentication, cancellation, cleanup và hook lifecycle được đặt ở đâu? |
+
+Bài mapping operation ở bước 2 là cầu nối thực hành chính. Sau khi hiểu root mapping, hãy đi qua binding và nested field trước khi chuyển sang context, error contract, scalar/directive rồi interceptor. Thứ tự này giúp tránh xử lý một lỗi lifecycle trong controller khi nguyên nhân thực tế là schema hoặc binding.
+
+## Kết quả đầu ra
+
+Sau khi đọc xong, bạn nên có thể tạo một bản review tĩnh cho một resolver Spring for GraphQL:
+
+- Vẽ lại được đường đi `GraphQL operation → controller/data fetching → service → repository hoặc event source` bằng lời, không cần dựa vào tên package.
+- Đối chiếu một field trong SDL với đúng annotation và tên argument; nhận ra mapping trùng, mapping theo alias hoặc mapping nhầm root với nested field.
+- Nêu được kiểu Java và nullability GraphQL nào phải được bảo đảm ở service/resolver, đặc biệt với list và `Publisher`.
+- Xác định dữ liệu nào nên nằm trong `GraphQLContext`, dữ liệu nào là input client và nơi kiểm tra authorization.
+- Chọn được boundary cho payload error, top-level GraphQL `errors`, exception resolver và log nội bộ mà không làm lộ stack trace hoặc secret.
+- Biết custom scalar/directive cần đăng ký ở runtime, còn interceptor cần được gắn vào lifecycle phù hợp với version.
+- Viết được checklist kiểm tra route `/graphql`, schema location, component scan, transport subscription và cleanup mà không tuyên bố framework đã chạy khi chưa có backend.
+
+## Cách học khi repository không có backend
+
+Các ví dụ trong nhóm nên được đọc như contract giữa các lớp, không như log runtime đã xác nhận. Một quy trình học tĩnh hữu ích là:
+
+1. **Đọc contract trước.** Mở SDL và operation liên quan trong nhóm [Schema và type system](/docs/schema-va-type-system) hoặc [Query, mutation và subscription](/docs/query-mutation-subscription). Ghi lại root field, argument, output type, nullability và selection set.
+2. **Đánh dấu điểm mapping.** Tìm annotation tương ứng, tên field GraphQL, tham số `@Argument` và kiểu source của nested field. Không đổi tên chỉ để làm snippet ngắn hơn.
+3. **Lần theo boundary phía sau.** Ghi rõ việc nào thuộc controller, service, repository, event source, context hoặc error resolver. Nếu một đoạn code dường như làm tất cả, đó là tín hiệu cần review.
+4. **Đối chiếu version khi triển khai.** Dùng project thật để kiểm tra import, property, reactive adapter, WebSocket handler và hook interceptor. Có thể bắt đầu từ [Khởi tạo project Spring Boot](/docs/bat-dau/khoi-tao-spring-boot), nhưng không coi tài liệu này là backend chạy sẵn.
+
+<Callout type="warn" title="Không suy ra runtime từ snippet">
+Một Java fragment đúng cú pháp vẫn có thể thiếu bean, schema location, component scan, security context hoặc transport config. Response JSON trong các bài chỉ minh họa shape. Hãy chỉ kết luận mapping, startup, số lần fetch, transaction hoặc WebSocket hoạt động sau khi có test trong backend tương ứng.
+</Callout>
+
+## Tự kiểm tra
+
+Trước khi chuyển sang nhóm truy cập dữ liệu hoặc bảo mật, hãy tự trả lời:
+
+- Tôi có phân biệt được schema contract với framework integration, và biết khi nào phải quay lại nhóm [Schema và type system](/docs/schema-va-type-system) không?
+- Với `Query.book`, `Mutation.createBook`, `Subscription.bookAdded` và `Book.author`, tôi có chọn đúng `@QueryMapping`, `@MutationMapping`, `@SubscriptionMapping` hoặc `@SchemaMapping` không?
+- Tôi có giải thích được vì sao `@Argument("id")` dùng `id` dù operation truyền giá trị từ `$bookId` không?
+- Tôi có biết alias và operation name không tạo ra mapping hoặc route mới không?
+- Tôi có phân biệt được property fetcher, `DataFetcher`, nested resolver, service và repository không?
+- Tôi có biết `GraphQLContext` phải được server tạo từ credential đã xác thực, thay vì lấy `tenantId` trong variables làm quyền không?
+- Tôi có phân loại được lỗi validation/coercion, binding, business và execution; đồng thời đọc cả `data` lẫn `errors` không?
+- Tôi có giải thích được vì sao khai báo custom scalar/directive hoặc `@SubscriptionMapping` chưa đủ để runtime có implementation/transport không?
+- Tôi có biết lúc nào request kết thúc, lúc nào subscription bị cancel, và resource nào phải cleanup không?
+- Tôi có kiểm tra route `/graphql`, version, web stack và config trước khi kết luận một ví dụ chạy được không?
+
+Nếu chưa trả lời được câu nào, quay lại bước tương ứng trong bảng thứ tự học. Mục tiêu của nhóm là giúp bạn đặt mỗi quyết định vào đúng lớp, không phải ghi nhớ một danh sách annotation rời rạc.
 
 ## Bước tiếp theo
 
-Bắt đầu từ bài đầu tiên của nhóm hoặc yêu cầu viết chi tiết một trang cụ thể bằng skill `fumadocs-technical-writer`.
+- Nếu contract chưa rõ, đọc [Schema và type system](/docs/schema-va-type-system) rồi [Query, mutation và subscription](/docs/query-mutation-subscription).
+- Nếu project chưa có nền Spring Boot, đi qua [Bắt đầu](/docs/bat-dau), đặc biệt [Thêm dependency và cấu hình](/docs/bat-dau/them-dependency-va-cau-hinh) trước khi áp dụng mapping.
+- Nếu resolver đã có nhưng truy vấn chậm hoặc tạo N+1, chuyển sang [Truy cập dữ liệu và hiệu năng](/docs/truy-cap-du-lieu-va-hieu-nang).
+- Nếu cần bảo vệ field, principal hoặc correlation metadata, đọc [Bảo mật và quan sát](/docs/bao-mat-va-quan-sat) cùng các bài context/interceptor trong bảng trên.
+- Khi cần triển khai realtime, đọc [Subscription và WebSocket](/docs/query-mutation-subscription/subscription-websocket) trước khi cấu hình transport.
+
+<Cards>
+  <Card title="Schema và type system" href="/docs/schema-va-type-system" description="Chốt contract, type, input/output, nullability và ownership trước khi map resolver." />
+  <Card title="Query, mutation và subscription" href="/docs/query-mutation-subscription" description="Đọc operation, variables, payload, lỗi và subscription ở lớp GraphQL." />
+  <Card title="Truy cập dữ liệu và hiệu năng" href="/docs/truy-cap-du-lieu-va-hieu-nang" description="Nối resolver với repository, batching, transaction và chiến lược data layer." />
+  <Card title="Bảo mật và quan sát" href="/docs/bao-mat-va-quan-sat" description="Đặt authentication, authorization, logging, tracing và metrics vào hệ thống." />
+</Cards>

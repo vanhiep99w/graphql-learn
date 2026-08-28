@@ -1,23 +1,1332 @@
 ---
-title: "Binding arguments và input"
-description: "Bind argument, input object, variables và kiểu Java trong method resolver."
+title: "Binding arguments và input trong Spring for GraphQL"
+description: "Hiểu pipeline coercion, variables và cách bind argument, input object vào resolver Java một cách an toàn."
 ---
 
-Trang này sẽ trình bày **Binding arguments và input** trong bối cảnh xây dựng GraphQL API với Spring Boot.
+import { Accordion, Accordions } from 'fumadocs-ui/components/accordion';
+import { Step, Steps } from 'fumadocs-ui/components/steps';
+
+Trong Spring for GraphQL, controller không nhận trực tiếp JSON body của HTTP request. GraphQL trước hết đọc operation, đối chiếu operation với schema, **coerce** (chuẩn hóa và kiểm tra) variables/literal theo kiểu GraphQL, rồi Spring mới bind argument đã hợp lệ vào tham số Java. Sau đó service mới thực hiện validation nghiệp vụ, authorization và transaction nếu use case cần.
+
+Trang này tập trung vào input đi **vào** resolver. SDL, query, variables JSON, Java và response dùng chung domain catalog sách để có thể đối chiếu từng tên. Mọi đoạn Java và mọi response đều là ví dụ tĩnh; repository tài liệu này không có backend Spring Boot tương ứng để tuyên bố chữ ký hoặc mapping đã chạy runtime.
+
+<Callout type="info" title="Nguồn contract">
+  SDL là nguồn contract của GraphQL. `@Argument`, record, class hoặc `List` của Java không tự tạo field, không đổi kiểu GraphQL và không nới lỏng nullability. Khi áp dụng vào project thật, đối chiếu version Spring for GraphQL, schema đã nạp và test controller/integration tương ứng.
+</Callout>
 
 ## Mục lục
 
-- [Nội dung dự kiến](#nội-dung-dự-kiến)
+- [Bức tranh tổng thể](#bức-tranh-tổng-thể)
+  - [Pipeline từ request tới service](#pipeline-từ-request-tới-service)
+  - [Ba lớp tên cần tách](#ba-lớp-tên-cần-tách)
+- [Bộ ví dụ nhất quán](#bộ-ví-dụ-nhất-quán)
+  - [SDL cho catalog sách](#sdl-cho-catalog-sách)
+  - [Operation query và mutation](#operation-query-và-mutation)
+  - [Variables JSON](#variables-json)
+  - [Controller và DTO Java](#controller-và-dto-java)
+  - [Response thành công và lỗi nghiệp vụ](#response-thành-công-và-lỗi-nghiệp-vụ)
+- [Pipeline GraphQL trước controller](#pipeline-graphql-trước-controller)
+  - [Parse và validation document](#parse-và-validation-document)
+  - [Coercion variables và literal](#coercion-variables-và-literal)
+  - [Binding của Spring sau coercion](#binding-của-spring-sau-coercion)
+- [Annotation Argument và các kiểu input](#annotation-argument-và-các-kiểu-input)
+  - [Argument trực tiếp cho scalar](#argument-trực-tiếp-cho-scalar)
+  - [Tên argument không phải tên variable](#tên-argument-không-phải-tên-variable)
+  - [List và non null](#list-và-non-null)
+  - [Input object lồng nhau](#input-object-lồng-nhau)
+  - [DTO record class và entity](#dto-record-class-và-entity)
+- [Variables default missing và null](#variables-default-missing-và-null)
+  - [Default ở operation schema và input field](#default-ở-operation-schema-và-input-field)
+  - [Bảng trạng thái thường gặp](#bảng-trạng-thái-thường-gặp)
+  - [Khi nào dùng ArgumentValue](#khi-nào-dùng-argumentvalue)
+  - [Khi nào dùng raw environment](#khi-nào-dùng-raw-environment)
+- [Các lớp validation và lỗi](#các-lớp-validation-và-lỗi)
+  - [GraphQL validation khác Bean Validation](#graphql-validation-khác-bean-validation)
+  - [Unknown field argument và enum](#unknown-field-argument-và-enum)
+  - [Custom scalar date và time](#custom-scalar-date-và-time)
+  - [Coercion error trước resolver](#coercion-error-trước-resolver)
+- [Java type không đổi GraphQL contract](#java-type-không-đổi-graphql-contract)
+  - [Bảng mapping tham khảo](#bảng-mapping-tham-khảo)
+  - [Những suy luận không an toàn](#những-suy-luận-không-an-toàn)
+- [Security allowlist và logging](#security-allowlist-và-logging)
+  - [Authorization và tenant](#authorization-và-tenant)
+  - [Allowlist và giới hạn kích thước](#allowlist-và-giới-hạn-kích-thước)
+  - [Logging dữ liệu nhạy cảm](#logging-dữ-liệu-nhạy-cảm)
+- [Service boundary và transaction](#service-boundary-và-transaction)
+  - [Resolver là adapter mỏng](#resolver-là-adapter-mỏng)
+  - [Transaction không đến từ MutationMapping](#transaction-không-đến-từ-mutationmapping)
+- [Naming và tiến hóa input](#naming-và-tiến-hóa-input)
+  - [Quy ước đặt tên](#quy-ước-đặt-tên)
+  - [Thay đổi tương thích ngược](#thay-đổi-tương-thích-ngược)
+- [Quy trình triển khai mapping](#quy-trình-triển-khai-mapping)
+- [Checklist review binding](#checklist-review-binding)
+- [Câu hỏi thường gặp](#câu-hỏi-thường-gặp)
 - [Bước tiếp theo](#bước-tiếp-theo)
 
-## Nội dung dự kiến
+## Bức tranh tổng thể
 
-Nội dung chi tiết sẽ bao gồm khái niệm chính, ví dụ code và các lưu ý thực hành liên quan đến chủ đề này.
+Một input đi qua nhiều ranh giới. Hãy phân biệt những ranh giới này trước khi sửa chữ ký method:
 
-<Callout type="info" title="Trang placeholder">
-Đây là trang khung. Hãy dùng skill `fumadocs-technical-writer` để viết đầy đủ trang này trong bước tiếp theo.
-</Callout>
+```text
+HTTP body và security policy
+          │ JSON envelope, authentication, rate limit
+          ▼
+GraphQL document
+          │ parse + validate field, argument, selection và variable usage
+          ▼
+GraphQL input coercion
+          │ scalar, enum, list, input object, default và non-null
+          ▼
+Spring argument binding
+          │ map giá trị đã coerce vào record/class/collection Java
+          ▼
+@QueryMapping hoặc @MutationMapping
+          │ controller gọi use case
+          ▼
+Service/domain
+          │ Bean Validation bổ sung, invariant, authorization, tenant, transaction
+          ▼
+GraphQL execution result
+          │ data, errors và nullability của response
+```
+
+Controller chỉ nằm ở giữa pipeline. Nếu document gọi sai field hoặc variables không đúng kiểu, method controller thường chưa được gọi. Nếu input đúng contract nhưng title chỉ chứa khoảng trắng, GraphQL vẫn có thể chuyển request tới controller; service hoặc Bean Validation mới quyết định có chấp nhận hay không.
+
+### Pipeline từ request tới service
+
+Có thể nhớ pipeline bằng các câu hỏi sau:
+
+1. **Transport có nhận được request không?** Body JSON hỏng, route sai, authentication ở gateway hoặc rate limit có thể dừng request trước GraphQL.
+2. **Document có đúng schema không?** Field, argument, selection set và variable usage phải hợp lệ.
+3. **Giá trị có đúng kiểu không?** GraphQL kiểm tra scalar, enum, list, input object, custom scalar và nullability.
+4. **Spring có tạo được object Java không?** GraphQL đã kiểm tra contract GraphQL, nhưng binder vẫn phải tạo record/class và map property.
+5. **Domain có chấp nhận giá trị không?** `String!` không cấm whitespace; `Int` không biết giới hạn nghiệp vụ; `ID!` không cấp quyền.
+6. **Side effect có ranh giới nào?** Mutation không tự mở transaction, không tự deduplicate và không tự bảo đảm retry an toàn.
+
+Nói ngắn gọn: GraphQL bảo vệ **hình dạng và kiểu của API**, còn service bảo vệ **ý nghĩa và invariant của domain**.
+
+### Ba lớp tên cần tách
+
+Xét operation detail sau:
+
+```graphql
+query BookDetail($bookId: ID!) {
+  book(id: $bookId) {
+    id
+    title
+  }
+}
+```
+
+Có ba tên khác nhau:
+
+| Vị trí | Tên | Vai trò |
+| --- | --- | --- |
+| Variable definition | `$bookId` | Tên variable trong operation. |
+| JSON variables | `bookId` | Key runtime, không có dấu `$`. |
+| Field argument | `id` | Tên argument mà SDL và `@Argument("id")` sử dụng. |
+
+Spring không bind `@Argument("bookId")` chỉ vì variable tên `$bookId`. GraphQL dùng variable để tính ra giá trị của argument `id`, rồi Spring bind argument `id` vào method. Alias hoặc operation name cũng không ảnh hưởng tên argument.
+
+## Bộ ví dụ nhất quán
+
+Các phần dưới đây dùng một SDL độc lập. SDL mô tả contract; nó không tạo database, service, custom scalar implementation hoặc response runtime.
+
+### SDL cho catalog sách
+
+```graphql title="schema.graphqls"
+scalar Date
+
+schema {
+  query: Query
+  mutation: Mutation
+}
+
+type Query {
+  book(id: ID!): Book
+  books(ids: [ID!]!, includeArchived: Boolean = false): [Book!]!
+}
+
+type Mutation {
+  createBook(input: CreateBookInput!): CreateBookPayload!
+}
+
+input CreateBookInput {
+  title: String!
+  author: AuthorInput!
+  publishedOn: Date
+  format: BookFormat! = PAPERBACK
+  tags: [String!]! = []
+}
+
+input AuthorInput {
+  name: String!
+  organization: String
+}
+
+enum BookFormat {
+  PAPERBACK
+  HARDCOVER
+  EBOOK
+}
+
+type CreateBookPayload {
+  book: Book
+  errors: [CreateBookError!]!
+}
+
+type CreateBookError {
+  code: CreateBookErrorCode!
+  message: String!
+  inputPath: [String!]!
+}
+
+enum CreateBookErrorCode {
+  TITLE_BLANK
+  AUTHOR_NAME_BLANK
+  PUBLISHED_ON_TOO_EARLY
+  DUPLICATE_BOOK
+  NOT_AUTHORIZED
+}
+
+type Book {
+  id: ID!
+  title: String!
+  author: Author!
+  publishedOn: Date
+  format: BookFormat!
+  tags: [String!]!
+  archived: Boolean!
+}
+
+type Author {
+  name: String!
+  organization: String
+}
+```
+
+Một vài cam kết đáng chú ý:
+
+- `book(id: ID!)` nhận một argument scalar trực tiếp. Field `book` nullable để biểu diễn trường hợp không có sách nếu domain chọn semantics đó.
+- `books(ids: [ID!]!, includeArchived: Boolean = false)` nhận một list ID bắt buộc và một cờ có default. Bản thân list không được `null`; từng ID cũng không được `null`.
+- `CreateBookInput` là input object, khác với output `Book`. `author` là input object lồng nhau.
+- `format` có default `PAPERBACK`. Gửi `format: null` vẫn sai vì kiểu là `BookFormat!`.
+- `tags` có kiểu `[String!]!` và default `[]`. Bỏ qua field dùng list rỗng; nếu có field thì từng tag phải là String khác `null`.
+- `Date` là custom scalar. Việc nó nhận `2025-02-14` và bind vào `LocalDate` cần một scalar implementation được đăng ký riêng.
+- `tenantId` không nằm trong input minh họa. Tenant nên được suy ra từ security context; nếu use case quản trị thật sự cho phép chọn tenant, service vẫn phải kiểm tra quyền chéo tenant.
+
+### Operation query và mutation
+
+Query sau minh họa argument trực tiếp, list và variable default. Nó dùng đúng các field đã có trong SDL:
+
+```graphql title="CatalogPage.graphql"
+query CatalogPage(
+  $bookId: ID!
+  $ids: [ID!]!
+  $includeArchived: Boolean = false
+) {
+  book(id: $bookId) {
+    id
+    title
+    author {
+      name
+      organization
+    }
+    publishedOn
+    format
+    tags
+    archived
+  }
+  books(ids: $ids, includeArchived: $includeArchived) {
+    id
+    title
+    format
+    archived
+  }
+}
+```
+
+Mutation sau dùng một input object lồng nhau và chọn payload. `input` là argument của field `createBook`; `$input` là variable của operation:
+
+```graphql title="CreateBook.graphql"
+mutation CreateBook($input: CreateBookInput!) {
+  createBook(input: $input) {
+    book {
+      id
+      title
+      author {
+        name
+        organization
+      }
+      publishedOn
+      format
+      tags
+      archived
+    }
+    errors {
+      code
+      message
+      inputPath
+    }
+  }
+}
+```
+
+`createBook` trả về `CreateBookPayload!`, là output object. Vì vậy mutation phải có selection set. Ngược lại, `CreateBookInput` chỉ đi vào server; client không viết selection set trên input object.
+
+### Variables JSON
+
+Variables cho `CatalogPage` có key không có dấu `$` và list JSON đúng shape:
+
+```json title="Variables của CatalogPage"
+{
+  "bookId": "book-1",
+  "ids": ["book-1", "book-3"],
+  "includeArchived": false
+}
+```
+
+Variables cho `CreateBook` khớp với `CreateBookInput` ở SDL:
+
+```json title="Variables của CreateBook"
+{
+  "input": {
+    "title": "GraphQL in Action",
+    "author": {
+      "name": "Samer Buna",
+      "organization": "Independent"
+    },
+    "publishedOn": "2025-02-14",
+    "format": "HARDCOVER",
+    "tags": ["graphql", "spring"]
+  }
+}
+```
+
+Trong JSON variables, enum là string JSON có đúng tên enum. Trong GraphQL document, cùng giá trị phải là enum literal không quote nếu viết trực tiếp, chẳng hạn `format: HARDCOVER`. `publishedOn` là string ở transport, nhưng custom scalar `Date` mới quyết định string đó có hợp lệ và được chuyển thành kiểu Java nào.
+
+Các JSON này chỉ minh họa giá trị runtime để đọc contract. Chúng chưa chứng minh custom scalar, controller hay service đã được wiring.
+
+### Controller và DTO Java
+
+Một controller tĩnh có thể nối hai root field như sau:
+
+```java
+import java.util.List;
+
+import org.springframework.graphql.data.method.annotation.Argument;
+import org.springframework.graphql.data.method.annotation.MutationMapping;
+import org.springframework.graphql.data.method.annotation.QueryMapping;
+import org.springframework.stereotype.Controller;
+
+@Controller
+public class BookController {
+
+    private final BookService bookService;
+
+    public BookController(BookService bookService) {
+        this.bookService = bookService;
+    }
+
+    @QueryMapping(name = "book")
+    public Book book(@Argument("id") String id) {
+        return bookService.findVisibleBook(id);
+    }
+
+    @QueryMapping(name = "books")
+    public List<Book> books(
+            @Argument("ids") List<String> ids,
+            @Argument("includeArchived") Boolean includeArchived) {
+        return bookService.findBooks(ids, includeArchived);
+    }
+
+    @MutationMapping(name = "createBook")
+    public CreateBookPayload createBook(
+            @Argument("input") CreateBookInput input) {
+        return bookService.createBook(input);
+    }
+}
+```
+
+Các kiểu input/output tối thiểu để đối chiếu tên có thể là:
+
+```java
+import java.time.LocalDate;
+import java.util.List;
+
+public record CreateBookInput(
+        String title,
+        AuthorInput author,
+        LocalDate publishedOn,
+        BookFormat format,
+        List<String> tags) {
+}
+
+public record AuthorInput(
+        String name,
+        String organization) {
+}
+
+public enum BookFormat {
+    PAPERBACK,
+    HARDCOVER,
+    EBOOK
+}
+
+public record CreateBookPayload(
+        Book book,
+        List<CreateBookError> errors) {
+}
+
+public record CreateBookError(
+        CreateBookErrorCode code,
+        String message,
+        List<String> inputPath) {
+}
+
+public enum CreateBookErrorCode {
+    TITLE_BLANK,
+    AUTHOR_NAME_BLANK,
+    PUBLISHED_ON_TOO_EARLY,
+    DUPLICATE_BOOK,
+    NOT_AUTHORIZED
+}
+```
+
+Đây là **mapping tĩnh**. `BookService`, `Book`, scalar `Date`, runtime wiring và các bean khác không có trong repository này. `LocalDate` chỉ là lựa chọn hợp lý nếu custom scalar đã parse/serialize `Date` theo contract tương ứng; Java type một mình không đăng ký scalar.
+
+Tên component Java trong ví dụ khớp chính xác với field input: `title`, `author`, `publishedOn`, `format`, `tags`, rồi tiếp tục khớp `name` và `organization` ở input lồng nhau. GraphQL name có phân biệt hoa thường. Nếu DTO dùng `publishedDate` trong khi SDL dùng `publishedOn`, cần mapping tường minh hoặc đổi tên; binder không nên đoán một cách im lặng.
+
+### Response thành công và lỗi nghiệp vụ
+
+Với variables thành công ở trên, một payload tĩnh có thể là:
+
+```json title="Response thành công — minh họa tĩnh"
+{
+  "data": {
+    "createBook": {
+      "book": {
+        "id": "book-4",
+        "title": "GraphQL in Action",
+        "author": {
+          "name": "Samer Buna",
+          "organization": "Independent"
+        },
+        "publishedOn": "2025-02-14",
+        "format": "HARDCOVER",
+        "tags": ["graphql", "spring"],
+        "archived": false
+      },
+      "errors": []
+    }
+  }
+}
+```
+
+`book-4` và các giá trị trong response là dữ liệu giả định. `errors: []` là một list rỗng theo contract, không phải dấu hiệu rằng GraphQL tự thực hiện việc tạo sách.
+
+Một input có title chỉ chứa khoảng trắng vẫn hợp lệ về kiểu `String!`. Service có thể trả lỗi nghiệp vụ có cấu trúc:
+
+```json title="Response lỗi nghiệp vụ — minh họa tĩnh"
+{
+  "data": {
+    "createBook": {
+      "book": null,
+      "errors": [
+        {
+          "code": "TITLE_BLANK",
+          "message": "Title không được để trống.",
+          "inputPath": ["title"]
+        }
+      ]
+    }
+  }
+}
+```
+
+Response này giả định service chọn payload error cho lỗi có thể dự đoán. Nếu service ném exception thay vì trả payload, error có thể nằm ở top-level `errors`; đó là policy của API và error handler. `inputPath` là field do schema tự thiết kế, khác với `path` của top-level GraphQL error.
+
+## Pipeline GraphQL trước controller
+
+Spring for GraphQL dùng schema và GraphQL Java để xử lý request trước khi gọi method annotated controller. Không phải mọi lỗi đều đi qua `@Argument` hoặc body method.
+
+### Parse và validation document
+
+Các bước đầu thường gồm:
+
+1. Parse chuỗi trong trường `query` thành GraphQL document. Thiếu dấu ngoặc, token sai hoặc JSON body không đọc được là lỗi trước execution.
+2. Validate document với executable schema. GraphQL kiểm tra field có tồn tại không, argument có đúng tên không, object có selection set không và scalar có bị chọn subfield không.
+3. Kiểm tra variable definition có tương thích vị trí sử dụng không. Ví dụ `$bookId: String!` không tự tương thích với argument `id: ID!` chỉ vì cả hai đều là chuỗi ở Java.
+4. Chuẩn bị giá trị variables/literal theo kiểu input trước khi data fetcher/controller bắt đầu.
+
+Ví dụ unknown argument này không thể được sửa bằng một tham số Java khác:
+
+```graphql
+query InvalidBook($bookId: ID!, $limit: Int) {
+  book(id: $bookId, limit: $limit) {
+    id
+    title
+  }
+}
+```
+
+SDL chỉ khai báo `book(id: ID!)`, nên `limit` là argument không tồn tại. Request bị từ chối trong validation; `BookController.book` không nên nhận một giá trị `limit` “dư thừa”.
+
+### Coercion variables và literal
+
+**Input coercion** là quá trình GraphQL chuyển một literal hoặc giá trị JSON vào kiểu input đã khai báo, đồng thời từ chối giá trị không hợp lệ. Các ví dụ sau dùng cùng SDL ở phần trước:
+
+| Giá trị gửi | Kiểu mong đợi | Kết quả |
+| --- | --- | --- |
+| `id: "book-1"` | `ID!` | Hợp lệ về GraphQL. |
+| `ids: ["book-1", "book-3"]` | `[ID!]!` | Hợp lệ nếu mọi phần tử là ID khác `null`. |
+| `includeArchived: "false"` | `Boolean` | Sai; string không phải Boolean. |
+| JSON `"format": "HARDCOVER"` | `BookFormat` | Hợp lệ nếu enum value tồn tại. |
+| JSON `"format": "hardcover"` | `BookFormat` | Sai vì enum value phân biệt hoa thường. |
+| JSON `"tags": ["graphql", null]` | `[String!]!` | Sai vì element không được `null`. |
+| JSON `"tags": null` | `[String!]!` | Sai vì list không được `null`. |
+| JSON `"publishedOn": "2025-02-14"` | `Date` | Chỉ hợp lệ nếu scalar `Date` chấp nhận format này. |
+
+Với input list, GraphQL có quy tắc input coercion cho phép một giá trị đơn được xem như list một phần tử trong những vị trí phù hợp. Dù vậy, client nên gửi array rõ ràng cho `ids` và `tags`, còn server nên đặt giới hạn số phần tử. Đừng dùng `List<String>` của Java để suy ra list có nullable hay không.
+
+Coercion không kiểm tra tất cả domain rule. `title: "   "` là String khác `null`; `publishedOn: "2025-02-14"` có thể đúng format nhưng vẫn có thể bị cấm vì chính sách catalog; `id: "book-1"` đúng kiểu nhưng không cho biết caller có quyền đọc sách đó.
+
+### Binding của Spring sau coercion
+
+Sau khi GraphQL chấp nhận input, Spring for GraphQL dùng argument resolver/binder để chuyển giá trị sang tham số method. Một input object thường bắt đầu dưới dạng map đã được GraphQL coerce, rồi binder đệ quy tạo record/class và các object con.
+
+Với mutation ở ví dụ:
+
+```java
+@MutationMapping(name = "createBook")
+public CreateBookPayload createBook(
+        @Argument("input") CreateBookInput input) {
+    return bookService.createBook(input);
+}
+```
+
+`input` Java là một `CreateBookInput`, không phải raw HTTP JSON. Tuy nhiên, binder vẫn có thể lỗi nếu target class/record không thể được tạo, property không khớp hoặc enum/custom conversion không được cấu hình. Đó là lỗi binding/execution theo policy của ứng dụng, khác với việc GraphQL document có unknown argument.
+
+Điểm cần nhớ:
+
+- GraphQL biết `CreateBookInput` có các field `title`, `author`, `publishedOn`, `format`, `tags`.
+- Spring biết cách tạo `CreateBookInput` và `AuthorInput` theo target Java.
+- Service biết title trắng, tenant sai hoặc duplicate có được chấp nhận không.
+
+Bài [QueryMapping, MutationMapping, SubscriptionMapping](/docs/tich-hop-spring-for-graphql/query-mutation-subscription-mapping) trình bày rộng hơn cách root operation được nối vào controller. Bài [SDL và nguyên tắc thiết kế schema](/docs/schema-va-type-system/sdl-va-thiet-ke-schema) là nơi review contract trước khi chọn chữ ký Java.
+
+## Annotation Argument và các kiểu input
+
+`@Argument` bind một **named GraphQL argument** vào tham số method. Nó không bind variable trực tiếp và không tạo thêm field trong schema.
+
+### Argument trực tiếp cho scalar
+
+Với field đơn giản, nhận scalar trực tiếp thường rõ nhất:
+
+```graphql
+type Query {
+  book(id: ID!): Book
+}
+```
+
+```java
+@QueryMapping(name = "book")
+public Book findBook(@Argument("id") String id) {
+    return bookService.findVisibleBook(id);
+}
+```
+
+`ID!` thường có thể bind vào `String`, nhưng cách dùng ID trong domain có thể cần một value object hoặc converter riêng. Dù Java dùng `String`, SDL vẫn là `ID!`; client vẫn phải gửi argument `id`, và GraphQL vẫn quyết định input coercion theo `ID`.
+
+Với một query có nhiều argument scalar:
+
+```graphql
+type Query {
+  books(ids: [ID!]!, includeArchived: Boolean = false): [Book!]!
+}
+```
+
+```java
+@QueryMapping(name = "books")
+public List<Book> books(
+        @Argument("ids") List<String> ids,
+        @Argument("includeArchived") Boolean includeArchived) {
+    return bookService.findBooks(ids, includeArchived);
+}
+```
+
+`Boolean` được dùng thay vì `boolean` để Java vẫn biểu diễn được trạng thái nullable trong quá trình binding và không tạo ảo giác rằng Java đã định nghĩa schema. Với SDL hiện tại, argument bị bỏ qua sẽ nhận default GraphQL `false`; service vẫn nên chuẩn hóa input ở boundary.
+
+### Tên argument không phải tên variable
+
+Đối chiếu lại operation:
+
+```graphql
+query CatalogPage($bookId: ID!) {
+  book(id: $bookId) {
+    id
+    title
+  }
+}
+```
+
+Method đúng là:
+
+```java
+@QueryMapping(name = "book")
+public Book book(@Argument("id") String id) {
+    return bookService.findVisibleBook(id);
+}
+```
+
+Bảng ánh xạ:
+
+| GraphQL | Giá trị | Java |
+| --- | --- | --- |
+| `$bookId` | Tên variable | Không dùng làm tên `@Argument` trong ví dụ này. |
+| `bookId` | Key trong variables JSON | Chỉ được GraphQL dùng để điền variable. |
+| `id` | Tên argument của `Query.book` | `@Argument("id")`. |
+| `book` | Tên field của `Query` | `@QueryMapping(name = "book")`. |
+| `CatalogPage` | Tên operation | Dùng cho log/allowlist, không dùng để tìm method. |
+
+Nếu parameter name Java trùng argument và compiler giữ metadata, một số cấu hình có thể cho phép viết `@Argument String id`. Ghi tên tường minh vẫn an toàn hơn cho tài liệu và tránh phụ thuộc vào compiler metadata:
+
+```java
+@QueryMapping(name = "book")
+public Book book(@Argument("id") String id) {
+    return bookService.findVisibleBook(id);
+}
+```
+
+Không dùng `@Argument("bookId")` cho method trên chỉ vì variables key là `bookId`. Bài [Variables, arguments và fragments](/docs/query-mutation-subscription/variables-arguments-fragments) giải thích riêng ranh giới giữa variable definition, argument và request envelope.
+
+### List và non null
+
+Đọc `ids: [ID!]!` từ trong ra ngoài:
+
+1. `ID` là kiểu phần tử.
+2. `ID!` yêu cầu từng phần tử khác `null`.
+3. `[ID!]` tạo list.
+4. `]` có `!` bên ngoài, nên bản thân list cũng không được `null`.
+
+`List<String>` của Java không tự bảo đảm cả hai dấu `!`. Code vẫn có thể trả reference list là `null` hoặc chứa phần tử `null` nếu service làm sai. Với input, GraphQL thường chặn những trạng thái đó trước controller; Java type chỉ là target binding, không phải nguồn schema.
+
+Các kiểu Java tham khảo:
+
+| SDL input | Java target thường gặp | Cảnh báo |
+| --- | --- | --- |
+| `String!` | `String` | Java reference vẫn có thể `null` nếu object được tạo ở nơi khác. |
+| `Int` | `Integer` | Dùng wrapper khi domain cho phép `null`; GraphQL `Int` là số nguyên 32-bit. |
+| `[ID!]!` | `List<String>` | Cần giữ list khác `null` và phần tử khác `null` ở service boundary. |
+| `Boolean` | `Boolean` | Không dùng primitive nếu muốn giữ khả năng nullable. |
+| `Date` | `LocalDate` | Chỉ đúng khi custom scalar được đăng ký và quy ước format khớp. |
+
+Nếu `ids` là list lớn, GraphQL chỉ biết nó là list hợp lệ; GraphQL không tự biết giới hạn 100 ID của hệ thống. Đặt size limit ở validation/service hoặc policy execution, không đổi sang `String` để né kiểm tra.
+
+### Input object lồng nhau
+
+Input object phù hợp khi một use case có nhiều field liên quan. Trong ví dụ, `CreateBookInput.author` là `AuthorInput!`:
+
+```graphql
+input CreateBookInput {
+  title: String!
+  author: AuthorInput!
+  publishedOn: Date
+  format: BookFormat! = PAPERBACK
+  tags: [String!]! = []
+}
+
+input AuthorInput {
+  name: String!
+  organization: String
+}
+```
+
+Resolver chỉ nhận một argument `input`:
+
+```java
+@MutationMapping(name = "createBook")
+public CreateBookPayload createBook(
+        @Argument("input") CreateBookInput input) {
+    return bookService.createBook(input);
+}
+```
+
+Không viết `@Argument("title")` hoặc `@Argument("authorName")` trong method này. `title` và `author` là field **bên trong** input object; chúng được binder map vào `CreateBookInput`, còn `author.name` được map tiếp vào `AuthorInput`.
+
+Nested input có thể kết hợp scalar, enum, list và input object khác. Nhưng không đặt output object `Book` vào `CreateBookInput` chỉ vì `Book` cũng có `title`. Input và output có quyền, validation và vòng đời khác nhau.
+
+### DTO record class và entity
+
+**Record immutable** thường là lựa chọn dễ đọc cho command input:
+
+```java
+public record CreateBookInput(
+        String title,
+        AuthorInput author,
+        LocalDate publishedOn,
+        BookFormat format,
+        List<String> tags) {
+}
+```
+
+Record làm component không thể gán lại sau khi khởi tạo, nhưng `List<String>` bên trong vẫn là một object có thể mutable tùy implementation. Nếu service giữ input lâu hơn một scope ngắn, hãy copy collection ở boundary, chẳng hạn sau khi đã kiểm tra không `null`:
+
+```java
+List<String> safeTags = List.copyOf(input.tags());
+```
+
+Khả năng binder tạo record qua constructor và cách binder xử lý nested record cần được kiểm tra theo version Spring for GraphQL của project. Một class Java cũng có thể phù hợp:
+
+| Target | Khi phù hợp | Lưu ý |
+| --- | --- | --- |
+| Record | Input command nhỏ, tên component khớp SDL, project hỗ trợ constructor binding. | Immutable ở reference field; vẫn cần xử lý collection và validation. |
+| Class immutable | Cần invariant trong constructor hoặc API domain riêng. | Kiểm tra constructor binding của binder/version. |
+| Class JavaBean | Code cũ hoặc binder/configuration yêu cầu no-arg constructor và setter. | Mutable, dễ bị dùng như entity; giới hạn ở adapter. |
+| `Map<String, Object>` | Adapter generic hoặc migration có lý do rõ. | Mất type safety; không đưa raw map vào service nghiệp vụ nếu không cần. |
+
+Không bind trực tiếp input GraphQL vào JPA entity hoặc persistence entity. Entity thường có ID, audit field, relationship và quyền cập nhật mà client không được phép gửi. DTO input nên map sang command/domain object trong service.
+
+## Variables default missing và null
+
+`missing` và `null` không phải lúc nào cũng cùng nghĩa. GraphQL có thể áp default khi giá trị bị bỏ qua, nhưng default không biến một `null` tường minh thành giá trị khác.
+
+### Default ở operation schema và input field
+
+Có ba vị trí thường gặp:
+
+**Default trong variable definition** thuộc operation:
+
+```graphql
+query CatalogPage($includeArchived: Boolean = false) {
+  books(ids: ["book-1"], includeArchived: $includeArchived) {
+    id
+    title
+  }
+}
+```
+
+Nếu variables không có key `includeArchived`, variable default là `false`. Nếu variables có `"includeArchived": null`, variable nullable nhận `null`; default `false` không được dùng. Argument `includeArchived` trong schema cũng nullable vì có default/không có `!`, nên service phải biết cách xử lý `null` nếu contract cho phép.
+
+**Default trong schema argument** thuộc field:
+
+```graphql
+type Query {
+  books(ids: [ID!]!, includeArchived: Boolean = false): [Book!]!
+}
+```
+
+Nếu query bỏ hẳn `includeArchived`, GraphQL có thể dùng `false`. Nếu query viết `includeArchived: null`, đó là giá trị explicit `null`, không phải “bỏ qua”.
+
+**Default trong input field** thuộc input object:
+
+```graphql
+input CreateBookInput {
+  format: BookFormat! = PAPERBACK
+  tags: [String!]! = []
+}
+```
+
+Nếu client bỏ qua `format`, GraphQL dùng `PAPERBACK`. Nếu client gửi `format: null`, request bị từ chối vì `BookFormat!`. Nếu client bỏ qua `tags`, GraphQL dùng list rỗng theo contract; nếu gửi `tags: null`, request bị từ chối vì list non-null.
+
+Khi nhiều lớp có default, hãy tránh tạo semantics khó đoán. Default ở variable có thể cung cấp giá trị cho argument trước khi resolver chạy; default ở argument chỉ áp dụng khi argument thực sự bị bỏ qua. Viết test cho các trường hợp chính thay vì suy ra hành vi từ chữ ký Java.
+
+### Bảng trạng thái thường gặp
+
+Bảng sau đối chiếu SDL của ví dụ và trạng thái trước controller:
+
+| Tình huống | Ví dụ | Kết quả thường gặp | Controller? |
+| --- | --- | --- | --- |
+| Required variable bị thiếu | `$input: CreateBookInput!`, variables `{}` | Lỗi variable required | Không gọi. |
+| Required variable là `null` | `{"input": null}` | Lỗi vì `CreateBookInput!` | Không gọi. |
+| Required input field bị thiếu | Input không có `title` | Lỗi input coercion | Không gọi. |
+| Required input field là `null` | `"title": null` | Lỗi vì `String!` | Không gọi. |
+| Input field nullable bị bỏ qua | Không có `organization` | Có thể đi tiếp; target Java thường không có giá trị ở field đó | Có thể gọi. |
+| Input field nullable là `null` | `"organization": null` | Hợp lệ về GraphQL | Có thể gọi. |
+| Field có default bị bỏ qua | Không có `format` | Nhận `PAPERBACK` | Có thể gọi. |
+| Field non-null có default nhận `null` | `"format": null` | Lỗi; default không thay thế explicit null | Không gọi. |
+| List bắt buộc rỗng | `"tags": []` | Hợp lệ; list có thể zero phần tử | Có thể gọi. |
+| Argument trực tiếp bỏ qua | Không có `includeArchived` trong field call | Nhận schema default nếu argument có default | Có thể gọi. |
+
+“Có thể gọi” vẫn không có nghĩa service phải chấp nhận. `organization: null`, title whitespace hoặc list rỗng có thể bị Bean Validation/domain policy từ chối.
+
+Envelope có thể bỏ trường `variables` nếu operation không cần variable. Nếu operation có required variable, bỏ trường này hoặc gửi `variables: {}` đều không cung cấp giá trị và sẽ dẫn tới lỗi required trước controller. Với variable nullable bị bỏ key và variable explicit `null`, hành vi cuối cùng còn phụ thuộc variable default và argument/input field mà variable được truyền vào. Đừng dùng Java `null` để suy ngược cả lịch sử request nếu use case cần biết client đã gửi field hay chưa.
+
+### Khi nào dùng ArgumentValue
+
+`ArgumentValue<T>` hữu ích khi use case cần phân biệt **argument bị bỏ qua** với **argument được gửi explicit `null`**. Ví dụ partial update có thể quy ước bỏ qua là “giữ nguyên”, còn `null` là “xóa”. Một signature minh họa là:
+
+```graphql
+type Mutation {
+  updateBook(input: PatchBookInput): Book
+}
+
+input PatchBookInput {
+  title: String
+  publishedOn: Date
+}
+```
+
+```java
+import org.springframework.graphql.data.ArgumentValue;
+
+@MutationMapping(name = "updateBook")
+public Book updateBook(
+        @Argument("input") ArgumentValue<PatchBookInput> input) {
+    if (input.isOmitted()) {
+        return bookService.noPatchProvided();
+    }
+
+    PatchBookInput patch = input.value();
+    return bookService.applyPatch(patch);
+}
+```
+
+Trong ý tưởng trên, wrapper cho phép code phân biệt argument không xuất hiện với argument có value `null`. `ArgumentValue` không bypass được `input: PatchBookInput!`: nếu SDL là non-null, GraphQL đã chặn omitted/null trước khi wrapper có thể giúp. `ArgumentValue` có thể dùng ở tham số controller và trong cấu trúc input được binder tạo, kể cả object lồng nhau; khả năng cụ thể vẫn cần đối chiếu version Spring for GraphQL.
+
+Các trạng thái chính của wrapper là:
+
+| Trạng thái | Kiểm tra | Ý nghĩa |
+| --- | --- | --- |
+| Omitted | `isOmitted()` | Client không gửi argument/field. |
+| Explicit `null` | `!isOmitted()` và `value() == null` | Client gửi argument/field với giá trị `null`. Spring for GraphQL 1.4+ có thêm `isEmpty()`. |
+| Có giá trị | `value() != null` | Client gửi giá trị đã qua GraphQL coercion và binder. |
+
+Nếu muốn giữ trạng thái cho từng field lồng nhau, binder hỗ trợ `ArgumentValue` trong object input ở các version tương ứng. Ví dụ tĩnh:
+
+```java
+import java.time.LocalDate;
+
+import org.springframework.graphql.data.ArgumentValue;
+
+public record PatchBookInput(
+        ArgumentValue<String> title,
+        ArgumentValue<LocalDate> publishedOn) {
+}
+```
+
+Record nullable thông thường như `PatchBookInput(String title, LocalDate publishedOn)` có thể không đủ để phân biệt hai trạng thái đó sau khi binder tạo object. Khi semantics quan trọng, cũng có thể thiết kế command rõ hơn như `SetTitleInput`, `ClearTitleInput` hoặc một mutation riêng, thay vì dựa vào một `null` mơ hồ. `ArgumentValue` được hỗ trợ từ Spring for GraphQL 1.1.0; hãy kiểm tra dependency thật trước khi dùng API này.
+
+Không dùng `ArgumentValue` cho mọi input theo thói quen. Create input non-null thông thường không cần phân biệt omitted/null ở cấp argument; wrapper chỉ đáng dùng khi sự khác biệt đó có ý nghĩa nghiệp vụ và đã được tài liệu hóa.
+
+### Khi nào dùng raw environment
+
+Ưu tiên `@Argument` với target type cụ thể. Chỉ nhận `DataFetchingEnvironment` hoặc đọc raw map khi cần metadata cấp thấp hơn, chẳng hạn selection set, context, source object hoặc một adapter generic đã có lý do:
+
+```java
+import java.util.Map;
+
+import graphql.GraphQLContext;
+import graphql.schema.DataFetchingEnvironment;
+import org.springframework.graphql.data.method.annotation.Argument;
+import org.springframework.graphql.data.method.annotation.QueryMapping;
+
+@QueryMapping(name = "book")
+public Book book(
+        @Argument("id") String id,
+        DataFetchingEnvironment environment) {
+
+    GraphQLContext context = environment.getGraphQlContext();
+    String requestId = context.get("requestId");
+    // Chỉ dùng map ở adapter generic; không truyền nó xuống domain service.
+    Map<String, Object> arguments = environment.getArguments();
+
+    return bookService.findVisibleBook(id, requestId);
+}
+```
+
+`environment.getArgument("id")` và `environment.getArguments()` là giá trị argument sau GraphQL processing ở data-fetching boundary, không phải cách lấy raw HTTP bytes. `environment.getVariables()` cũng không nên được hiểu là một JSON chưa kiểm tra. Dù vậy, các map này vẫn là kiểu động, nên dễ làm mất compile-time type safety và dễ trộn tên variable với tên argument.
+
+Dùng environment một cách thận trọng:
+
+- Không dùng raw map để né thiết kế `CreateBookInput` đã biết rõ shape.
+- Không lấy quyền từ `variables`, `tenantId` hoặc một key do client tự đặt.
+- Không log toàn bộ map vì có thể chứa PII, secret hoặc dữ liệu nghiệp vụ nhạy cảm.
+- Không lấy environment làm cách bypass GraphQL validation; field unknown đã bị GraphQL xử lý trước đó.
+- Dùng `@ContextValue`, `Principal`/`Authentication` hoặc `GraphQLContext` theo convention của project khi mục tiêu là context server tạo.
+
+Nếu cần bind toàn bộ các argument trực tiếp vào một object, Spring for GraphQL cũng có cơ chế `@Arguments` theo version. Cơ chế đó phù hợp khi object thực sự đại diện cho toàn bộ argument set; với một input object có tên, `@Argument("input") CreateBookInput` thường rõ hơn.
+
+## Các lớp validation và lỗi
+
+Validation không phải một bước duy nhất. Phân lớp giúp biết nên sửa query, DTO hay service.
+
+### GraphQL validation khác Bean Validation
+
+**GraphQL validation/coercion** kiểm tra contract executable:
+
+- field và argument có tồn tại không;
+- output object có selection set không;
+- variable type có tương thích argument không;
+- scalar, enum, list, input object, custom scalar có đúng không;
+- required value có bị thiếu hoặc `null` không;
+- default có được áp dụng ở vị trí khai báo không.
+
+**Bean Validation** kiểm tra object Java sau khi binder tạo object, nếu project đã bật integration tương ứng. Nó phù hợp với những rule như chuỗi không trắng, độ dài, pattern hoặc quan hệ giữa một số field đơn giản. Nó không sửa schema và không thay thế service/domain policy.
+
+Ví dụ biến thể của DTO ở trên có thể thêm constraint:
+
+```java
+import java.time.LocalDate;
+import java.util.List;
+
+import jakarta.validation.Valid;
+import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.NotNull;
+import jakarta.validation.constraints.Size;
+
+public record CreateBookInput(
+        @NotBlank @Size(max = 200) String title,
+        @NotNull @Valid AuthorInput author,
+        LocalDate publishedOn,
+        @NotNull BookFormat format,
+        @NotNull @Size(max = 20)
+        List<@NotBlank @Size(max = 40) String> tags) {
+}
+```
+
+Nếu project đã cấu hình Bean Validation và version Spring for GraphQL hỗ trợ validation tại annotated controller, method có thể được viết theo dạng minh họa:
+
+```java
+import jakarta.validation.Valid;
+
+@MutationMapping(name = "createBook")
+public CreateBookPayload createBook(
+        @Argument("input") @Valid CreateBookInput input) {
+    return bookService.createBook(input);
+}
+```
+
+`@NotBlank` không biến `title: String` thành `String!`. Ngược lại, `title: String!` không cấm whitespace. `@Size` không giới hạn query depth, không kiểm tra tenant và không phát hiện duplicate trong database. Cách exception validation được map thành top-level `errors` hay payload errors cần được project quy ước và kiểm thử.
+
+Ranh giới thực dụng:
+
+| Lớp | Ví dụ | Kênh lỗi thường gặp |
+| --- | --- | --- |
+| GraphQL parse/validation | Unknown argument, thiếu selection set | Top-level `errors`, controller chưa chạy. |
+| GraphQL coercion | `publishedYear: "2025"`, enum sai, input non-null thiếu | Top-level `errors`, controller chưa chạy. |
+| Spring binding | Không tạo được target class, converter không phù hợp | Execution error theo error handler. |
+| Bean Validation | Title whitespace, list quá dài, `@Size` không đạt | Validation exception hoặc error mapping của app. |
+| Domain/service | Duplicate, quyền sai, ngày bị cấm | Payload error hoặc top-level error theo policy. |
+| Hạ tầng/execution | Database timeout, downstream unavailable | Top-level `errors`, có thể partial data. |
+
+### Unknown field argument và enum
+
+Unknown **argument** bị phát hiện bằng schema:
+
+```graphql
+query InvalidArgument($bookId: ID!, $limit: Int) {
+  book(id: $bookId, limit: $limit) {
+    id
+  }
+}
+```
+
+Unknown **input field** cũng không nên bị Spring binder âm thầm bỏ qua. Variables sai sau đây có thêm `publisher`, nhưng `CreateBookInput` không khai báo field đó:
+
+```json
+{
+  "input": {
+    "title": "GraphQL in Action",
+    "author": {
+      "name": "Samer Buna"
+    },
+    "publisher": "Unknown Publisher"
+  }
+}
+```
+
+Với variables, lỗi unknown input field thường xuất hiện trong input coercion trước khi method được gọi. Với input literal viết trực tiếp trong GraphQL document, nó có thể được báo ở validation/value checking. Chi tiết phân loại và message phụ thuộc GraphQL Java, nhưng không nên thiết kế binder để nhận field lạ rồi bỏ qua, vì cách đó che typo và làm tiến hóa contract khó kiểm soát.
+
+Enum cũng được kiểm tra trước controller:
+
+```json
+{
+  "input": {
+    "title": "GraphQL in Action",
+    "author": {
+      "name": "Samer Buna"
+    },
+    "format": "hardcover"
+  }
+}
+```
+
+`hardcover` khác `HARDCOVER`, nên không khớp `BookFormat`. Java enum `BookFormat.HARDCOVER` chỉ là target mapping sau đó; nó không mở rộng danh sách enum của SDL. Nếu vocabulary SDL và Java khác nhau, cấu hình mapping tường minh thay vì đổi enum thành `String` một cách tùy tiện.
+
+### Custom scalar date và time
+
+GraphQL built-in scalar không có `Date`, `LocalDate` hoặc `Instant`. Khi schema có:
+
+```graphql
+scalar Date
+
+input CreateBookInput {
+  publishedOn: Date
+}
+```
+
+server cần đăng ký scalar implementation quy định ít nhất:
+
+- literal nào được chấp nhận;
+- JSON variable nào được chấp nhận;
+- giá trị runtime nào được tạo, chẳng hạn `LocalDate`;
+- cách serialize ra response;
+- message/category an toàn khi parse thất bại.
+
+Trong ví dụ này, `"2025-02-14"` **giả định** format ISO date. Giả định đó chỉ có hiệu lực nếu scalar implementation đặt như vậy. Nếu scalar yêu cầu format khác hoặc trả `OffsetDateTime`, Java `LocalDate` trong record không còn đúng.
+
+Một giá trị như `"14/02/2025"` có thể bị từ chối khi custom scalar parse variables:
+
+```json
+{
+  "input": {
+    "title": "GraphQL in Action",
+    "author": {
+      "name": "Samer Buna"
+    },
+    "publishedOn": "14/02/2025"
+  }
+}
+```
+
+Lỗi xảy ra trước service và thường trước body controller. Không dùng `String` để né đăng ký scalar nếu date/time là một phần contract cần kiểm tra. Xem [Custom scalar và directive](/docs/tich-hop-spring-for-graphql/custom-scalar-va-directive) để nối scalar với runtime wiring; trang này không tuyên bố implementation `Date` đã có trong repository.
+
+### Coercion error trước resolver
+
+Ví dụ JSON sai kiểu cho `tags`:
+
+```json
+{
+  "input": {
+    "title": "GraphQL in Action",
+    "author": {
+      "name": "Samer Buna"
+    },
+    "tags": ["graphql", 42]
+  }
+}
+```
+
+Một execution result minh họa có thể là:
+
+```json
+{
+  "errors": [
+    {
+      "message": "Variable \"$input\" got invalid value at \"input.tags[1]\"; expected type String."
+    }
+  ]
+}
+```
+
+Message, `locations`, HTTP status và `extensions` ở trên chỉ là minh họa. Điều cần giữ là `42` không phải String theo SDL, nên `createBook` không nên được xem là đã chạy. Client cần sửa variables hoặc operation, không retry y nguyên và không chờ Bean Validation xử lý.
+
+Lỗi domain lại có thể đi vào payload như response `TITLE_BLANK` ở phần trước. Bài [Xử lý lỗi trong mutation](/docs/query-mutation-subscription/xu-ly-loi-trong-mutation) phân biệt top-level GraphQL `errors`, payload error, partial data và null bubbling chi tiết hơn.
+
+## Java type không đổi GraphQL contract
+
+Schema và Java giải quyết hai câu hỏi khác nhau:
+
+- SDL nói client được phép gửi gì, field nào tồn tại, kiểu và nullability nào được cam kết.
+- Java nói server muốn nhận giá trị đã coerce ở dạng nào để thực hiện code.
+
+Một method Java có chữ ký “rộng” hơn không mở rộng contract. Một chữ ký “chặt” hơn cũng không tự sửa SDL.
+
+### Bảng mapping tham khảo
+
+| GraphQL SDL | Java thường dùng | Điều Java không tự làm |
+| --- | --- | --- |
+| `ID!` | `String`, hoặc value object có converter | Không đổi `ID` thành `String` trong schema, không cấp quyền. |
+| `String!` | `String` | Không cấm chuỗi rỗng/whitespace và không bảo đảm reference không `null` ngoài flow GraphQL. |
+| `Int` | `Integer` | Không đổi giới hạn GraphQL Int 32-bit thành `Long`, không kiểm tra range domain. |
+| `Boolean` | `Boolean` | Không tự áp default nếu SDL không khai báo default. |
+| `[ID!]!` | `List<String>` | Không cấm Java list `null` hoặc phần tử `null` ở nơi khác. |
+| `CreateBookInput!` | `CreateBookInput` record/class | Không thêm field GraphQL và không cho phép unknown input field. |
+| `BookFormat` | `BookFormat` enum | Không tạo enum SDL hoặc tự map tên khác. |
+| `Date` | `LocalDate`, `Instant` hoặc kiểu khác | Không đăng ký scalar và không quyết định format parse/serialize. |
+
+`Optional<T>` cũng không phải phép dịch tự động từ nullable GraphQL. Dùng `Optional` ở service nếu domain muốn, nhưng vẫn thiết kế `T`/`T!` trong SDL và kiểm tra binder/version. Tương tự, Java primitive `int` không nên được dùng để suy luận `Int!`: primitive không biểu diễn `null`, nhưng SDL có thể vẫn là `Int` nullable.
+
+### Những suy luận không an toàn
+
+Các suy luận sau đều sai hoặc rủi ro:
+
+- “DTO có property `publisher` nên GraphQL sẽ nhận `publisher`.” Không đúng; field phải được khai báo trong input type SDL.
+- “Tham số Java `String id` làm `ID` thành String.” Không đúng; `ID` vẫn là contract GraphQL với coercion/serialization riêng.
+- “`List<String>` nghĩa là `[String!]!`.” Không đúng; generic Java không nói list reference và element có nullable hay không.
+- “`@NotNull` làm schema non-null.” Không đúng; cần sửa SDL nếu muốn thay đổi contract, và đó có thể là breaking change.
+- “`@Argument` có thể cứu một argument required bị thiếu.” Không đúng; GraphQL chặn trước khi binder gọi method.
+- “Dùng `Map<String, Object>` sẽ nhận mọi JSON.” Không đúng; GraphQL vẫn validate field/type theo schema; raw map chỉ làm mất lợi ích type safety sau đó.
+- “Java entity có getter thì field GraphQL tự xuất hiện.” Không đúng; field output phải có trong schema và mapping/default property fetcher phù hợp.
+
+Bài [List và nullable](/docs/schema-va-type-system/list-va-nullable) phân tích sâu hơn wrapper `[T]`, `[T!]`, `[T]!` và `[T!]!`. Đọc wrapper từ SDL trước khi quyết định collection Java.
+
+## Security allowlist và logging
+
+Binding đúng kiểu chưa đủ để input an toàn. GraphQL schema xác định vocabulary, nhưng authorization, chi phí request và observability vẫn là trách nhiệm của ứng dụng/gateway.
+
+### Authorization và tenant
+
+Argument `tenantId`, `userId` hoặc `id` là dữ liệu client gửi. Nó không phải credential. Một flow thận trọng là:
+
+1. Security filter/interceptor xác thực credential.
+2. Server tạo principal và tenant context từ credential đã kiểm tra.
+3. Controller bind argument typed rồi truyền context cần thiết vào service.
+4. Service kiểm tra principal có quyền trên tenant/resource không.
+5. Repository hoặc downstream áp dụng filter tenant phòng thủ, không chỉ tin một điều kiện ở controller.
+
+Ví dụ khái niệm:
+
+```java
+@QueryMapping(name = "book")
+public Book book(
+        @Argument("id") String id,
+        Principal principal) {
+    return bookService.findVisibleBook(id, principal);
+}
+```
+
+`Principal` và `findVisibleBook` trong block là minh họa. Nếu project dùng `GraphQLContext`, `@ContextValue` hoặc Spring Security `Authentication`, hãy theo convention của version thật. Không cho client đặt một key trong variables để ghi đè tenant context.
+
+Nếu input có field `tenantId` vì admin use case thật sự cần, service phải kiểm tra caller có quyền trên tenant đó. Với caller thường, bỏ tenant khỏi public input và lấy từ context thường làm contract an toàn hơn.
+
+Authorization không nên dựa vào việc ẩn field trên GraphiQL, đổi tên method Java hoặc tắt introspection. Resolver/service vẫn phải bảo vệ resource, và error message không nên tiết lộ sự tồn tại của resource mà caller không có quyền biết. Xem [Authorization theo field và resolver](/docs/bao-mat-va-quan-sat/authorization-field-resolver) để đặt kiểm tra này vào security boundary rộng hơn.
+
+### Allowlist và giới hạn kích thước
+
+GraphQL validation chỉ nói request **hợp lệ theo schema**. Một request hợp lệ vẫn có thể quá đắt hoặc quá lớn. Hãy cân nhắc:
+
+- allowlist/persisted operation theo `operationName` và/hoặc query hash;
+- giới hạn body HTTP, độ dài String, số phần tử của `ids`/`tags` và độ sâu/complexity của selection;
+- giới hạn `first`, `limit` hoặc số alias theo policy;
+- timeout và rate limit theo principal, tenant và operation;
+- reject unknown fields thay vì silently ignore ở một lớp custom binder;
+- kiểm soát custom scalar/JSON opaque nếu scalar đó có thể chứa payload lớn.
+
+Allowlist là policy riêng, không tự có chỉ vì operation có tên. `operationName` giúp nhận diện request nhưng không phải bằng chứng request được phép. Nếu server dùng persisted operation, hash/document phải được kiểm tra trước execution theo quy ước của hệ thống.
+
+Đừng đổi `ids: [ID!]!` thành `String` chứa JSON để né giới hạn hoặc làm binder “dễ” hơn. Làm vậy mất introspection, code generation và lỗi sớm ở biên. Giới hạn nghiệp vụ nên được đặt ở validation/service với error code dễ hành động.
+
+### Logging dữ liệu nhạy cảm
+
+GraphQL request thường chứa variables có PII, secret nghiệp vụ hoặc token do người dùng nhập. Không log toàn bộ variables và không log access token. Một event đã làm sạch có thể chỉ ghi:
+
+```json title="Log event minh họa"
+{
+  "operationName": "CreateBook",
+  "queryHash": "hash-example",
+  "requestId": "request-example-123",
+  "argumentNames": ["input"],
+  "inputSizes": {
+    "title": 17,
+    "tags": 2
+  },
+  "errorCodes": [],
+  "durationMs": 184
+}
+```
+
+Đây không phải logging schema bắt buộc. Khi cần điều tra, operation name/query hash, request ID, thời gian, error code/path và tenant đã được làm sạch thường hữu ích hơn toàn bộ payload. Nếu cần log variables, phải redact theo allowlist field, truncate kích thước và áp policy retention/access.
+
+Không đưa stack trace, SQL, access token, mật khẩu, PII hoặc raw variables vào GraphQL `message`/`extensions` một cách vô điều kiện. Bài [Logging và tracing](/docs/bao-mat-va-quan-sat/logging-va-tracing) trình bày thêm correlation và tracing xuyên resolver/service.
+
+## Service boundary và transaction
+
+Controller nên là adapter giữa GraphQL và use case. Đừng để chữ ký `@MutationMapping` trở thành nơi duy nhất bảo vệ invariant.
+
+### Resolver là adapter mỏng
+
+Một resolver hợp lý thường làm bốn việc:
+
+1. Nhận argument đã được GraphQL/Spring bind.
+2. Đọc principal/context server tạo khi cần.
+3. Gọi application service với command/DTO đã rõ kiểu.
+4. Trả payload hoặc để error handler xử lý exception theo policy.
+
+Ví dụ:
+
+```java
+@MutationMapping(name = "createBook")
+public CreateBookPayload createBook(
+        @Argument("input") CreateBookInput input,
+        Principal principal) {
+    return bookService.createBook(input, principal);
+}
+```
+
+Service nên sở hữu validation domain như title whitespace, năm được phép, duplicate, quyền tenant và idempotency. Nếu REST endpoint, job hoặc message consumer cũng gọi cùng use case, các invariant đó vẫn phải được bảo vệ.
+
+Nếu payload error là outcome dự kiến, service có thể trả `CreateBookPayload` với `errors`. Nếu lỗi hạ tầng hoặc invariant không thể biểu diễn an toàn trong payload, service có thể ném exception để `DataFetcherExceptionResolver`/error policy map thành top-level GraphQL error theo version. Bài [Xử lý lỗi tập trung](/docs/tich-hop-spring-for-graphql/xu-ly-loi-tap-trung) là nơi đi sâu vào adapter lỗi.
+
+### Transaction không đến từ MutationMapping
+
+`@MutationMapping` không tự:
+
+- mở transaction;
+- rollback database khi HTTP response thất bại;
+- biến database và downstream HTTP thành một transaction phân tán;
+- làm retry sau timeout an toàn;
+- phát hiện duplicate request.
+
+Nếu create book cần transaction database, đặt boundary ở service/application layer theo transaction manager thật:
+
+```java
+@Service
+public class BookService {
+
+    @Transactional
+    public CreateBookPayload createBook(
+            CreateBookInput input,
+            Principal principal) {
+        // Validate domain, authorize tenant, persist và tạo payload.
+        return createBookUseCase.execute(input, principal);
+    }
+}
+```
+
+Đoạn code chỉ minh họa vị trí boundary. Annotation `@Transactional`, transaction manager và kiểu reactive/imperative phải khớp ứng dụng thật. Nếu service vừa ghi database vừa gọi provider hoặc gửi message, database commit không tự rollback side effect bên ngoài; có thể cần outbox, compensation hoặc workflow riêng.
+
+Timeout sau khi commit là trường hợp đặc biệt nguy hiểm: client không biết server đã tạo book hay chưa. Chỉ retry khi use case có idempotency policy được server thật sự bảo đảm, với key có scope theo principal/tenant, retention, conflict và replay semantics rõ. Một field `idempotencyKey` trong SDL không tự tạo idempotency.
+
+## Naming và tiến hóa input
+
+Tên rõ giúp `@Argument` dễ đọc và giúp client không phụ thuộc vào Java class name.
+
+### Quy ước đặt tên
+
+| Thành phần | Quy ước | Ví dụ |
+| --- | --- | --- |
+| Root field query | Danh từ/use case, camelCase | `book`, `books` |
+| Root field mutation | Động từ + danh từ, camelCase | `createBook`, `updateBook` |
+| Input type | Tên use case + `Input` | `CreateBookInput`, `PatchBookInput` |
+| Argument input object | `input` khi chỉ có một command object | `createBook(input: ...)` |
+| Argument scalar | Tên theo mục đích | `id`, `ids`, `includeArchived` |
+| Input field | camelCase, có đơn vị/ngữ nghĩa rõ | `publishedOn`, `publishedYear` |
+| Enum type | PascalCase | `BookFormat` |
+| Enum value | Tên ổn định, thường UPPER_SNAKE_CASE | `HARDCOVER` |
+| Java DTO | Tên gần input/use case | `CreateBookInput` hoặc `CreateBookCommand` |
+
+Đặt tên Java component trùng field GraphQL khi mapping mặc định là đủ. Nếu domain Java cần tên khác, dùng mapping rõ ràng ở adapter thay vì đổi public vocabulary theo persistence model. Không dùng `data: JSON` hoặc `payload: Map` khi shape input đã biết.
+
+Tên operation và variable có thể khác tên argument:
+
+```graphql
+mutation AddCatalogItem($command: CreateBookInput!) {
+  createBook(input: $command) {
+    errors {
+      code
+      message
+      inputPath
+    }
+  }
+}
+```
+
+Ở đây `$command` vẫn bind vào `@Argument("input")`, không phải `@Argument("command")`. Tên `$command` mô tả phía client; `input` là contract của field.
+
+### Thay đổi tương thích ngược
+
+Input object là public contract. Ưu tiên thay đổi additive có semantics rõ:
+
+| Thay đổi | Rủi ro | Hướng an toàn hơn |
+| --- | --- | --- |
+| Thêm input field nullable | Client cũ thường không gửi field và vẫn validate được | Thêm field, mô tả semantics khi omitted/null. |
+| Thêm input field có default | Có thể giữ client cũ nếu default đúng | Chọn default có chủ đích; nhớ default là behavior public. |
+| Thêm input field non-null không default | Request cũ thiếu field sẽ fail | Dùng nullable/default hoặc input/mutation mới. |
+| Đổi tên field | Client cũ không còn dùng được field cũ nếu xóa ngay | Thêm field mới, deprecate field cũ và migrate. |
+| Đổi `String` thành object hoặc ngược lại | DTO, variables và codegen phải đổi | Thêm input field/type mới, chuyển dần. |
+| Đổi enum value hoặc xóa value | Client có thể fail validation hoặc exhaustive switch | Deprecation/migration trước khi xóa. |
+| Đổi default | Query cũ vẫn hợp lệ nhưng hành vi thay đổi | Review client, release note và dữ liệu trước khi đổi. |
+
+Ví dụ, thêm `language: String = "vi"` vào `CreateBookInput` có thể giữ request cũ. Thêm `language: String!` không default sẽ làm client cũ gửi input thiếu field bị từ chối. Thêm field vào Java record trước khi cập nhật SDL không giúp client gửi field đó; ngược lại, cập nhật client trước server có thể gặp unknown input field.
+
+Khi rollout field mới, triển khai schema/server có khả năng nhận field trước, rồi mới phát hành client gửi field nếu deployment strategy cho phép. Kiểm tra schema với operation thật của client, không chỉ kiểm tra compile Java. [Schema evolution và deprecation](/docs/production/schema-evolution-va-deprecation) đặt các nguyên tắc này vào quy trình versioning rộng hơn.
+
+## Quy trình triển khai mapping
+
+Dùng quy trình sau khi thêm query/mutation có argument mới:
+
+<Steps>
+  <Step>
+    **Đọc SDL trước.** Ghi lại root field, tên argument, input type, field nested, scalar/enum, default và từng vị trí non-null. Không bắt đầu từ tên method Java.
+  </Step>
+  <Step>
+    **Viết operation và variables độc lập.** Giữ query document ổn định, đặt tên operation, khai báo variable type tương thích và tạo JSON variables đúng kiểu. Kiểm tra field bị bỏ qua khác với explicit `null`.
+  </Step>
+  <Step>
+    **Tách pipeline lỗi.** Thử unknown argument, unknown input field, sai enum, sai custom scalar và thiếu required value. Xác nhận các lỗi contract không được coi là lỗi service.
+  </Step>
+  <Step>
+    **Chọn target Java.** Dùng scalar trực tiếp cho argument đơn, record/class immutable cho input object, `List<T>` cho list và converter/scalar tường minh cho date/time. Không bind trực tiếp persistence entity.
+  </Step>
+  <Step>
+    **Giữ controller mỏng.** Dùng `@Argument("name")`, đọc context server tạo khi cần và gọi service. Chỉ dùng `ArgumentValue` hoặc raw environment khi omitted/null hoặc metadata cấp thấp thật sự có ý nghĩa.
+  </Step>
+  <Step>
+    **Đặt rule ở đúng boundary.** Bean Validation xử lý constraint phù hợp trên object; service xử lý invariant, authorization, tenant, idempotency và transaction; logging/redaction và allowlist thuộc policy vận hành.
+  </Step>
+  <Step>
+    **Kiểm thử contract và execution.** Assert success, payload error, coercion error, nullability, unknown field, authorization và retry/transaction ở lớp thích hợp. Không dùng docs build để kết luận backend đã chạy.
+  </Step>
+</Steps>
+
+## Checklist review binding
+
+- [ ] SDL đã khai báo đúng root field, argument, input/output, enum, custom scalar và nullability chưa?
+- [ ] `@Argument` dùng **tên argument trong SDL**, không dùng tên variable hoặc alias chưa?
+- [ ] Variable definition có kiểu tương thích vị trí argument không, đặc biệt với `!` chưa?
+- [ ] Scalar, list, enum và custom scalar đã có target Java rõ ràng chưa?
+- [ ] `List<T>` không bị dùng như bằng chứng rằng list/element non-null đã được bảo đảm chưa?
+- [ ] Input object đã tách khỏi output object và persistence entity chưa?
+- [ ] DTO record/class có field name khớp input, nested object bind được và collection được copy/normalize ở boundary chưa?
+- [ ] Missing, explicit `null`, default và empty list có semantics được tài liệu hóa chưa?
+- [ ] Có thật sự cần `ArgumentValue` để phân biệt omitted/null không, hay wrapper chỉ làm signature khó đọc?
+- [ ] Raw `DataFetchingEnvironment` chỉ được dùng cho context/selection/generic adapter, không dùng để né typed input hoặc security chưa?
+- [ ] GraphQL validation/coercion đã được tách khỏi Bean Validation, binding exception và domain validation chưa?
+- [ ] Unknown argument/input field, unknown enum, sai list và sai date/time có test trước controller chưa?
+- [ ] `String!` không bị hiểu nhầm là non-blank; `Int` không bị hiểu nhầm là range hợp lệ chưa?
+- [ ] Authorization/tenant lấy từ principal/context server tạo, không tin `tenantId` hoặc user ID do client gửi chưa?
+- [ ] Có allowlist/persisted operation, giới hạn body/list/string/depth/complexity khi endpoint cần chưa?
+- [ ] Log có operation/query hash/request ID/error code và redaction, không ghi raw variables/token/PII chưa?
+- [ ] Resolver đã gọi service thay vì sở hữu invariant, transaction hoặc repository logic chưa?
+- [ ] Mutation đã review timeout sau commit, duplicate và idempotency chưa?
+- [ ] Thay đổi input mới là nullable/default hoặc có migration, không âm thầm thêm required field chưa?
+- [ ] Java snippet và response được đánh dấu là ví dụ tĩnh nếu chưa có backend để chạy chưa?
+
+## Câu hỏi thường gặp
+
+<Accordions type="single">
+  <Accordion title="@Argument có nhận tên variable không?">
+    Không. `@Argument("id")` nhận argument `id` của field GraphQL. Variable `$bookId` chỉ cung cấp giá trị cho argument đó. Hãy đối chiếu tên bên trong `book(id: $bookId)`, không đối chiếu `$bookId`.
+  </Accordion>
+  <Accordion title="Có nên dùng Map cho mọi input không?">
+    Không. Input object typed giúp binder, code review, code generation và service cùng nhìn thấy contract. Chỉ dùng raw map ở adapter generic hoặc boundary thật sự opaque, rồi vẫn kiểm tra allowlist, kích thước và schema trước khi đưa vào domain.
+  </Accordion>
+  <Accordion title="ArgumentValue có làm input nullable không?">
+    Không. `ArgumentValue` chỉ giúp quan sát omitted/null trong một contract vốn cho phép trạng thái đó. Nếu SDL là `CreateBookInput!`, GraphQL vẫn chặn thiếu hoặc `null` trước controller.
+  </Accordion>
+  <Accordion title="@NotNull có thay được dấu chấm than trong SDL không?">
+    Không. Bean Validation chạy trên object Java sau binding và không sửa schema. Muốn thay đổi nullability public phải sửa SDL, review client compatibility và kiểm tra resolver/service.
+  </Accordion>
+  <Accordion title="Có thể để tenantId trong input rồi tin giá trị đó không?">
+    Không. Tenant trong input là dữ liệu client gửi. Quyền phải được suy ra từ principal/context và được kiểm tra ở service; nếu admin use case cần chọn tenant, vẫn phải authorize explicit.
+  </Accordion>
+</Accordions>
 
 ## Bước tiếp theo
 
-Sau khi trang được điền nội dung, đọc bài kế tiếp trong nhóm để tiếp tục lộ trình.
+- Đọc [QueryMapping, MutationMapping, SubscriptionMapping](/docs/tich-hop-spring-for-graphql/query-mutation-subscription-mapping) để xem root field, method name, `@Argument` và context trong toàn bộ mapping flow.
+- Ôn [SDL và nguyên tắc thiết kế schema](/docs/schema-va-type-system/sdl-va-thiet-ke-schema) trước khi đổi input/output, nullability hoặc ownership.
+- Xem [Variables, arguments và fragments](/docs/query-mutation-subscription/variables-arguments-fragments) để tách operation, variable definition, variables JSON và argument.
+- Đọc [Enum, input object và arguments](/docs/schema-va-type-system/enum-input-arguments) để chọn enum, input object và direct argument.
+- Đọc [Custom scalar và directive](/docs/tich-hop-spring-for-graphql/custom-scalar-va-directive) khi `Date`, `Instant` hoặc scalar domain cần parser/serializer riêng.
+- Xem [Xử lý lỗi trong mutation](/docs/query-mutation-subscription/xu-ly-loi-trong-mutation) để thiết kế payload error, top-level `errors`, path và retry policy.
+- Đối chiếu [DataFetcher và GraphQL context](/docs/tich-hop-spring-for-graphql/datafetcher-va-graphql-context) khi resolver cần principal, tenant hoặc metadata request server tạo.
+
+<Cards>
+  <Card title="QueryMapping, MutationMapping, SubscriptionMapping" href="/docs/tich-hop-spring-for-graphql/query-mutation-subscription-mapping" description="Nối root operation với controller method trong Spring for GraphQL." />
+  <Card title="Enum, input object và arguments" href="/docs/schema-va-type-system/enum-input-arguments" description="Thiết kế input typed, enum, default và coercion." />
+  <Card title="Custom scalar và directive" href="/docs/tich-hop-spring-for-graphql/custom-scalar-va-directive" description="Đăng ký scalar domain như Date và quy tắc mở rộng schema." />
+  <Card title="Xử lý lỗi trong mutation" href="/docs/query-mutation-subscription/xu-ly-loi-trong-mutation" description="Phân biệt request error, domain error và execution error." />
+</Cards>
