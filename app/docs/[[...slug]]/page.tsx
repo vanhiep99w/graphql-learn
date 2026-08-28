@@ -4,7 +4,7 @@ import {
   DocsBody,
   DocsDescription,
   DocsTitle,
-} from 'fumadocs-ui/layouts/docs/page';
+} from 'fumadocs-ui/page';
 import { notFound } from 'next/navigation';
 import { getMDXComponents } from '@/mdx-components';
 
@@ -17,10 +17,14 @@ export default async function Page(props: {
 
   const MDXContent = page.data.body;
 
-  // Article padding is tightened in app/global.css for compatibility with
-  // Fumadocs versions whose DocsPage article prop types differ.
+  // Keep the article wide; global.css supplies the same compact gutter as a
+  // fallback for layout internals that are not exposed through this prop.
   return (
-    <DocsPage toc={page.data.toc} full={page.data.full}>
+    <DocsPage
+      toc={page.data.toc}
+      full={page.data.full}
+      article={{ className: 'max-w-none px-3 md:px-5' }}
+    >
       <DocsTitle>{page.data.title}</DocsTitle>
       <DocsDescription>{page.data.description}</DocsDescription>
       <DocsBody>
