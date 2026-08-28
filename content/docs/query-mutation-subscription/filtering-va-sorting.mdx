@@ -1,23 +1,1126 @@
 ---
 title: "Filtering và sorting"
-description: "Thiết kế input filter/sort có khả năng mở rộng mà không làm schema khó sử dụng."
+description: "Thiết kế filter và sort có kiểu, deterministic và an toàn cho GraphQL với Spring Boot."
 ---
 
-Trang này sẽ trình bày **Filtering và sorting** trong bối cảnh xây dựng GraphQL API với Spring Boot.
+import { Accordion, Accordions } from 'fumadocs-ui/components/accordion';
+import { Step, Steps } from 'fumadocs-ui/components/steps';
+
+**Filtering** (lọc) chọn tập bản ghi phù hợp với điều kiện. **Sorting** (sắp xếp) quyết định thứ tự của tập bản ghi đó. Hai việc này liên quan nhưng không nên bị trộn thành một chuỗi biểu thức tùy ý.
+
+Trang này dùng catalog sách làm ví dụ. Các đoạn SDL, query, variables, response và Java đều là ví dụ tĩnh để đọc contract. Repository hiện là docs-only, không có backend Spring Boot, database hoặc resolver để chạy các ví dụ này.
+
+<Callout type="info" title="Nguyên tắc chính">
+  Hãy để GraphQL công khai một input có kiểu rõ ràng, chỉ cho phép field/operator đã được allowlist (danh sách cho phép), rồi map input đó sang tiêu chí domain ở service. Không đưa tên cột, toán tử SQL hoặc một chuỗi `where` từ client xuống repository.
+</Callout>
 
 ## Mục lục
 
-- [Nội dung dự kiến](#nội-dung-dự-kiến)
+- [Bức tranh tổng thể](#bức-tranh-tổng-thể)
+  - [Filtering và sorting giải quyết hai câu hỏi khác nhau](#filtering-và-sorting-giải-quyết-hai-câu-hỏi-khác-nhau)
+  - [Luồng xử lý an toàn](#luồng-xử-lý-an-toàn)
+- [SDL minh họa cho catalog sách](#sdl-minh-họa-cho-catalog-sách)
+  - [Schema hoàn chỉnh](#schema-hoàn-chỉnh)
+  - [Input filter và sort khác output](#input-filter-và-sort-khác-output)
+  - [Đọc giới hạn từ schema](#đọc-giới-hạn-từ-schema)
+- [Thiết kế filter input](#thiết-kế-filter-input)
+  - [Operator có kiểu](#operator-có-kiểu)
+  - [AND và OR](#and-và-or)
+  - [Missing, null và empty](#missing-null-và-empty)
+  - [Nested relation filter](#nested-relation-filter)
+- [Ví dụ query variables và response](#ví-dụ-query-variables-và-response)
+  - [Query và variables](#query-và-variables)
+  - [Response và cách đọc](#response-và-cách-đọc)
+  - [Trường hợp không có kết quả](#trường-hợp-không-có-kết-quả)
+- [Thiết kế sorting](#thiết-kế-sorting)
+  - [Multi-field và direction](#multi-field-và-direction)
+  - [Tie-breaker và null ordering](#tie-breaker-và-null-ordering)
+  - [Default, max và invalid sort](#default-max-và-invalid-sort)
+  - [Pagination interaction](#pagination-interaction)
+- [Thiết kế đơn giản hay extensible](#thiết-kế-đơn-giản-hay-extensible)
+  - [Thiết kế đơn giản](#thiết-kế-đơn-giản)
+  - [Input extensible có kiểm soát](#input-extensible-có-kiểm-soát)
+  - [Không biến schema thành DSL tùy ý](#không-biến-schema-thành-dsl-tùy-ý)
+- [Validation và error behavior](#validation-và-error-behavior)
+  - [Ba lớp validation](#ba-lớp-validation)
+  - [Invalid combination](#invalid-combination)
+  - [Error response](#error-response)
+- [Mapping với Spring Boot và repository](#mapping-với-spring-boot-và-repository)
+  - [Spring binding](#spring-binding)
+  - [Normalize thành service criteria](#normalize-thành-service-criteria)
+  - [Allowlist và parameter binding](#allowlist-và-parameter-binding)
+  - [Authorization và tenant boundary](#authorization-và-tenant-boundary)
+  - [Endpoint HTTP theo version Spring Boot](#endpoint-http-theo-version-spring-boot)
+- [Hiệu năng và operational safety](#hiệu-năng-và-operational-safety)
+  - [Index và query plan](#index-và-query-plan)
+  - [Cost và complexity](#cost-và-complexity)
+  - [Case sensitivity và timezone](#case-sensitivity-và-timezone)
+- [Lộ trình thực hành](#lộ-trình-thực-hành)
+- [Checklist review](#checklist-review)
 - [Bước tiếp theo](#bước-tiếp-theo)
 
-## Nội dung dự kiến
+## Bức tranh tổng thể
 
-Nội dung chi tiết sẽ bao gồm khái niệm chính, ví dụ code và các lưu ý thực hành liên quan đến chủ đề này.
+### Filtering và sorting giải quyết hai câu hỏi khác nhau
 
-<Callout type="info" title="Trang placeholder">
-Đây là trang khung. Hãy dùng skill `fumadocs-technical-writer` để viết đầy đủ trang này trong bước tiếp theo.
+Filter trả lời: **bản ghi nào được giữ lại?** Sort trả lời: **các bản ghi đã giữ lại nằm theo thứ tự nào?**
+
+Ví dụ, yêu cầu “sách lập trình từ năm 2018, mới nhất trước, rồi theo tên” có thể tách thành:
+
+```text
+Filter: genre = PROGRAMMING AND publishedYear >= 2018
+Sort:   publishedYear DESC, title ASC, id ASC
+```
+
+`filter` không nên quyết định thứ tự. `sort` cũng không nên làm thay đổi tập bản ghi. Tách hai input giúp client đọc contract dễ hơn, service kiểm tra từng phần độc lập hơn và repository có thể xây dựng query có kế hoạch.
+
+| Thành phần | Câu hỏi | Ví dụ | Rủi ro nếu thiết kế mơ hồ |
+| --- | --- | --- | --- |
+| `filter` | Giữ bản ghi nào? | `publishedYear.gte: 2018` | Trả thừa dữ liệu hoặc hiểu sai AND/OR |
+| `sort` | Thứ tự bản ghi là gì? | `PUBLISHED_YEAR DESC` | Kết quả nhảy thứ tự, cursor không ổn định |
+| `first` | Lấy tối đa bao nhiêu bản ghi? | `20`, tối đa `100` | Query nặng hoặc response quá lớn |
+| `after` | Tiếp tục từ vị trí nào? | Cursor opaque | Trùng/bỏ sót khi phân trang |
+
+### Luồng xử lý an toàn
+
+Một request search nên đi qua các ranh giới sau:
+
+```text
+Client
+  │  query + variables có kiểu
+  ▼
+GraphQL validation/coercion
+  │  field, enum, input shape, nullability
+  ▼
+Spring binding
+  │  record/enum/list Java
+  ▼
+Service normalizer + policy validator
+  │  default, max, AND/OR, authorization, tenant
+  ▼
+Typed criteria compiler
+  │  allowlist field/operator + parameter binding
+  ▼
+Repository/database
+  │  filter → sort → cursor/limit
+  ▼
+Connection response
+```
+
+GraphQL chỉ kiểm tra những gì schema có thể mô tả. Nó không biết `contains` có tốn chi phí hay user có được đọc tenant nào. Spring for GraphQL bind input vào method, nhưng không tự tạo predicate an toàn. Service và repository vẫn phải giữ các invariant đó.
+
+## SDL minh họa cho catalog sách
+
+### Schema hoàn chỉnh
+
+SDL (*Schema Definition Language*, ngôn ngữ định nghĩa schema) dưới đây là contract độc lập cho các ví dụ trong trang. `BookFilter` và `BookSort` là **input type**; `Book`, `BookConnection` và `PageInfo` là **output type**.
+
+```graphql title="schema.graphqls"
+schema {
+  query: Query
+}
+
+type Query {
+  books(
+    filter: BookFilter
+    sort: [BookSort!]
+    first: Int! = 20
+    after: String
+  ): BookConnection!
+}
+
+type BookConnection {
+  nodes: [Book!]!
+  pageInfo: PageInfo!
+}
+
+type PageInfo {
+  hasNextPage: Boolean!
+  endCursor: String
+}
+
+type Book {
+  id: ID!
+  title: String!
+  genre: BookGenre!
+  publishedYear: Int
+  author: Author!
+}
+
+type Author {
+  id: ID!
+  name: String!
+}
+
+enum BookGenre {
+  PROGRAMMING
+  DATABASE
+  SOFTWARE_DESIGN
+}
+
+enum BookSortField {
+  TITLE
+  PUBLISHED_YEAR
+}
+
+enum SortDirection {
+  ASC
+  DESC
+}
+
+input BookFilter {
+  and: [BookFilter!]
+  or: [BookFilter!]
+  title: StringFilter
+  genre: GenreFilter
+  publishedYear: YearFilter
+  author: AuthorFilter
+}
+
+input StringFilter {
+  eq: String
+  contains: String
+  in: [String!]
+}
+
+input GenreFilter {
+  eq: BookGenre
+  in: [BookGenre!]
+}
+
+input YearFilter {
+  eq: Int
+  gt: Int
+  gte: Int
+  lt: Int
+  lte: Int
+  isNull: Boolean
+}
+
+input AuthorFilter {
+  name: StringFilter
+}
+
+input BookSort {
+  field: BookSortField!
+  direction: SortDirection! = ASC
+}
+```
+
+Schema này cố ý dùng tập operator nhỏ. `StringFilter` hỗ trợ so sánh bằng, chứa chuỗi và tập giá trị. `GenreFilter` chỉ nhận enum. `YearFilter` hỗ trợ bằng, các biên range và kiểm tra null. Không có field `tenantId`, tên cột database hoặc một `where: String` tùy ý.
+
+### Input filter và sort khác output
+
+`BookFilter` mô tả dữ liệu đi **vào** field `Query.books`. Client truyền nó qua argument:
+
+```graphql
+books(filter: $filter, sort: $sort, first: $first, after: $after)
+```
+
+Client không viết `filter { title }` như một selection set. `filter` là giá trị input, không phải object output để đọc. Ngược lại, `BookConnection` là output object nên phải có selection set như `nodes` và `pageInfo`.
+
+| Loại | Vai trò | Ví dụ sử dụng |
+| --- | --- | --- |
+| `BookFilter` | Điều kiện chọn bản ghi | `filter: { genre: { eq: PROGRAMMING } }` |
+| `BookSort` | Một khóa sắp xếp và hướng | `{ field: TITLE, direction: ASC }` |
+| `Book` | Dữ liệu trả về | `nodes { id title }` |
+| `BookConnection` | Dữ liệu list và metadata | `nodes`, `pageInfo` |
+
+Không dùng `Book` làm input chỉ vì nó có field `title` và `genre`. Output có thể chứa field chỉ đọc, field tính toán hoặc quan hệ. Input nên chỉ công khai những điều kiện mà use case search cho phép.
+
+### Đọc giới hạn từ schema
+
+Một số giới hạn đã thể hiện được trong SDL:
+
+- `BookSort.field` là enum, nên client không gửi tên field tùy ý.
+- `BookSort.direction` là enum non-null và có default `ASC` khi field bị bỏ qua trong một object `BookSort`.
+- `sort` là list của nhiều `BookSort`, nên có thể biểu diễn thứ tự ưu tiên nhiều field.
+- `first` có default `20` và là non-null sau khi default được áp dụng. Khoảng hợp lệ, chẳng hạn từ `1` đến `100`, vẫn cần validation ở service.
+- `publishedYear` nullable ở output, vì catalog có thể chưa biết năm. `YearFilter.isNull` tồn tại để biểu diễn việc tìm những bản ghi chưa có năm.
+- `title` và `genre` non-null ở output, nên filter null cho hai field này không được đưa vào schema minh họa.
+
+Schema không thể tự biểu diễn mọi giới hạn như số nhánh `or`, độ sâu quan hệ hoặc chi phí của `contains`. Những giới hạn đó cần được chuẩn hóa và kiểm tra trước khi gọi repository.
+
+## Thiết kế filter input
+
+### Operator có kiểu
+
+Mỗi operator nên xuất hiện ở input phù hợp với kiểu dữ liệu. Bảng sau là catalog operator của schema minh họa:
+
+| Operator | Input phù hợp | Semantics | Giới hạn nên đặt |
+| --- | --- | --- | --- |
+| `eq` | String, enum, Int | Giá trị bằng giá trị đã cho | Không nhận `null` tường minh trong filter này |
+| `in` | String, enum | Field bằng một phần tử trong list | List không rỗng, giới hạn số phần tử |
+| `contains` | String | Chuỗi con theo case policy đã công bố | Giới hạn độ dài, có thể tốn index |
+| `gt`, `gte` | Int, DateTime nếu có | Lớn hơn hoặc lớn hơn/bằng cận dưới | Chỉ cho field có thứ tự |
+| `lt`, `lte` | Int, DateTime nếu có | Nhỏ hơn hoặc nhỏ hơn/bằng cận trên | Cận dưới không được vượt cận trên |
+| `isNull` | Field nullable | Có hoặc không có giá trị dữ liệu | Không ghép với operator khác |
+
+`gte` và `lte` tạo thành một range khi cùng xuất hiện:
+
+```graphql
+publishedYear: { gte: 2018, lte: 2024 }
+```
+
+Không cần một operator `range` nhận JSON tùy ý để có khả năng này. Hai field có kiểu `Int` làm rõ cả giá trị lẫn nghĩa của cận. Nếu tương lai có filter tiền tệ hoặc thời gian, tạo input type riêng với đơn vị và timezone được ghi rõ.
+
+Một operator không phù hợp nên bị chặn ngay từ schema nếu có thể. Ví dụ, `GenreFilter` không có `contains`, còn `StringFilter` không thể nhận số cho `eq`. Các quy tắc quan hệ giữa nhiều operator vẫn cần service kiểm tra.
+
+### AND và OR
+
+Trong schema minh họa, các field predicate cùng một `BookFilter` kết hợp bằng **AND**. `and` cũng yêu cầu mọi nhánh đúng. `or` yêu cầu ít nhất một nhánh đúng. Nếu một object có cả ba loại điều kiện, tất cả điều kiện ở cùng cấp vẫn kết hợp bằng AND:
+
+```text
+BookFilter =
+  title predicate
+  AND genre predicate
+  AND every(and branch)
+  AND atLeastOne(or branch)
+```
+
+Ví dụ filter sau có nghĩa:
+
+```graphql
+{
+  and: [
+    { genre: { in: [PROGRAMMING, DATABASE] } }
+    { publishedYear: { gte: 2018, lte: 2024 } }
+    {
+      or: [
+        { title: { contains: "GraphQL" } }
+        { author: { name: { contains: "Bloch" } } }
+      ]
+    }
+  ]
+}
+```
+
+Có thể đọc thành:
+
+```text
+(genre IN {PROGRAMMING, DATABASE})
+AND (publishedYear BETWEEN 2018 AND 2024)
+AND (title contains "GraphQL" OR author.name contains "Bloch")
+```
+
+Đừng để người dùng phải đoán `or` có ưu tiên hơn field sibling hay không. Ghi semantics trong schema description, tài liệu và test. Cũng nên giới hạn độ sâu và số nhánh vì một cây OR lớn có thể tạo query đắt hơn nhiều so với một filter phẳng.
+
+Schema này không đưa `not` vào bản đầu tiên. Phủ định thường làm tăng số trường hợp null và query plan. Nếu thật sự cần, thêm operator hoặc input typed có semantics rõ, thay vì nhận một biểu thức phủ định dạng string.
+
+### Missing, null và empty
+
+Ba trạng thái “không có giá trị”, `null` và list rỗng có thể tạo behavior khác nhau. Một contract an toàn phải nói rõ từng trạng thái:
+
+| Vị trí | Bị bỏ qua | Gửi `null` | Gửi empty |
+| --- | --- | --- | --- |
+| Argument `filter` | Không lọc | Trong ví dụ: không lọc | Không áp dụng |
+| Argument `sort` | Dùng sort mặc định | Trong ví dụ: dùng sort mặc định | Bị từ chối, không âm thầm dùng mặc định |
+| Field predicate như `title` | Không thêm điều kiện | Bỏ qua field; nếu filter không còn điều kiện thì lỗi `EMPTY_FILTER` | Không áp dụng |
+| `StringFilter` không có operator | Không có predicate | Không có predicate; nếu object rỗng thì lỗi `EMPTY_PREDICATE` | Không áp dụng |
+| `in: []` | Không áp dụng | Không hợp lệ theo policy nếu gửi `null` như operator | Bị từ chối với `EMPTY_IN` |
+| `and: []` hoặc `or: []` | Không áp dụng | Được coi như không có group | Bị từ chối với `EMPTY_BOOLEAN_GROUP` |
+| `publishedYear.isNull` | Không lọc null | Không có predicate | Không áp dụng |
+
+Trong thiết kế này, `filter: null` và bỏ argument `filter` đều có nghĩa “không thêm điều kiện”. Đây là lựa chọn API, không phải quy tắc bắt buộc của GraphQL. Ngược lại, `filter: {}` hoặc một `StringFilter` không có operator bị từ chối để phát hiện lỗi UI thay vì vô tình trả toàn bộ catalog.
+
+`publishedYear: { isNull: true }` có nghĩa `publishedYear IS NULL`. `isNull: false` có nghĩa `publishedYear IS NOT NULL`. `isNull` không được ghép với `gte`, `lte` hoặc `eq`. Gửi `eq: null` không nên được hiểu là tìm dữ liệu null; hãy dùng `isNull` để tránh nhầm giữa **input missing** và **giá trị dữ liệu null**.
+
+`null` trong variables JSON cũng không tự kích hoạt default của một input field. GraphQL áp dụng default khi field bị bỏ qua tại vị trí có default. Spring binding có thể làm mất sự khác biệt giữa omitted và explicit null nếu target Java chỉ là một property nullable. Nếu use case cần phân biệt hai trạng thái đó, dùng cơ chế binding phù hợp của version Spring for GraphQL, chẳng hạn `ArgumentValue`, thay vì suy đoán từ `null`.
+
+<Callout type="warn" title="Đừng để empty có nghĩa ngầm">
+  Một client bỏ hết lựa chọn genre có thể gửi `in: []`. Nếu server coi nó là “không lọc”, lỗi giao diện sẽ làm lộ toàn bộ dữ liệu. Ví dụ này chọn cách từ chối list rỗng. Coi `in: []` là “không có kết quả” cũng có thể hợp lệ, nhưng phải được công bố và kiểm thử nhất quán.
 </Callout>
+
+### Nested relation filter
+
+`author` là relation filter có chiều sâu một cấp trong schema minh họa:
+
+```graphql
+filter: {
+  author: {
+    name: { contains: "Bloch" }
+  }
+}
+```
+
+Với `Book.author: Author!`, semantics là: giữ sách nếu author liên quan tồn tại và `Author.name` thỏa predicate. Ở tầng repository, điều này thường được biểu diễn bằng `EXISTS` hoặc join có điều kiện. Client không cần biết relation nằm ở bảng nào.
+
+Nếu relation có thể nullable, tài liệu phải nói rõ “book không có author” có bị loại khi filter relation hay không. Nếu relation là to-many, đừng tự suy ra semantics từ `author: {...}`. Hãy chọn một vocabulary có chủ đích như `some`, `every` hoặc `none`, rồi giới hạn độ sâu và số relation traversal.
+
+Nested relation filter cần đi qua cùng authorization boundary với object gốc. Không được vì một author thuộc tenant khác mà predicate relation làm lộ sự tồn tại của sách, count hoặc thông tin lỗi. Service phải áp dụng policy cho cả `Book` và `Author`, không chỉ kiểm tra filter ở controller.
+
+## Ví dụ query variables và response
+
+### Query và variables
+
+Query giữ nguyên document và truyền giá trị runtime bằng variables. Nó dùng connection shape để kết hợp kết quả với page metadata:
+
+```graphql title="SearchBooks"
+query SearchBooks(
+  $filter: BookFilter
+  $sort: [BookSort!]
+  $first: Int! = 2
+  $after: String
+) {
+  books(
+    filter: $filter
+    sort: $sort
+    first: $first
+    after: $after
+  ) {
+    nodes {
+      id
+      title
+      genre
+      publishedYear
+      author {
+        id
+        name
+      }
+    }
+    pageInfo {
+      hasNextPage
+      endCursor
+    }
+  }
+}
+```
+
+Variables JSON tương ứng:
+
+```json title="Variables"
+{
+  "filter": {
+    "and": [
+      {
+        "genre": {
+          "in": ["PROGRAMMING", "DATABASE"]
+        }
+      },
+      {
+        "publishedYear": {
+          "gte": 2018,
+          "lte": 2024
+        }
+      },
+      {
+        "or": [
+          {
+            "title": {
+              "contains": "GraphQL"
+            }
+          },
+          {
+            "author": {
+              "name": {
+                "contains": "Bloch"
+              }
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "sort": [
+    {
+      "field": "PUBLISHED_YEAR",
+      "direction": "DESC"
+    },
+    {
+      "field": "TITLE",
+      "direction": "ASC"
+    }
+  ],
+  "first": 2,
+  "after": null
+}
+```
+
+Filter này có nghĩa:
+
+```text
+genre thuộc PROGRAMMING hoặc DATABASE
+AND publishedYear nằm trong [2018, 2024]
+AND (title chứa GraphQL hoặc author.name chứa Bloch)
+```
+
+Sort được gửi với hai khóa. Server sẽ thêm tie-breaker `id ASC` theo policy bên dưới, dù client không phải biết tên cột hoặc tự thêm khóa kỹ thuật đó.
+
+Nếu dùng literal trong GraphQL document, enum viết không có dấu ngoặc kép, như `PROGRAMMING`. Trong JSON variables, enum là string `"PROGRAMMING"`.
+
+### Response và cách đọc
+
+Giả sử data source có ba cuốn sách phù hợp. Response minh họa có thể là:
+
+```json title="Response thành công minh họa"
+{
+  "data": {
+    "books": {
+      "nodes": [
+        {
+          "id": "book-3",
+          "title": "GraphQL in Action",
+          "genre": "PROGRAMMING",
+          "publishedYear": 2022,
+          "author": {
+            "id": "author-2",
+            "name": "Samer Buna"
+          }
+        },
+        {
+          "id": "book-1",
+          "title": "Effective Java",
+          "genre": "PROGRAMMING",
+          "publishedYear": 2018,
+          "author": {
+            "id": "author-1",
+            "name": "Joshua Bloch"
+          }
+        }
+      ],
+      "pageInfo": {
+        "hasNextPage": true,
+        "endCursor": "opaque-cursor-page-1"
+      }
+    }
+  }
+}
+```
+
+Response này cho thấy ba điều:
+
+1. `filter` được áp dụng trước. Chỉ sách thỏa cả nhóm điều kiện mới đi tiếp.
+2. `sort` được áp dụng sau filter. `publishedYear DESC` đặt năm 2022 trước năm 2018.
+3. `first` được áp dụng sau filter và sort. `pageInfo.hasNextPage` cho biết còn ít nhất một node phía sau cursor hiện tại.
+
+`opaque-cursor-page-1` chỉ là chuỗi minh họa. Client không nên tự giải mã, sửa hoặc tạo cursor. Cursor thật cần phản ánh thứ tự hiệu dụng, bao gồm tie-breaker và phạm vi query nếu implementation chọn ràng buộc cursor với filter, tenant hoặc user.
+
+Selection set quyết định response shape. Input `filter`, `sort`, `first` và `after` không tự xuất hiện dưới `data`. `publishedYear` là output nullable nên response cũng có thể chứa `"publishedYear": null` nếu sách phù hợp nhờ một điều kiện khác.
+
+### Trường hợp không có kết quả
+
+List trong connection nên là list không `null`. Khi không có bản ghi phù hợp, response có thể là:
+
+```json
+{
+  "data": {
+    "books": {
+      "nodes": [],
+      "pageInfo": {
+        "hasNextPage": false,
+        "endCursor": null
+      }
+    }
+  }
+}
+```
+
+`nodes: []` khác với lỗi filter. Empty result chỉ nói không có bản ghi thỏa điều kiện. Nếu input sai như `publishedYear: { gte: 2025, lte: 2020 }`, server nên trả lỗi validation có mã ổn định thay vì giả vờ không có kết quả.
+
+## Thiết kế sorting
+
+### Multi-field và direction
+
+`sort` là một list có thứ tự. Phần tử đầu tiên là khóa ưu tiên cao nhất; phần tử sau chỉ dùng khi các khóa trước bằng nhau.
+
+```json
+[
+  { "field": "PUBLISHED_YEAR", "direction": "DESC" },
+  { "field": "TITLE", "direction": "ASC" }
+]
+```
+
+Có thể đọc cấu hình trên là “năm giảm dần, sau đó title tăng dần”. `ASC` và `DESC` là enum nên không nhận chuỗi SQL tùy ý. Direction phải được áp dụng cho đúng field mà client đã chọn; không đảo ngược bất ngờ khi query đi qua nhiều lớp repository.
+
+| Thứ tự | Field | Direction | Vai trò |
+| --- | --- | --- | --- |
+| 1 | `PUBLISHED_YEAR` | `DESC` | Đưa sách mới hơn lên trước |
+| 2 | `TITLE` | `ASC` | Phá hòa khi cùng năm |
+| 3 | `id` | `ASC` do server thêm | Bảo đảm thứ tự toàn phần |
+
+Một **thứ tự toàn phần** (total order) là thứ tự có thể quyết định vị trí của mọi cặp bản ghi. Chỉ sort theo `publishedYear` chưa tạo được thứ tự này vì nhiều sách có thể cùng năm. Thứ tự toàn phần là điều kiện quan trọng cho cursor pagination.
+
+### Tie-breaker và null ordering
+
+Server nên thêm một khóa duy nhất, ổn định vào cuối sort. Trong ví dụ, `id ASC` là tie-breaker bắt buộc. Client không cần được phép gửi `id` như một field sort công khai. Việc server thêm khóa giúp:
+
+- hai request có cùng filter và sort nhận cùng thứ tự logic;
+- cursor biết chính xác vị trí của node cuối;
+- các bản ghi có cùng title hoặc năm không bị đổi chỗ ngẫu nhiên;
+- query kế tiếp không lặp hoặc bỏ sót node chỉ vì database trả về thứ tự không xác định.
+
+Nếu client gửi lại cùng một field hai lần, như `TITLE ASC` rồi `TITLE DESC`, server nên từ chối với `DUPLICATE_SORT_FIELD`. Không nên để database quyết định khóa nào thắng.
+
+`publishedYear` nullable nên cần policy về null. Thiết kế minh họa chọn `NULLS LAST` cho cả `ASC` và `DESC`, nghĩa là sách chưa biết năm đứng sau sách có năm. Một policy khác như “null đứng đầu khi ASC” cũng có thể đúng. Điều quan trọng là policy phải được mô tả, được dùng nhất quán trong query và được đưa vào cursor.
+
+Null ordering không nên phụ thuộc ngầm vào database hoặc collation. Các dialect SQL có thể có mặc định khác nhau. Repository cần biểu diễn policy rõ ràng, chẳng hạn bằng biểu thức `CASE`, API Criteria hoặc tính năng null ordering tương ứng, rồi kiểm tra bằng integration test với database thật.
+
+### Default, max và invalid sort
+
+Một contract thực dụng cần tách default khỏi giới hạn:
+
+| Quy tắc | Lựa chọn trong ví dụ | Nơi kiểm tra |
+| --- | --- | --- |
+| Sort bị bỏ qua hoặc `null` | `TITLE ASC, id ASC` | Normalizer/service |
+| Sort là `[]` | Từ chối `EMPTY_SORT` | Service |
+| Số khóa client gửi | Tối đa 3 | Service/policy |
+| Field sort | Chỉ `TITLE`, `PUBLISHED_YEAR` | GraphQL enum + allowlist |
+| Direction | Chỉ `ASC`, `DESC` | GraphQL enum |
+| Khóa cuối | Luôn có `id ASC` | Sort compiler |
+| `first` bị bỏ qua | `20` | Schema default |
+| `first` hợp lệ | Từ `1` đến `100` | Service/policy |
+
+`first: Int! = 20` trong SDL chỉ kiểm soát kiểu và giá trị mặc định khi argument bị bỏ qua. Nó không diễn đạt được khoảng từ 1 đến 100. Nếu client gửi `first: 0` hoặc `first: 101`, service trả lỗi `PAGE_SIZE_OUT_OF_RANGE`.
+
+Vì `first` là non-null có default, `first: null` bị GraphQL từ chối trước resolver. Với một schema dùng `first: Int` nullable thay vì khai báo trên, explicit `null` lại đi vào resolver và cần policy riêng. Đừng để behavior này chỉ nằm trong một resolver không được tài liệu hóa.
+
+Sort list rỗng có thể được coi là “dùng default” trong một API khác. Ví dụ này chọn từ chối vì `null`/missing đã đủ để yêu cầu default. Chọn một quy tắc duy nhất để client không phải phân biệt những trạng thái không có giá trị một cách tình cờ.
+
+### Pagination interaction
+
+Filter, sort và pagination có thứ tự logic:
+
+```text
+1. Áp dụng tenant/authorization boundary
+2. Áp dụng filter
+3. Áp dụng sort hiệu dụng và tie-breaker
+4. Dùng after để chọn phần tử sau cursor
+5. Lấy first node, thường đọc thêm một node để biết hasNextPage
+```
+
+Không áp dụng `first` trước filter rồi mới lọc trong memory. Cách đó có thể trả ít node hơn dự kiến và buộc server đọc nhiều dữ liệu không cần thiết. Cursor phải được tạo từ cùng thứ tự mà query dùng để lấy node.
+
+Một cursor an toàn thường chứa hoặc tham chiếu đến tuple vị trí, ví dụ `(publishedYear, title, id)`, cùng version và metadata cần để kiểm tra. Cursor nên là opaque và có thể được ký hoặc mã hóa theo threat model. Nếu cursor được dùng với filter/sort khác request trước, server nên phát hiện mismatch bằng query fingerprint hoặc trả `INVALID_CURSOR` thay vì âm thầm ghép hai thứ tự.
+
+Cursor pagination phù hợp khi danh sách lớn và cần tiếp tục qua các trang ổn định. Offset pagination đơn giản hơn khi cần nhảy tới trang số cụ thể, nhưng dễ bị trượt khi bản ghi được thêm hoặc xóa ở phía trước. Bài [Pagination](/docs/query-mutation-subscription/pagination) so sánh hai contract ở lớp GraphQL. Bài [Cursor/offset pagination trong Spring](/docs/truy-cap-du-lieu-va-hieu-nang/cursor-offset-pagination-spring) là điểm nối cho phần repository/query database trong Spring; các bài đó cần được triển khai và kiểm thử riêng trong backend thật.
+
+Một cursor không tự tạo snapshot nhất quán. Nếu dữ liệu thay đổi giữa hai request, implementation vẫn cần quyết định consistency window, transaction isolation hoặc chấp nhận thay đổi đó. Hãy ghi rõ kỳ vọng thay vì hứa “không bao giờ trùng” khi hệ thống không có snapshot.
+
+## Thiết kế đơn giản hay extensible
+
+### Thiết kế đơn giản
+
+Khi use case nhỏ và ổn định, vài argument có tên rõ ràng có thể tốt hơn một cây input:
+
+```graphql
+type Query {
+  books(
+    genre: BookGenre
+    titleContains: String
+    first: Int! = 20
+  ): BookConnection!
+}
+```
+
+Thiết kế này dễ khám phá trong GraphiQL. Client thấy ngay ba lựa chọn, và server dễ viết resolver ban đầu. Nó phù hợp khi catalog chỉ có một hoặc hai màn hình và không cần AND/OR lồng nhau.
+
+Đổi lại, mỗi field mới làm chữ ký `books` dài hơn. Việc thêm `publishedFrom`, `publishedTo`, `authorNameContains`, hai direction và nhiều relation sẽ tạo một nhóm argument khó quản lý. Thiết kế này cũng không biểu diễn tốt các nhóm OR.
+
+| Khi chọn thiết kế đơn giản | Lợi ích | Giới hạn |
+| --- | --- | --- |
+| Ít field, ít operator | Schema dễ đọc, validation trực tiếp | Khó mở rộng khi use case tăng |
+| Một sort cố định | Query plan dễ dự đoán | Client ít quyền chọn thứ tự |
+| Không có nested boolean | Dễ giải thích semantics | Không diễn tả được biểu thức phức tạp |
+
+Đừng tạo input extensible chỉ vì có thể sẽ cần nó. Bắt đầu với contract nhỏ nếu domain thực sự nhỏ, nhưng đặt tên sao cho sau này có thể thêm input mới hoặc deprecate argument có lộ trình.
+
+### Input extensible có kiểm soát
+
+Input hiện tại phù hợp khi có nhiều client và nhiều điều kiện cần phát triển cùng nhau:
+
+```graphql
+input BookFilter {
+  and: [BookFilter!]
+  or: [BookFilter!]
+  title: StringFilter
+  genre: GenreFilter
+  publishedYear: YearFilter
+  author: AuthorFilter
+}
+
+type Query {
+  books(
+    filter: BookFilter
+    sort: [BookSort!]
+    first: Int! = 20
+    after: String
+  ): BookConnection!
+}
+```
+
+Lợi ích là field filter, operator và enum được introspection. Client có thể tạo variables ổn định. Thêm một field nullable như `language` không cần đổi chữ ký root field. Service có thể chuẩn hóa input thành một internal criteria model.
+
+Chi phí là schema phải tài liệu hóa rõ semantics của `and`, `or`, null, empty, nested relation và giới hạn. Cây filter cũng làm complexity khó đoán hơn. Extensible không có nghĩa là vô hạn; hãy công khai một tập nhỏ, có owner và có query plan tương ứng.
+
+### Không biến schema thành DSL tùy ý
+
+Một thiết kế trông rất linh hoạt nhưng thường làm mất type safety là:
+
+```graphql
+scalar JSON
+
+input FilterClause {
+  field: String!
+  operator: String!
+  value: JSON
+}
+
+input SearchInput {
+  clauses: [FilterClause!]
+}
+```
+
+Với shape này, schema không biết `field` nào tồn tại, `operator` nhận kiểu gì hoặc `value` có phải list, enum, số hay thời gian không. GraphiQL không thể gợi ý đầy đủ. Service dễ trở thành một parser DSL lớn, và parser đó có thể vô tình nhận tên cột, biểu thức hoặc operator mà repository không nên hỗ trợ.
+
+Nếu một internal admin API thật sự cần clause động, vẫn phải có registry server-side:
+
+- `field` là enum hoặc khóa đã map trong code, không phải tên cột tự do;
+- operator là enum hữu hạn;
+- value được kiểm tra theo kiểu của từng field;
+- số clause, độ sâu, relation và chi phí đều có giới hạn;
+- compiler chỉ tạo predicate từ node đã được allowlist;
+- authorization và tenant predicate được thêm ngoài input.
+
+Đối với public GraphQL API, input field-specific như `StringFilter`, `GenreFilter` và `YearFilter` thường đem lại cân bằng tốt hơn. Đừng dùng `String` hoặc `JSON` để trì hoãn việc thiết kế contract.
+
+## Validation và error behavior
+
+### Ba lớp validation
+
+Một request filter/sort đi qua nhiều lớp. Mỗi lớp có mục tiêu và owner khác nhau:
+
+| Lớp | Kiểm tra | Ví dụ |
+| --- | --- | --- |
+| GraphQL parse/validation | Cú pháp, field, argument, input field và selection set | `books(filter: ...)`, field `contains` có tồn tại |
+| GraphQL coercion/Spring binding | Kiểu scalar, enum, non-null và mapping sang Java | `"2018"` không phải `Int`, `FICTION` không phải enum |
+| Service/query policy | Semantics, quyền, giới hạn và query cost | `gte > lte`, duplicate sort, tenant, max `first` |
+
+Unknown input field hoặc unknown enum thường bị chặn trước resolver. Ví dụ `genre: { contains: "book" }` không hợp lệ vì `GenreFilter` không công khai `contains`. Không cần đợi repository để phát hiện một field sai schema.
+
+Ngược lại, GraphQL không biết `gte: 2025` và `lte: 2020` là mâu thuẫn. Hai giá trị đều đúng kiểu `Int`. Service phải kiểm tra quan hệ giữa chúng trước khi build query.
+
+Giữ controller mỏng. Controller nhận input đã bind và gọi normalizer/service. Service nên được dùng chung nếu hệ thống có thêm REST endpoint, job hoặc consumer cũng cần cùng quy tắc filter.
+
+### Invalid combination
+
+Các trường hợp sau nên có mã lỗi ổn định và được test như contract:
+
+| Input | Mã lỗi minh họa | Vì sao invalid |
+| --- | --- | --- |
+| `title: { eq: "A", contains: "B" }` | `INVALID_PREDICATE` | Hai semantics text mâu thuẫn hoặc dư thừa |
+| `publishedYear: { eq: 2020, gte: 2018 }` | `INVALID_PREDICATE` | Ví dụ này không cho ghép `eq` với range |
+| `publishedYear: { gte: 2025, lte: 2020 }` | `INVALID_RANGE` | Cận dưới lớn hơn cận trên |
+| `publishedYear: { isNull: true, gte: 2020 }` | `INVALID_PREDICATE` | Null check không ghép với so sánh |
+| `genre: { in: [] }` | `EMPTY_IN` | List rỗng bị policy từ chối |
+| `and: []` hoặc `or: []` | `EMPTY_BOOLEAN_GROUP` | Không có nhánh để áp dụng |
+| Hai sort cùng `TITLE` | `DUPLICATE_SORT_FIELD` | Thứ tự ưu tiên không rõ |
+| Hơn 3 sort clause | `SORT_TOO_COMPLEX` | Query plan và cursor phình to |
+| Nested relation quá sâu | `FILTER_DEPTH_EXCEEDED` | Chi phí join và quyền khó kiểm soát |
+| `first: 0` hoặc `first: 101` | `PAGE_SIZE_OUT_OF_RANGE` | Ngoài giới hạn vận hành |
+
+Một team có thể chọn semantics khác, chẳng hạn cho phép `eq` cùng `gte` rồi kiểm tra chúng tương thích. Điều cần tránh là để database tự xử lý mâu thuẫn hoặc để mỗi resolver chọn một behavior khác nhau.
+
+### Error response
+
+Với query đọc, lỗi policy thường được đưa vào top-level GraphQL `errors`. Ví dụ response đã được làm sạch có thể là:
+
+```json
+{
+  "errors": [
+    {
+      "message": "Bộ lọc không hợp lệ.",
+      "path": ["books"],
+      "extensions": {
+        "code": "INVALID_RANGE",
+        "field": "publishedYear"
+      }
+    }
+  ],
+  "data": null
+}
+```
+
+`message`, `path`, HTTP status và việc có giữ `data` hay không phụ thuộc GraphQL Java, Spring configuration và error handler. `extensions.code` trong ví dụ là contract do ứng dụng định nghĩa, không phải mã mặc định của Spring for GraphQL. Vì `Query.books` khai báo non-null, lỗi execution ở field này có thể lan lên `data: null`.
+
+Lỗi enum hoặc input field không tồn tại thường xảy ra ở validation/coercion trước khi resolver chạy:
+
+```json
+{
+  "errors": [
+    {
+      "message": "Value \"FICTION\" does not exist in \"BookGenre\" enum."
+    }
+  ]
+}
+```
+
+Không nên phụ thuộc vào nguyên văn message. Client nên dùng mã lỗi ổn định nếu server công bố mã, hoặc xử lý nhóm lỗi theo contract của ứng dụng. Không đưa SQL, stack trace, tên bảng, token hoặc tenant khác vào `message` hay `extensions`.
+
+HTTP `200` không luôn có nghĩa filter thành công. GraphQL có thể trả execution result chứa `errors` trong HTTP response thành công. Ngược lại, một gateway có thể map validation lỗi sang HTTP `400`. Client cần đọc cả `data` và `errors`, còn server cần ghi policy rõ.
+
+<Accordions type="single">
+  <Accordion title="Enum có tự ngăn SQL injection không?">
+    Không. Enum giới hạn token đi qua GraphQL, nhưng service vẫn phải map token sang field/operator cố định và bind giá trị qua parameter. Nếu code lấy tên enum rồi nối trực tiếp vào SQL hoặc bỏ qua tenant predicate, allowlist chưa đủ an toàn.
+  </Accordion>
+  <Accordion title="Có nên dùng JPA Specification cho mọi filter không?">
+    `Specification`, Criteria API hoặc Querydsl đều có thể là implementation phù hợp. Chúng không tự quyết định semantics, authorization, giới hạn chi phí hoặc allowlist. Hãy tạo criteria nội bộ đã normalize trước, rồi chỉ dùng path và operator mà server đã kiểm soát.
+  </Accordion>
+</Accordions>
+
+## Mapping với Spring Boot và repository
+
+### Spring binding
+
+Spring for GraphQL nhận argument theo tên field GraphQL. Một nhóm record Java minh họa cho input có thể là:
+
+```java
+import java.util.List;
+
+public record StringFilterInput(
+        String eq,
+        String contains,
+        List<String> in) {}
+
+public record GenreFilterInput(
+        BookGenre eq,
+        List<BookGenre> in) {}
+
+public record YearFilterInput(
+        Integer eq,
+        Integer gt,
+        Integer gte,
+        Integer lt,
+        Integer lte,
+        Boolean isNull) {}
+
+public record AuthorFilterInput(
+        StringFilterInput name) {}
+
+public record BookFilterInput(
+        List<BookFilterInput> and,
+        List<BookFilterInput> or,
+        StringFilterInput title,
+        GenreFilterInput genre,
+        YearFilterInput publishedYear,
+        AuthorFilterInput author) {}
+
+public record BookSortInput(
+        BookSortField field,
+        SortDirection direction) {}
+
+enum BookGenre {
+    PROGRAMMING,
+    DATABASE,
+    SOFTWARE_DESIGN
+}
+
+enum BookSortField {
+    TITLE,
+    PUBLISHED_YEAR
+}
+
+enum SortDirection {
+    ASC,
+    DESC
+}
+```
+
+Controller có thể nhận các object đã được GraphQL coercion và Spring binding:
+
+```java
+@Controller
+public class BookQueryController {
+
+    private final BookService bookService;
+    private final BookSearchCriteriaFactory criteriaFactory;
+    private final TenantContext tenantContext;
+
+    public BookQueryController(
+            BookService bookService,
+            BookSearchCriteriaFactory criteriaFactory,
+            TenantContext tenantContext) {
+        this.bookService = bookService;
+        this.criteriaFactory = criteriaFactory;
+        this.tenantContext = tenantContext;
+    }
+
+    @QueryMapping
+    public BookConnection books(
+            @Argument("filter") BookFilterInput filter,
+            @Argument("sort") List<BookSortInput> sort,
+            @Argument("first") Integer first,
+            @Argument("after") String after) {
+        BookSearchCriteria criteria = criteriaFactory.normalize(
+                tenantContext.requireTenantId(),
+                filter,
+                sort,
+                first,
+                after);
+
+        return bookService.search(criteria);
+    }
+}
+```
+
+Đây là fragment minh họa, không phải code runtime trong repository. `@Argument("filter")` khớp tên argument `filter`, còn `$filter` chỉ là tên variable ở operation. GraphQL đã kiểm tra enum, input field và non-null trước khi method được gọi; Spring chuyển giá trị đã qua bước đó vào record/enum Java.
+
+`Integer`, `String` và list nullable trong record chỉ mô tả khả năng binder nhận giá trị thiếu. Chúng không thay thế contract SDL hoặc validation domain. Nếu cần phân biệt field bị bỏ qua với field explicit `null`, hãy kiểm tra API `ArgumentValue` và cách binding của đúng version Spring for GraphQL thay vì dựa vào một record nullable đơn giản.
+
+### Normalize thành service criteria
+
+Service không nên truyền trực tiếp record GraphQL xuống repository. Hãy tạo một model nội bộ thể hiện query đã được chuẩn hóa:
+
+```java
+public record BookSearchCriteria(
+        TenantId tenantId,
+        FilterNode filter,
+        List<SortClause> effectiveSort,
+        int first,
+        Cursor after) {}
+```
+
+`FilterNode`, `SortClause` và `Cursor` ở đây là kiểu nội bộ minh họa. Normalizer nên thực hiện theo thứ tự:
+
+1. Chuẩn hóa `filter` bị bỏ qua hoặc `null` thành “không có predicate” theo contract.
+2. Kiểm tra operator có đúng field, xử lý whitespace/case theo policy và giới hạn độ dài.
+3. Validate `and`, `or`, `in`, range, relation depth và số node.
+4. Chuẩn hóa sort bị bỏ qua hoặc `null` thành default.
+5. Loại duplicate sort field, thêm `id ASC` và xác định null ordering.
+6. Kiểm tra `first` trong khoảng 1–100 và giải mã/kiểm tra cursor opaque.
+7. Gắn `tenantId` và context authorization lấy từ server.
+8. Trả criteria bất biến cho service/repository.
+
+Cách này làm rõ ranh giới: GraphQL input là vocabulary public, còn criteria là model thực thi. Repository không cần biết client đã dùng `and`, `or` hay fragment nào; nó chỉ nhận predicate đã được kiểm tra.
+
+### Allowlist và parameter binding
+
+Tên field từ request không được trở thành tên cột trực tiếp. Hãy dùng map server-side từ enum public sang path đã biết:
+
+| Enum public | Path cố định do server sở hữu | Operator cho phép |
+| --- | --- | --- |
+| `TITLE` | `books.title_normalized` | `eq`, `contains`, `in` |
+| `PUBLISHED_YEAR` | `books.published_year` | `eq`, `gt`, `gte`, `lt`, `lte`, `isNull` |
+| `GENRE` trong filter | `books.genre` | `eq`, `in` |
+| `AUTHOR_NAME` trong relation filter | path relation được định nghĩa trong compiler | `eq`, `contains`, `in` |
+
+Với JPA Criteria, Specification, Querydsl hoặc SQL builder, compiler có thể sinh query tương đương:
+
+```sql
+WHERE b.tenant_id = :tenantId
+  AND b.title_normalized LIKE :titlePattern
+ORDER BY b.published_year DESC,
+         b.title_normalized ASC,
+         b.id ASC
+```
+
+`b.title_normalized`, thứ tự `DESC/ASC` và `b.id` trong ví dụ phải đến từ constant/map hoặc builder đã được server kiểm soát. `:tenantId` và `:titlePattern` là parameter được bind. Giá trị như `"GraphQL"` không được nối vào SQL.
+
+Không viết các pattern sau:
+
+```java
+// Không an toàn: dữ liệu request kiểm soát identifier/operator.
+String sql = "... ORDER BY " + request.field() + " " + request.direction();
+String where = "... " + request.operator() + " '" + request.value() + "'";
+```
+
+Enum, allowlist và parameter binding cần đi cùng nhau. Enum chỉ là lớp đầu tiên; nếu map enum bằng một chuỗi do client gửi thẳng vào `ORDER BY`, code vẫn có rủi ro injection hoặc cho phép truy cập field không intended.
+
+### Authorization và tenant boundary
+
+Filter không được mở rộng quyền đọc. Trong hệ thống multi-tenant, `tenantId` nên đến từ authentication/security context hoặc boundary của request, không đến từ `BookFilter` public. Repository luôn thêm điều kiện tenant trước khi áp dụng predicate do user chọn:
+
+```text
+visible rows = authorized rows trong tenant hiện tại
+               AND filter của client
+```
+
+Các điểm cần giữ:
+
+- Xác thực user trước khi xây criteria.
+- Kiểm tra role/scope có được dùng relation hoặc field filter đắt tiền không.
+- Không công khai `tenantId` như một filter tự do để client thử tenant khác.
+- Áp dụng authorization cho relation `author`, không chỉ `Book`.
+- Không để count, `hasNextPage`, error message hoặc timing tiết lộ row ngoài phạm vi.
+- Ràng buộc cursor với tenant/user/filter fingerprint nếu cursor có thể bị chia sẻ.
+- Giữ tenant predicate ở service/repository hoặc database row-level security; đừng chỉ đặt trong một resolver GraphQL.
+
+Một input typed không thay thế authorization. Client có thể gửi enum hợp lệ nhưng vẫn không có quyền đọc dữ liệu mà enum đó chọn.
+
+### Endpoint HTTP theo version Spring Boot
+
+Filtering/sorting không đổi transport endpoint. Nếu cần gửi query qua HTTP, giữ quy ước property theo dòng Spring Boot:
+
+Với Spring Boot 3.5 trở lên:
+
+```yaml
+spring:
+  graphql:
+    http:
+      path: /graphql
+```
+
+Với Spring Boot 3.4 trở xuống:
+
+```yaml
+spring:
+  graphql:
+    path: /graphql
+```
+
+Chỉ dùng key phù hợp với version của project. Repository docs này không có backend để xác minh endpoint hoặc resolver. Xem [Thêm dependency và cấu hình](/docs/bat-dau/them-dependency-va-cau-hinh) để đọc đầy đủ về starter, schema location, GraphiQL và cách kiểm tra HTTP.
+
+## Hiệu năng và operational safety
+
+### Index và query plan
+
+Một filter/sort hợp lệ vẫn có thể quá chậm. **Query plan** là kế hoạch database chọn để đọc, join, sort và trả rows. Hãy đo plan với dữ liệu gần production thay vì suy ra hiệu năng từ SDL.
+
+Các hướng thường gặp:
+
+- Bắt đầu index bằng `tenant_id` nếu mọi query đều nằm trong một tenant.
+- Cân nhắc composite index cho các cặp filter/sort phổ biến như `(tenant_id, published_year, id)` hoặc `(tenant_id, title_normalized, id)`.
+- Có index cho foreign key khi relation filter dùng `author`.
+- Với `contains: "%term%"`, B-tree thông thường có thể không giúp nhiều. Cân nhắc full-text, trigram hoặc search service tùy database và ngôn ngữ.
+- Nếu sort không có filter đủ chọn lọc, database có thể phải sort nhiều rows. Max `first` không tự giới hạn work trước sort.
+- Đảm bảo query relation dùng `EXISTS`/join có index, không tải toàn bộ relation vào memory.
+- Không tạo mọi tổ hợp index có thể có. Theo dõi query thật và loại index không được dùng.
+
+Với PostgreSQL, có thể kiểm tra ở môi trường phù hợp bằng `EXPLAIN (ANALYZE, BUFFERS)`. Syntax và chỉ số cần đọc phụ thuộc database. Kiểm tra plan sau khi thêm filter, sort, tenant predicate và pagination, vì planner có thể đổi lựa chọn khi điều kiện thay đổi.
+
+Index không phải lời hứa rằng mọi combination sẽ nhanh. Nếu filter/sort cho phép quá nhiều tổ hợp, hãy thu hẹp allowlist hoặc tạo query path riêng cho use case quan trọng.
+
+### Cost và complexity
+
+Độ phức tạp không chỉ đến từ số node trả về. Các yếu tố đắt thường gồm:
+
+- `first` lớn;
+- nhiều nhánh `or`;
+- list `in` dài;
+- nhiều tầng `and`/`or`;
+- nested relation hoặc relation to-many;
+- `contains` trên text không có index phù hợp;
+- nhiều sort clause và null ordering;
+- selection set có nested field gây N+1 sau khi list đã trả về.
+
+Có thể tính một **cost budget** (ngân sách chi phí) đơn giản ở service hoặc instrumentation:
+
+```text
+cost = base
+     + số predicate
+     + trọng số mỗi nhánh OR
+     + trọng số relation depth
+     + trọng số contains
+     + trọng số sort clause
+     + trọng số first
+```
+
+Công thức chỉ là ví dụ. Mục tiêu là có một cách nhất quán để từ chối query vượt ngân sách với mã `QUERY_TOO_COMPLEX`, thay vì chờ database timeout.
+
+Bên cạnh schema max, nên có:
+
+- timeout ở tầng query/database;
+- rate limit theo user/tenant/operation;
+- giới hạn độ dài text và số phần tử `in`;
+- giới hạn độ sâu relation và số nhánh boolean;
+- metric cho filter shape, latency, rows scanned và error code;
+- tracing để biết query plan nào chậm;
+- persisted operation hoặc allowlist operation nếu threat model phù hợp.
+
+Không ghi nguyên variables chứa dữ liệu nhạy cảm vào log chỉ để phân tích query shape. Có thể log operation name, fingerprint, cost bucket và mã policy sau khi redact.
+
+### Case sensitivity và timezone
+
+Case sensitivity là một phần semantics của filter, không nên để ngẫu nhiên theo collation database. Ví dụ này giả định `StringFilter.eq`, `contains` và `in` trên `title`/`author.name` dùng biểu diễn đã canonicalize để tìm không phân biệt hoa thường. `BookGenre` vẫn so sánh theo enum exact, còn `Int` so sánh theo số.
+
+Implementation cần chọn cách hiện thực phù hợp:
+
+- lưu thêm `title_normalized`/search field;
+- dùng collation hoặc operator database đã được kiểm tra;
+- chuẩn hóa Unicode và locale theo policy;
+- giới hạn độ dài pattern;
+- dùng index tương ứng với phép tìm kiếm.
+
+Nếu domain cần phân biệt hoa thường, đừng âm thầm đổi behavior. Tạo field/operator có tên nói rõ, hoặc ghi contract `eqExact` nếu thật sự cần. Client không nên phải đoán từ môi trường database.
+
+Schema minh họa dùng `publishedYear`, nên không có timezone. Nếu thêm filter `DateTime`, hãy chọn custom scalar hoặc format ISO-8601, quy định cận inclusive/exclusive và chuyển về `Instant`/UTC trước khi query. Nếu người dùng lọc theo ngày địa phương, request phải cung cấp timezone hoặc tenant policy rõ ràng để server đổi khoảng ngày địa phương thành hai mốc UTC. Không dùng timezone mặc định của JVM để tạo behavior khác nhau giữa các node.
+
+<Callout type="idea" title="Đo trước khi mở rộng operator">
+  Mỗi operator mới là một query shape mới. Trước khi thêm `contains`, `not`, full-text hoặc relation aggregate, hãy có ví dụ workload, index/query plan, cost budget và error policy. Extensibility chỉ có giá trị khi hệ thống vẫn dự đoán được chi phí.
+</Callout>
+
+## Lộ trình thực hành
+
+<Steps>
+  <Step>
+    **Chốt use case và semantics.** Viết rõ client cần lọc field nào, sort theo thứ tự nào, null/empty có nghĩa gì và relation nào được phép đi qua. Chưa viết `JSON` hoặc raw expression ở bước này.
+  </Step>
+  <Step>
+    **Viết SDL typed.** Tách `BookFilter` khỏi `BookSort`, dùng input field-specific, enum cho field/direction và connection cho kết quả phân trang. Ghi default, nullability và giới hạn public.
+  </Step>
+  <Step>
+    **Chọn operator nhỏ nhất.** Bắt đầu với `eq`, `in`, `contains` cho text và cặp biên `gte`/`lte` cho range. Chỉ thêm operator khi có use case, semantics và query plan tương ứng.
+  </Step>
+  <Step>
+    **Viết query, variables và response.** Giữ query document ổn định. Tạo ít nhất một case thành công, một case empty và các variables sai như range đảo hoặc list rỗng.
+  </Step>
+  <Step>
+    **Bind vào Java rồi normalize.** Dùng `@Argument` ở controller, chuyển input sang criteria nội bộ và áp dụng default, max, tie-breaker, null ordering cùng cursor policy trước repository.
+  </Step>
+  <Step>
+    **Bảo vệ allowlist và tenant.** Map enum/operator sang path server-owned, bind mọi value bằng parameter và thêm authorization/tenant predicate độc lập với filter của client.
+  </Step>
+  <Step>
+    **Đo database và cost.** Kiểm tra index, relation query, `contains`, `EXPLAIN`/query plan và giới hạn complexity. Bổ sung timeout, metric và test với kích thước dữ liệu gần production.
+  </Step>
+  <Step>
+    **Nối với pagination và kiểm thử contract.** Bảo đảm filter/sort chạy trước cursor/limit, cursor chứa thứ tự hiệu dụng, đổi filter/sort bị phát hiện và lỗi trả mã ổn định. Đọc [Pagination](/docs/query-mutation-subscription/pagination) và [Cursor/offset pagination trong Spring](/docs/truy-cap-du-lieu-va-hieu-nang/cursor-offset-pagination-spring) cho bước tiếp theo.
+  </Step>
+</Steps>
+
+## Checklist review
+
+Dùng checklist này trước khi đưa một filter/sort vào schema hoặc production:
+
+- [ ] `filter` và `sort` là hai contract riêng, không trộn predicate với order.
+- [ ] Input filter được tách khỏi output object; không dùng entity hoặc `Book` làm input.
+- [ ] Operator được typed theo field: text, enum, số hoặc thời gian.
+- [ ] `eq`, `in`, `contains` và range (`gte`/`lte`) có semantics cụ thể.
+- [ ] Không công khai operator không cần thiết chỉ để schema “linh hoạt”.
+- [ ] Sibling predicate, `and` và `or` có quy tắc kết hợp được viết thành ví dụ.
+- [ ] Đã quy định `filter`/`sort` bị bỏ qua, `null`, object rỗng và list rỗng.
+- [ ] `eq: null`, `in: []`, `and: []` và `or: []` có behavior được kiểm thử.
+- [ ] Field nullable có cách lọc null rõ ràng như `isNull`; field non-null không nhận null filter mơ hồ.
+- [ ] Nested relation có allowlist, semantics to-one/to-many và giới hạn depth.
+- [ ] Field filter/sort và direction dùng enum hoặc registry server-side, không nhận identifier raw.
+- [ ] Multi-field sort có thứ tự ưu tiên, direction, duplicate policy và null ordering.
+- [ ] Kết quả có tie-breaker duy nhất, ổn định; cursor dùng cùng effective order.
+- [ ] Có default sort và `first`; `first` có min/max do service kiểm tra.
+- [ ] `sort: []`, sort clause quá nhiều và cursor sai có error code ổn định.
+- [ ] GraphQL validation/coercion được phân biệt với validation domain/query policy.
+- [ ] Error response không làm lộ SQL, stack trace, token hoặc dữ liệu tenant khác.
+- [ ] Controller Spring chỉ binding/gọi service; normalizer, authorization và invariant nằm ở lớp phù hợp.
+- [ ] Mọi value được parameter binding; không nối raw field/operator/value vào SQL.
+- [ ] Tenant boundary đến từ security context/server, không do client tự chọn.
+- [ ] Relation filter cũng áp dụng authorization và không làm lộ existence qua count/page info.
+- [ ] Index/query plan đã được đo cho filter/sort phổ biến, `contains` và pagination.
+- [ ] Có cost/complexity budget, timeout, rate limit hoặc guard phù hợp với threat model.
+- [ ] Case sensitivity, Unicode, locale và timezone của DateTime đã được tài liệu hóa.
+- [ ] Có test success, empty, invalid combination, unauthorized tenant, cursor mismatch và dữ liệu thay đổi giữa trang.
+- [ ] Link tới [Pagination](/docs/query-mutation-subscription/pagination) và [Cursor/offset pagination trong Spring](/docs/truy-cap-du-lieu-va-hieu-nang/cursor-offset-pagination-spring) được giữ nhất quán.
 
 ## Bước tiếp theo
 
-Sau khi trang được điền nội dung, đọc bài kế tiếp trong nhóm để tiếp tục lộ trình.
+- Đọc [Pagination](/docs/query-mutation-subscription/pagination) để so sánh offset pagination và cursor pagination ở contract GraphQL.
+- Xem [Cursor/offset pagination trong Spring](/docs/truy-cap-du-lieu-va-hieu-nang/cursor-offset-pagination-spring) để nối filter/sort với repository và query database.
+- Ôn [Variables, arguments và fragments](/docs/query-mutation-subscription/variables-arguments-fragments) để giữ query ổn định và truyền input qua variables.
+- Đọc [Enum, input object và arguments](/docs/schema-va-type-system/enum-input-arguments) để chọn enum, input object, default và coercion.
+- Xem [Binding arguments và input](/docs/tich-hop-spring-for-graphql/binding-arguments-input) để kiểm tra `@Argument`, Java binding và omitted/null.
+- Đối chiếu [Query, selection set và alias](/docs/query-mutation-subscription/query-selection-set-alias) khi response connection có nested selection.
+- Nếu query filter mở rộng thành nhiều relation/nested field, đọc [Depth và complexity limit](/docs/bao-mat-va-quan-sat/depth-va-complexity-limit) để đặt guard ở cấp GraphQL.
+
+<Cards>
+  <Card title="Pagination" href="/docs/query-mutation-subscription/pagination" description="So sánh offset và cursor ở lớp contract GraphQL." />
+  <Card title="Cursor/offset pagination trong Spring" href="/docs/truy-cap-du-lieu-va-hieu-nang/cursor-offset-pagination-spring" description="Nối filter, sort và cursor với repository/query database." />
+  <Card title="Variables, arguments và fragments" href="/docs/query-mutation-subscription/variables-arguments-fragments" description="Truyền filter/sort qua variables mà không nối chuỗi query." />
+  <Card title="Binding arguments và input" href="/docs/tich-hop-spring-for-graphql/binding-arguments-input" description="Map input GraphQL vào method Java trong Spring for GraphQL." />
+</Cards>

@@ -1,34 +1,236 @@
 ---
 title: "Query, mutation và subscription"
-description: "Các operation chính của GraphQL và kỹ thuật truy vấn dữ liệu thực tế."
+description: "Lộ trình từ selection set và variables đến mutation, lỗi, pagination, filtering và subscription với Spring for GraphQL."
 ---
 
-Đây là trang khung của nhóm **Query, mutation và subscription** trong lộ trình học GraphQL với Spring Boot. Nội dung chi tiết sẽ được bổ sung theo từng bài bên dưới.
+Nhóm **Query, mutation và subscription** là điểm nối giữa contract GraphQL và các use case mà client thực sự gọi. Bạn sẽ bắt đầu từ cách chọn dữ liệu bằng `selection set`, sau đó tổ chức `variables`, `arguments` và `fragments`, thiết kế operation ghi với `input`/`payload`, đọc lỗi, rồi mở rộng sang danh sách có pagination/filtering và luồng realtime.
 
-<Callout type="info" title="Trạng thái nội dung">
-Các bài trong nhóm hiện là placeholder. Hãy đi theo thứ tự sidebar để giữ mạch học đề xuất.
+Nhóm này trả lời hai câu hỏi song song: **client nên viết operation như thế nào** và **server Spring for GraphQL cần bảo đảm điều gì phía sau contract đó**. Các bài trong nhóm ưu tiên mental model và response shape trước, rồi mới dẫn sang transport, lifecycle, authorization, data source và khả năng vận hành.
+
+<Callout type="info" title="Phạm vi và giả định">
+Các SDL, query, variables, JSON và Java fragment trong trang này cùng các bài liên quan chỉ là ví dụ minh họa tĩnh. Repository là docs-only và không kèm backend Spring Boot runnable, nên trang này không tuyên bố build, startup, resolver, WebSocket hay response runtime đã được kiểm chứng. Khi áp dụng vào project thật, hãy đối chiếu version Spring Boot/Spring for GraphQL, schema đang nạp, endpoint, resolver và data source thực tế.
 </Callout>
 
 ## Mục lục
 
-- [Phạm vi dự kiến](#phạm-vi-dự-kiến)
-- [Các bài trong nhóm](#các-bài-trong-nhóm)
+- [Trang này dành cho ai](#trang-này-dành-cho-ai)
+- [Điều kiện tiên quyết](#điều-kiện-tiên-quyết)
+- [Mục tiêu học tập](#mục-tiêu-học-tập)
+- [Mental model của ba operation](#mental-model-của-ba-operation)
+  - [Query đọc snapshot](#query-đọc-snapshot)
+  - [Mutation thay đổi trạng thái](#mutation-thay-đổi-trạng-thái)
+  - [Subscription nhận event stream](#subscription-nhận-event-stream)
+- [Cách phân lớp nội dung](#cách-phân-lớp-nội-dung)
+  - [Nội dung nhập môn](#nội-dung-nhập-môn)
+  - [Bài triển khai chuyên sâu](#bài-triển-khai-chuyên-sâu)
+- [Thứ tự đọc đề xuất](#thứ-tự-đọc-đề-xuất)
+  - [Chặng một đọc và gửi dữ liệu](#chặng-một-đọc-và-gửi-dữ-liệu)
+  - [Chặng hai thiết kế ghi và lỗi](#chặng-hai-thiết-kế-ghi-và-lỗi)
+  - [Chặng ba realtime và collection](#chặng-ba-realtime-và-collection)
+- [Bản đồ bài học](#bản-đồ-bài-học)
+- [Điểm nối với Spring for GraphQL](#điểm-nối-với-spring-for-graphql)
+- [Kết quả sau khi hoàn thành](#kết-quả-sau-khi-hoàn-thành)
 - [Bước tiếp theo](#bước-tiếp-theo)
 
-## Phạm vi dự kiến
+## Trang này dành cho ai?
 
-Làm rõ cách client đọc, ghi và nhận dữ liệu realtime, đồng thời chuẩn hóa pagination, filter và lỗi ở cấp API.
+Trang này phù hợp với:
 
-## Các bài trong nhóm
+- Người đã biết GraphQL có schema, type, field và operation nhưng muốn chuyển sang các request gần với ứng dụng thật.
+- Java/Spring developer muốn hiểu ranh giới giữa SDL, resolver, service, repository, event source và transport trước khi viết implementation.
+- Frontend developer hoặc người xây client cần kiểm soát response shape, variables, lỗi, danh sách và realtime.
+- Người đã đi qua nhóm [Nền tảng](/docs/nen-tang) và [Bắt đầu](/docs/bat-dau), muốn có bản đồ trước khi đọc từng bài chuyên đề.
 
-- [Query, selection set và alias](/docs/query-mutation-subscription/query-selection-set-alias) — Xây dựng query có selection set, nested field và alias để kiểm soát shape response.
-- [Variables, arguments và fragments](/docs/query-mutation-subscription/variables-arguments-fragments) — Tách dữ liệu động khỏi query string và tái sử dụng selection bằng fragments.
-- [Mutation và input/payload](/docs/query-mutation-subscription/mutation-input-payload) — Thiết kế mutation với input object, payload type và quy ước trả về kết quả.
-- [Xử lý lỗi trong mutation](/docs/query-mutation-subscription/xu-ly-loi-trong-mutation) — So sánh GraphQL errors với domain errors và chọn contract lỗi dễ dùng cho client.
-- [Subscription và WebSocket](/docs/query-mutation-subscription/subscription-websocket) — Mô tả luồng subscription, transport WebSocket và cách phát sự kiện từ Spring Boot.
-- [Pagination](/docs/query-mutation-subscription/pagination) — So sánh offset pagination với cursor pagination và cách biểu diễn page metadata trong schema.
-- [Filtering và sorting](/docs/query-mutation-subscription/filtering-va-sorting) — Thiết kế input filter/sort có khả năng mở rộng mà không làm schema khó sử dụng.
+Nếu GraphQL còn mới hoàn toàn, hãy bắt đầu từ [GraphQL là gì?](/docs/nen-tang/graphql-la-gi) và [Mô hình request/response](/docs/nen-tang/mo-hinh-request-response). Nếu chưa từng tạo endpoint Spring Boot, đi qua [Tạo schema đầu tiên](/docs/bat-dau/tao-schema-dau-tien) và [Viết query đầu tiên](/docs/bat-dau/viet-query-dau-tien) trước.
+
+## Điều kiện tiên quyết
+
+Bạn nên có các nền tảng sau:
+
+- Hiểu schema là contract, phân biệt output object với scalar, và biết object hoặc list object cần selection set. Có thể ôn [Scalar, object và field](/docs/schema-va-type-system/scalar-object-field) và [List và nullable](/docs/schema-va-type-system/list-va-nullable).
+- Đọc được một operation gồm `query`, `mutation` hoặc `subscription`, cùng `selection set`, `operation name` và `variables`.
+- Biết execution result có thể gồm `data`, `errors` và metadata tùy implementation. Không dùng HTTP status, đặc biệt HTTP `200`, làm tín hiệu thành công duy nhất.
+- Nếu muốn theo các ví dụ Spring, nên biết Java cơ bản, Spring Boot và cách chạy một project bằng Maven hoặc Gradle. Nhóm [Bắt đầu](/docs/bat-dau) cung cấp phần setup, dependency, schema, GraphiQL và curl/Postman.
+
+Không cần biết trước GraphQL Java, Reactor hoặc WebSocket để đọc phần nhập môn. Các khái niệm implementation đó sẽ được giới thiệu khi cần và được nối sang nhóm [Tích hợp Spring for GraphQL](/docs/tich-hop-spring-for-graphql).
+
+## Mục tiêu học tập
+
+Sau khi đọc nhóm này theo lộ trình, bạn có thể:
+
+- Chọn đúng loại operation cho việc đọc snapshot, thay đổi trạng thái hoặc nhận event stream; đồng thời phân biệt loại operation với HTTP/WebSocket transport.
+- Viết query có selection set, nested field và alias; giữ query document ổn định bằng `variables`, `arguments` và `fragments`.
+- Thiết kế mutation với input object và payload có ngữ nghĩa, thay vì gửi một JSON mơ hồ hoặc trả về một `Boolean` không giải thích được kết quả.
+- Phân loại lỗi parse/validation/coercion, lỗi nghiệp vụ và lỗi execution; biết khi nào đọc top-level `errors` và khi nào đọc lỗi typed trong payload.
+- Đánh giá pagination, filtering và sorting như một phần của schema contract, gồm page size, thứ tự ổn định, cursor/offset và input có khả năng mở rộng.
+- Mô tả vòng đời subscription từ subscribe đến event, complete, reconnect và cleanup; biết những điểm cần kiểm tra về authentication, authorization và backpressure.
+- Biết lúc nào mental model đã đủ cho client và lúc nào cần đi sang bài triển khai Spring for GraphQL về mapping, binding, context hoặc request lifecycle.
+
+## Mental model của ba operation
+
+Hãy xem operation là yêu cầu ở lớp GraphQL, không phải tên của URL. Client gửi operation, variables và selection set; schema kiểm tra contract; execution engine gọi resolver; implementation phía sau lấy dữ liệu hoặc phát event; kết quả quay lại dưới dạng `data`, `errors` và `extensions` nếu server có dùng.
+
+```text
+Client: operation + variables + selection set
+                         │
+                         ▼
+Schema và execution engine: parse, validate, coerce, execute
+                         │
+                         ▼
+Spring for GraphQL: root mapping và nested mapping
+                         │
+                         ▼
+Service / repository / data source / event source
+                         │
+                         ▼
+Execution result: data + errors + extensions
+```
+
+Sơ đồ trên là mental model, không phải bằng chứng về số lần gọi service, query database hoặc thứ tự resolver trong một backend cụ thể. Một HTTP request GraphQL vẫn có thể tạo nhiều lời gọi phía server. Một subscription có thể giữ một Publisher mở nhưng vẫn cần policy riêng cho event source và connection.
+
+### Query đọc snapshot
+
+`query` thường dùng để đọc dữ liệu hoặc trạng thái tại thời điểm gọi. Client quyết định response shape bằng selection set, có thể truyền arguments để tìm kiếm, filter hoặc phân trang. Query không nên tạo side effect chỉ vì resolver đang dùng cùng một service với mutation.
+
+Hãy bắt đầu với [Query, selection set và alias](/docs/query-mutation-subscription/query-selection-set-alias), rồi chuyển sang [Variables, arguments và fragments](/docs/query-mutation-subscription/variables-arguments-fragments). Hai bài này xây vocabulary cần thiết để đọc một object lồng nhau, gọi cùng field nhiều lần và tái sử dụng selection mà không nối chuỗi query động.
+
+### Mutation thay đổi trạng thái
+
+`mutation` biểu diễn một use case có thể thay đổi state hoặc tạo side effect. Input mô tả dữ liệu client được phép gửi; payload mô tả kết quả server muốn công khai. GraphQL không tự mở transaction, không tự bảo đảm idempotency và không tự quyết định rollback khi service gọi nhiều hệ thống.
+
+Đọc [Mutation và input/payload](/docs/query-mutation-subscription/mutation-input-payload) sau khi đã nắm variables. Tiếp đó, dùng [Xử lý lỗi trong mutation](/docs/query-mutation-subscription/xu-ly-loi-trong-mutation) để phân biệt lỗi request với outcome nghiệp vụ và exception execution. Khi áp dụng, hãy để service sở hữu invariant, authorization và transaction boundary; resolver chủ yếu bind input và gọi use case.
+
+### Subscription nhận event stream
+
+`subscription` dùng cho một đăng ký dài hạn, trong đó server có thể gửi nhiều execution result khi event phù hợp xuất hiện. Subscription không tự tạo event và không đồng nghĩa với polling. WebSocket là một transport phổ biến, nhưng operation type và transport vẫn là hai lớp khác nhau.
+
+Bài [Subscription và WebSocket](/docs/query-mutation-subscription/subscription-websocket) đi từ schema và operation đến protocol message, authentication, reconnect, fan-out, backpressure và cleanup. Đây là chặng cần đọc sau khi hiểu selection set và variables, vì mỗi event vẫn phải được hoàn tất theo selection set của client.
+
+## Cách phân lớp nội dung
+
+Nhóm này có một đường học từ contract đến vận hành. Đừng bắt đầu bằng WebSocket configuration hoặc annotation nếu chưa biết response shape mà client cần; ngược lại, đừng dừng ở query syntax khi use case đã cần transaction, pagination, authorization hoặc event delivery guarantee.
+
+### Nội dung nhập môn
+
+Phần nhập môn tập trung vào điều client viết và điều schema cam kết:
+
+- Selection set, nested field và alias cho biết response có hình dạng nào.
+- Variables, arguments và fragments tách dữ liệu runtime khỏi document và tổ chức selection dùng lại.
+- Input object và payload đưa một mutation từ request đến outcome có cấu trúc.
+- Subscription ở mức operation giúp phân biệt event stream với query lặp lại.
+
+Các ví dụ ở lớp này dùng schema nhỏ, dữ liệu giả định và response mẫu để làm rõ contract. Chúng không thay thế việc kiểm tra schema thật, resolver thật hoặc data source thật.
+
+### Bài triển khai chuyên sâu
+
+Phần chuyên sâu tập trung vào các quyết định có thể làm API khó vận hành nếu để muộn:
+
+- Error contract, null bubbling, retry và idempotency cho mutation.
+- Protocol WebSocket, connection lifecycle, authentication, per-event authorization, fan-out và backpressure cho subscription.
+- Pagination, filtering và sorting cho list lớn, gồm giới hạn chi phí, thứ tự ổn định, cursor/offset và khả năng tiến hóa input.
+- Mapping vào Spring for GraphQL, context, nested resolver, exception handling và data access ở các nhóm chuyên biệt.
+
+Bài con mô tả từng chủ đề riêng thay vì lặp toàn bộ mental model ở đây. Hãy dùng bảng bản đồ bên dưới để chọn đúng độ sâu cho use case hiện tại.
+
+## Thứ tự đọc đề xuất
+
+### Chặng một đọc và gửi dữ liệu
+
+1. Đọc [Query, selection set và alias](/docs/query-mutation-subscription/query-selection-set-alias) để biết object phải mở selection set, scalar là điểm dừng và alias chỉ đổi response key.
+2. Đọc [Variables, arguments và fragments](/docs/query-mutation-subscription/variables-arguments-fragments) để giữ operation ổn định, truyền input có kiểu và dùng selection chung.
+3. Nếu cần đối chiếu với một request HTTP, xem [Mô hình request/response](/docs/nen-tang/mo-hinh-request-response) và [Kiểm thử request bằng curl/Postman](/docs/bat-dau/kiem-thu-request-curl-postman).
+
+### Chặng hai thiết kế ghi và lỗi
+
+4. Đọc [Mutation và input/payload](/docs/query-mutation-subscription/mutation-input-payload) để tách input với output, chọn payload và đặt boundary cho service.
+5. Đọc [Xử lý lỗi trong mutation](/docs/query-mutation-subscription/xu-ly-loi-trong-mutation) để đọc `data`, top-level `errors`, payload errors, `path`, nullability và retry policy cùng nhau.
+6. Khi chuyển contract sang Java, đọc [Binding arguments và input](/docs/tich-hop-spring-for-graphql/binding-arguments-input) và [Query, mutation và subscription mapping](/docs/tich-hop-spring-for-graphql/query-mutation-subscription-mapping). Đây là bài triển khai, không phải điều kiện để hiểu cú pháp operation.
+
+### Chặng ba realtime và collection
+
+7. Nếu use case cần event, đọc [Subscription và WebSocket](/docs/query-mutation-subscription/subscription-websocket) để hiểu stream, protocol, lifecycle và các giới hạn production trước khi chọn property hoặc client library.
+8. Đọc [Pagination](/docs/query-mutation-subscription/pagination) để chọn mô hình page, metadata và cách giới hạn list. Nếu cần nối với data layer Spring, xem thêm [Cursor và offset pagination với Spring](/docs/truy-cap-du-lieu-va-hieu-nang/cursor-offset-pagination-spring).
+9. Đọc [Filtering và sorting](/docs/query-mutation-subscription/filtering-va-sorting) sau pagination để thiết kế input filter/sort có thứ tự ổn định và không biến schema thành danh sách argument khó mở rộng.
+
+Nếu ứng dụng chủ yếu là màn hình danh sách, có thể đọc bước 8 và 9 ngay sau bước 2. Nếu ứng dụng cần realtime, giữ bước 7 sau khi đã hiểu variables và selection set; không cần học pagination trước khi viết một subscription đơn giản.
+
+## Bản đồ bài học
+
+Mỗi bài dưới đây có một vai trò riêng trong lộ trình. Các mô tả chỉ giúp chọn điểm bắt đầu; hãy đọc bài tương ứng khi cần chi tiết và ví dụ của chủ đề đó.
+
+| Bài | Lớp nội dung | Vai trò trong lộ trình |
+| --- | --- | --- |
+| [Query, selection set và alias](/docs/query-mutation-subscription/query-selection-set-alias) | Nhập môn contract | Đọc schema từ root đến scalar, xây nested selection và dùng alias mà không nhầm response key với field schema. |
+| [Variables, arguments và fragments](/docs/query-mutation-subscription/variables-arguments-fragments) | Nhập môn contract | Tách giá trị runtime, kiểm tra kiểu input, dùng argument đúng contract và tái sử dụng selection bằng fragment. |
+| [Mutation và input/payload](/docs/query-mutation-subscription/mutation-input-payload) | Cầu nối sang ghi dữ liệu | Thiết kế input object, payload, validation, idempotency và boundary giữa resolver với service. |
+| [Xử lý lỗi trong mutation](/docs/query-mutation-subscription/xu-ly-loi-trong-mutation) | Chuyên sâu về reliability | Phân biệt transport/request error, domain error và execution error; đọc partial data, `path`, null bubbling và retry. |
+| [Subscription và WebSocket](/docs/query-mutation-subscription/subscription-websocket) | Chuyên sâu về realtime | Theo dõi từ subscription operation đến Publisher, WebSocket protocol, auth, reconnect, fan-out, backpressure và cleanup. |
+| [Pagination](/docs/query-mutation-subscription/pagination) | Chuyên sâu về collection | Chọn offset hoặc cursor, biểu diễn page metadata và đặt giới hạn cho list khi dữ liệu tăng lên. |
+| [Filtering và sorting](/docs/query-mutation-subscription/filtering-va-sorting) | Chuyên sâu về collection | Thiết kế input filter/sort typed, kết hợp với pagination và giữ thứ tự kết quả ổn định, dễ giải thích. |
+
+Có thể xem [Schema và type system](/docs/schema-va-type-system) như nền contract của bảng này. Nhóm đó giúp bạn quyết định output/input type, enum, list, nullability và module boundary; nhóm hiện tại dùng các quyết định đó để tạo operation cụ thể.
+
+## Điểm nối với Spring for GraphQL
+
+Trong một ứng dụng Spring Boot, operation không gọi thẳng vào database. Một mental model triển khai thực dụng là:
+
+```text
+SDL và schema
+    │ contract
+    ▼
+Operation của client
+    │ parse, validate, coerce
+    ▼
+Root mapping / nested mapping
+    │ bind argument và context
+    ▼
+Service / use case
+    │ authorization, transaction, data policy
+    ▼
+Repository / event source
+    │ dữ liệu hoặc event
+    ▼
+GraphQL execution result
+```
+
+Các annotation thường xuất hiện ở lớp mapping:
+
+- `@QueryMapping` nối root field dưới `Query`.
+- `@MutationMapping` nối root field dưới `Mutation`.
+- `@SubscriptionMapping` nối root field dưới `Subscription`, thường trả một `Publisher` như `Flux` khi implementation dùng Reactor.
+- `@SchemaMapping` nối nested field khi property mặc định không đủ.
+- `@Argument` nhận giá trị argument sau khi GraphQL đã kiểm tra document và variables.
+
+Annotation không tạo field chưa có trong SDL. Nó cũng không thay service để kiểm tra business rule, authorization, transaction, idempotency hoặc giới hạn truy vấn. Với context và lifecycle, xem [Context, interceptor và request lifecycle](/docs/tich-hop-spring-for-graphql/context-interceptor-request-lifecycle) và [DataFetcher và GraphQL context](/docs/tich-hop-spring-for-graphql/datafetcher-va-graphql-context). Với lỗi từ resolver, xem [Xử lý lỗi tập trung](/docs/tich-hop-spring-for-graphql/xu-ly-loi-tap-trung).
+
+Khi đi từ operation đến code, giữ thứ tự: chốt SDL và response shape, viết operation/variables, xác định mapping, rồi mới chọn service, repository, event source và transport. Property WebSocket, kiểu binding Java và API exception resolver phụ thuộc version; không sao chép chúng từ ví dụ tĩnh mà chưa đối chiếu project thật.
+
+## Kết quả sau khi hoàn thành
+
+Bạn có thể tự kiểm tra tiến độ bằng các câu hỏi sau:
+
+- Tôi có thể giải thích vì sao `query`, `mutation` và `subscription` có semantics khác nhau mà không đồng nhất chúng với HTTP method hoặc URL không?
+- Tôi có thể nhìn vào schema để biết field nào cần selection set, argument nào cần variables và fragment nào có type condition phù hợp không?
+- Tôi có thể thiết kế một mutation tách `Input` và `Payload`, nêu rõ outcome thành công, lỗi nghiệp vụ, lỗi execution và chính sách retry không?
+- Tôi có thể giải thích một list cần pagination/filtering/sorting ở đâu, và vì sao cursor, offset, page size cùng thứ tự ổn định là các quyết định contract không?
+- Tôi có thể mô tả subscription từ `subscribe` đến `next`, `complete`, reconnect và cleanup, đồng thời nêu điểm kiểm tra auth và event source không?
+- Tôi có biết khi nào cần chuyển sang mapping, binding, context, nested resolver, data access hoặc deployment thay vì cố giải quyết mọi thứ trong operation document không?
+
+Nếu chưa trả lời được câu hỏi nào, quay lại bài tương ứng trong bảng thay vì đọc thêm một bài triển khai không liên quan. Mục tiêu của nhóm là tạo một đường đi rõ từ nhu cầu client đến trách nhiệm server.
 
 ## Bước tiếp theo
 
-Bắt đầu từ bài đầu tiên của nhóm hoặc yêu cầu viết chi tiết một trang cụ thể bằng skill `fumadocs-technical-writer`.
+Chọn hướng tiếp theo theo nền tảng hiện tại:
+
+- Chưa vững GraphQL: đọc [Nền tảng](/docs/nen-tang), đặc biệt [GraphQL là gì?](/docs/nen-tang/graphql-la-gi) và [Kiến trúc GraphQL](/docs/nen-tang/kien-truc-graphql).
+- Chưa có project Spring Boot: quay lại [Bắt đầu](/docs/bat-dau), sau đó tạo schema và chạy query đầu tiên theo giả định của project thật.
+- Muốn thiết kế contract chắc hơn: đọc [SDL và nguyên tắc thiết kế schema](/docs/schema-va-type-system/sdl-va-thiet-ke-schema), [Enum, input object và arguments](/docs/schema-va-type-system/enum-input-arguments) và [List và nullable](/docs/schema-va-type-system/list-va-nullable).
+- Muốn viết implementation Spring: đi sang [Tích hợp Spring for GraphQL](/docs/tich-hop-spring-for-graphql), bắt đầu từ mapping operation rồi đến binding, nested field, context và xử lý lỗi.
+- Muốn tối ưu data access: đọc [N+1 query](/docs/truy-cap-du-lieu-va-hieu-nang/n-plus-1-query), [Batch loading và DataLoader](/docs/truy-cap-du-lieu-va-hieu-nang/batch-loading-va-dataloader) và [Cursor và offset pagination với Spring](/docs/truy-cap-du-lieu-va-hieu-nang/cursor-offset-pagination-spring).
+
+<Cards>
+  <Card title="Schema và type system" href="/docs/schema-va-type-system" description="Củng cố output/input type, enum, list, nullability và schema boundary." />
+  <Card title="Tích hợp Spring for GraphQL" href="/docs/tich-hop-spring-for-graphql" description="Đưa operation vào mapping, binding, context và request lifecycle của Spring Boot." />
+  <Card title="Truy cập dữ liệu và hiệu năng" href="/docs/truy-cap-du-lieu-va-hieu-nang" description="Nối resolver với data layer, pagination, batching và kiểm soát N+1." />
+  <Card title="Bắt đầu" href="/docs/bat-dau" description="Tạo project, schema, resolver và quy trình gửi request local theo từng bước." />
+</Cards>

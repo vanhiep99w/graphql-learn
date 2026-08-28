@@ -1,23 +1,1363 @@
 ---
 title: "`@QueryMapping`, `@MutationMapping`, `@SubscriptionMapping`"
-description: "Ánh xạ ba loại operation vào method của controller và chọn annotation phù hợp."
+description: "Ánh xạ root operation vào controller method trong Spring for GraphQL và chọn đúng boundary cho query, mutation, subscription."
 ---
 
-Trang này sẽ trình bày **`@QueryMapping`, `@MutationMapping`, `@SubscriptionMapping`** trong bối cảnh xây dựng GraphQL API với Spring Boot.
+import { Accordion, Accordions } from 'fumadocs-ui/components/accordion';
+import { Step, Steps } from 'fumadocs-ui/components/steps';
+
+Ba annotation **`@QueryMapping`**, **`@MutationMapping`** và **`@SubscriptionMapping`** giúp Spring for GraphQL nối một field ở root operation với method trong một Spring controller. Chúng là cách viết ngắn, có ngữ nghĩa rõ, cho mapping tương ứng với `Query`, `Mutation` và `Subscription`; chúng không thay thế SDL, service, authorization, transaction hoặc transport.
+
+<Callout type="info" title="Phạm vi và giả định">
+Các SDL, Java, query, variables và JSON trong bài là ví dụ tĩnh, độc lập để đọc contract và wiring. Repository này là docs-only, không có backend Spring Boot, database, broker hoặc WebSocket server để chạy kiểm chứng; không response nào bên dưới được trình bày như output runtime đã được xác nhận. API method và property cần được đối chiếu với version Spring Boot/Spring for GraphQL thật của project.
+</Callout>
 
 ## Mục lục
 
-- [Nội dung dự kiến](#nội-dung-dự-kiến)
+- [Bức tranh tổng thể](#bức-tranh-tổng-thể)
+  - [Root operation là cửa vào của graph](#root-operation-là-cửa-vào-của-graph)
+  - [Ba annotation là shortcut của schema mapping](#ba-annotation-là-shortcut-của-schema-mapping)
+  - [Schema-first: SDL trước, annotation sau](#schema-first-sdl-trước-annotation-sau)
+- [Ví dụ xuyên suốt với catalog sách](#ví-dụ-xuyên-suốt-với-catalog-sách)
+  - [SDL và nullability](#sdl-và-nullability)
+  - [Query, variables và response](#query-variables-và-response)
+  - [Mutation, input/payload và response](#mutation-inputpayload-và-response)
+  - [Subscription và message next](#subscription-và-message-next)
+- [Controller discovery và registration](#controller-discovery-và-registration)
+  - [Điều kiện để method được phát hiện](#điều-kiện-để-method-được-phát-hiện)
+  - [Một mapping cho một field](#một-mapping-cho-một-field)
+- [`@QueryMapping`: map field của Query](#querymapping-map-field-của-query)
+  - [Tên method và tên field](#tên-method-và-tên-field)
+  - [Return type của query](#return-type-của-query)
+- [`@MutationMapping`: map hành động ghi](#mutationmapping-map-hành-động-ghi)
+  - [Bind input bằng `@Argument`](#bind-input-bằng-argument)
+  - [Validation và error boundary](#validation-và-error-boundary)
+  - [Transaction và idempotency](#transaction-và-idempotency)
+- [`@SubscriptionMapping`: map event stream](#subscriptionmapping-map-event-stream)
+  - [`Publisher` và vòng đời stream](#publisher-và-vòng-đời-stream)
+  - [Backpressure và cleanup](#backpressure-và-cleanup)
+  - [WebSocket là transport riêng](#websocket-là-transport-riêng)
+- [Arguments, method signature và context](#arguments-method-signature-và-context)
+  - [`@Argument` lấy argument, không lấy variable](#argument-lấy-argument-không-lấy-variable)
+  - [Input object và phân biệt omitted/null](#input-object-và-phân-biệt-omittednull)
+  - [`DataFetchingEnvironment` và `GraphQLContext`](#datafetchingenvironment-và-graphqlcontext)
+  - [Source object chỉ có ở nested field](#source-object-chỉ-có-ở-nested-field)
+- [Root mapping khác nested field mapping](#root-mapping-khác-nested-field-mapping)
+  - [Khi dùng `@SchemaMapping`](#khi-dùng-schemamapping)
+  - [Khi không nên dùng annotation mơ hồ](#khi-không-nên-dùng-annotation-mơ-hồ)
+- [Naming collision và signature pitfalls](#naming-collision-và-signature-pitfalls)
+  - [Collision trong SDL và collision trong mapping](#collision-trong-sdl-và-collision-trong-mapping)
+  - [Những chữ ký method dễ sai](#những-chữ-ký-method-dễ-sai)
+- [Error, authorization và boundary nghiệp vụ](#error-authorization-và-boundary-nghiệp-vụ)
+  - [Phân lớp lỗi](#phân-lớp-lỗi)
+  - [Authorization không nằm trong tên argument](#authorization-không-nằm-trong-tên-argument)
+  - [Mutation không tự có transaction hoặc idempotency](#mutation-không-tự-có-transaction-hoặc-idempotency)
+- [Kiểm thử mapping](#kiểm-thử-mapping)
+  - [Test schema và mapping](#test-schema-và-mapping)
+  - [Test argument, lỗi và nullability](#test-argument-lỗi-và-nullability)
+  - [Test stream và transport](#test-stream-và-transport)
+- [Version awareness và endpoint HTTP](#version-awareness-và-endpoint-http)
+- [Checklist review controller](#checklist-review-controller)
+- [Câu hỏi thường gặp](#câu-hỏi-thường-gặp)
 - [Bước tiếp theo](#bước-tiếp-theo)
 
-## Nội dung dự kiến
+## Bức tranh tổng thể
 
-Nội dung chi tiết sẽ bao gồm khái niệm chính, ví dụ code và các lưu ý thực hành liên quan đến chủ đề này.
+### Root operation là cửa vào của graph
 
-<Callout type="info" title="Trang placeholder">
-Đây là trang khung. Hãy dùng skill `fumadocs-technical-writer` để viết đầy đủ trang này trong bước tiếp theo.
-</Callout>
+**Root operation** (operation gốc) là type mà GraphQL dùng làm điểm bắt đầu cho một loại operation. Schema thường dùng ba type quy ước:
+
+- `Query` cho thao tác đọc;
+- `Mutation` cho thao tác thay đổi trạng thái;
+- `Subscription` cho luồng sự kiện dài hạn.
+
+```graphql
+schema {
+  query: Query
+  mutation: Mutation
+  subscription: Subscription
+}
+```
+
+Client không bắt đầu trực tiếp từ `Book`. Client bắt đầu từ `Query.book`, `Mutation.createBook` hoặc `Subscription.bookAdded`, rồi mới đi vào output type và selection set. Tên của root type có thể được đổi trong SDL, nhưng tên field và kiểu trả về vẫn là contract mà controller phải phục vụ.
+
+Một request đi qua các boundary khái quát như sau:
+
+```text
+SDL đã nạp
+    │  khai báo root field, argument, output và nullability
+    ▼
+Controller method được Spring đăng ký thành DataFetcher
+    │  bind @Argument và context
+    ▼
+Service/use case
+    │  authorization, validation, transaction hoặc event source
+    ▼
+GraphQL execution
+    │  hoàn tất selection set và xử lý lỗi
+    ▼
+data/errors của transport
+```
+
+Annotation chỉ giải quyết đoạn nối **root field → DataFetcher → method**. Nó không tạo type, không tự đọc database và không tự mở endpoint HTTP hay WebSocket.
+
+### Ba annotation là shortcut của schema mapping
+
+Trong Spring for GraphQL, cả ba annotation là **composed annotation** (annotation được tạo bằng cách kết hợp annotation khác) dựa trên `@SchemaMapping`:
+
+| Annotation | Root type đặt sẵn | Tương đương về ý nghĩa |
+| --- | --- | --- |
+| `@QueryMapping` | `Query` | `@SchemaMapping(typeName = "Query")` |
+| `@MutationMapping` | `Mutation` | `@SchemaMapping(typeName = "Mutation")` |
+| `@SubscriptionMapping` | `Subscription` | `@SchemaMapping(typeName = "Subscription")` |
+
+Ví dụ, hai cách dưới đây cùng nhắm tới field `Query.book` khi tên method mặc định là `book`:
+
+```java
+@QueryMapping
+public Book book(@Argument("id") String id) {
+    return catalogService.findBook(id);
+}
+```
+
+```java
+@SchemaMapping(typeName = "Query", field = "book")
+public Book book(@Argument("id") String id) {
+    return catalogService.findBook(id);
+}
+```
+
+Chọn **một** cách, không đặt cả hai annotation lên cùng một method. Root-specific annotation thường dễ đọc hơn vì người review nhìn thấy ngay method phục vụ query, mutation hay subscription nào.
+
+Nếu SDL dùng root type không theo tên quy ước, chẳng hạn `schema { query: RootQuery }`, `@QueryMapping` vẫn preset `typeName = "Query"`. Khi đó, dùng mapping tường minh cho root đã đổi tên:
+
+```java
+@SchemaMapping(typeName = "RootQuery", field = "book")
+public Book findBook(@Argument("id") String id) {
+    return catalogService.findBook(id);
+}
+```
+
+Đừng đổi tên root trong SDL và vẫn kỳ vọng shortcut tự suy ra type mới. Đây là trường hợp cần kiểm tra schema cùng version API trước khi sửa annotation.
+
+### Schema-first: SDL trước, annotation sau
+
+SDL là **schema-first contract** (hợp đồng được chốt ở schema trước implementation). Annotation không mở thêm field mà SDL chưa khai báo:
+
+```graphql
+type Query {
+  book(id: ID!): Book
+}
+```
+
+Method sau chỉ trở thành handler hữu ích vì SDL đã có `Query.book`:
+
+```java
+@QueryMapping
+public Book book(@Argument("id") String id) {
+    return catalogService.findBook(id);
+}
+```
+
+Nếu viết thêm `@QueryMapping public Book featuredBook()` nhưng SDL không có `Query.featuredBook`, client vẫn không thể query field đó. Ngược lại, SDL có `book` nhưng không có mapping hoặc runtime wiring phù hợp thì query có thể hợp lệ lúc validation nhưng thất bại khi execution.
+
+Các quyết định về type, input/output, nullability, root extension và ownership thuộc schema. Đọc [SDL và nguyên tắc thiết kế schema](/docs/schema-va-type-system/sdl-va-thiet-ke-schema) và [Tạo schema đầu tiên](/docs/bat-dau/tao-schema-dau-tien) trước khi dùng annotation để nối implementation.
+
+Quy trình thực dụng để đi từ contract đến controller:
+
+<Steps>
+  <Step>
+    **Đọc SDL.** Xác định root type, field, argument, input/output và nullability; chưa bắt đầu bằng tên method Java.
+  </Step>
+  <Step>
+    **Chọn boundary.** Quyết định logic nào thuộc resolver, service, repository hoặc event source; đặt authorization và transaction ở đúng lớp.
+  </Step>
+  <Step>
+    **Chọn mapping.** Dùng annotation root-specific cho `Query`, `Mutation`, `Subscription`; dùng `@SchemaMapping` cho field nested hoặc root type đã đổi tên.
+  </Step>
+  <Step>
+    **Kiểm tra operation.** Gửi query/mutation/subscription với variables và selection set khớp SDL, rồi đọc cả `data` và `errors`.
+  </Step>
+</Steps>
+
+## Ví dụ xuyên suốt với catalog sách
+
+Các phần sau dùng cùng một SDL để tránh lẫn tên giữa schema, Java, query, variables và response. Đây là một graph minh họa, không phải schema có sẵn trong repository.
+
+### SDL và nullability
+
+```graphql title="schema.graphqls"
+schema {
+  query: Query
+  mutation: Mutation
+  subscription: Subscription
+}
+
+type Query {
+  """Tìm một sách; null khi không có sách phù hợp hoặc policy cho phép ẩn kết quả."""
+  book(id: ID!): Book
+
+  """Trả về list không null; list rỗng là không có kết quả."""
+  books(limit: Int = 20): [Book!]!
+}
+
+type Mutation {
+  createBook(input: CreateBookInput!): CreateBookPayload!
+}
+
+type Subscription {
+  bookAdded(tenantId: ID!): Book!
+}
+
+input CreateBookInput {
+  tenantId: ID!
+  title: String!
+  author: String!
+  publishedYear: Int
+  format: BookFormat! = PAPERBACK
+  idempotencyKey: ID
+}
+
+enum BookFormat {
+  PAPERBACK
+  HARDCOVER
+  EBOOK
+}
+
+type CreateBookPayload {
+  book: Book
+  userErrors: [CreateBookError!]!
+}
+
+type CreateBookError {
+  code: CreateBookErrorCode!
+  message: String!
+  inputPath: [String!]!
+}
+
+enum CreateBookErrorCode {
+  TITLE_BLANK
+  PUBLISHED_YEAR_INVALID
+  DUPLICATE_BOOK
+  NOT_AUTHORIZED
+  IDEMPOTENCY_KEY_REUSED
+}
+
+type Book {
+  id: ID!
+  tenantId: ID!
+  title: String!
+  author: String!
+  publishedYear: Int
+  format: BookFormat!
+}
+```
+
+Có thể đọc những cam kết quan trọng như sau:
+
+| Khai báo | Ý nghĩa đối với method |
+| --- | --- |
+| `Query.book: Book` | Method có thể trả `null` cho trường hợp không tìm thấy nếu đó là semantics đã chọn. |
+| `Query.books: [Book!]!` | Method phải trả list khác `null`; mỗi phần tử hợp lệ cũng phải khác `null`; `[]` là kết quả bình thường. |
+| `Mutation.createBook: CreateBookPayload!` | Outcome dự kiến nên trả payload; exception ở root vẫn có thể tạo execution error. |
+| `CreateBookInput!` và `title: String!` | GraphQL chặn argument/input bị thiếu hoặc `null` trước khi service nhận request. |
+| `publishedYear: Int` | `null` hoặc bỏ qua có thể hợp lệ về GraphQL; domain vẫn phải quyết định ý nghĩa. |
+| `format: BookFormat! = PAPERBACK` | Bỏ qua field dùng default; gửi `null` vẫn không hợp lệ. |
+| `payload.book: Book` | Payload có thể tồn tại khi validation nghiệp vụ tạo sách thất bại. |
+| `userErrors: [CreateBookError!]!` | Thành công dùng `[]`; lỗi nghiệp vụ dự kiến có thể được trả dưới dạng typed payload. |
+| `Subscription.bookAdded: Book!` | Mỗi event được đưa vào execution phải phù hợp với `Book`; không dùng `null` để che event hỏng. |
+
+`String!` chỉ cấm `null`, không cấm chuỗi toàn khoảng trắng. `ID!` cũng không nói user có quyền đọc ID đó. Nullability và authorization vẫn cần được service bảo vệ. Xem [List và nullable](/docs/schema-va-type-system/list-va-nullable) để phân tích sâu hơn list, phần tử và null bubbling.
+
+### Query, variables và response
+
+Operation query dưới đây dùng hai root field trong cùng một request:
+
+```graphql title="CatalogPage.graphql"
+query CatalogPage($bookId: ID!, $limit: Int = 2) {
+  book(id: $bookId) {
+    id
+    tenantId
+    title
+    author
+    publishedYear
+    format
+  }
+  books(limit: $limit) {
+    id
+    tenantId
+    title
+    author
+    publishedYear
+    format
+  }
+}
+```
+
+Variables JSON tương ứng:
+
+```json title="Variables"
+{
+  "bookId": "book-1",
+  "limit": 2
+}
+```
+
+`$bookId` là tên variable của operation; `id` là tên argument của field `book`. `@Argument("id")` trong controller đọc giá trị sau khi GraphQL đã coerce variable theo `ID!`; nó không đọc key `$bookId` trực tiếp.
+
+Một response thành công minh họa có thể là:
+
+```json title="Response query — minh họa tĩnh"
+{
+  "data": {
+    "book": {
+      "id": "book-1",
+      "tenantId": "tenant-7",
+      "title": "Effective Java",
+      "author": "Joshua Bloch",
+      "publishedYear": 2018,
+      "format": "PAPERBACK"
+    },
+    "books": [
+      {
+        "id": "book-1",
+        "tenantId": "tenant-7",
+        "title": "Effective Java",
+        "author": "Joshua Bloch",
+        "publishedYear": 2018,
+        "format": "PAPERBACK"
+      },
+      {
+        "id": "book-2",
+        "tenantId": "tenant-7",
+        "title": "Designing Data-Intensive Applications",
+        "author": "Martin Kleppmann",
+        "publishedYear": 2017,
+        "format": "HARDCOVER"
+      }
+    ]
+  }
+}
+```
+
+`book` là object nullable, còn `books` luôn là list theo SDL. Client chỉ nhận các field có trong selection set; Java object có thêm property không làm field đó tự xuất hiện. [Query, selection set và alias](/docs/query-mutation-subscription/query-selection-set-alias) giải thích thêm cách field root và field nested tạo response shape.
+
+### Mutation, input/payload và response
+
+Mutation nhận input object và trả payload có thể mở rộng:
+
+```graphql title="CreateBook.graphql"
+mutation CreateBook($input: CreateBookInput!) {
+  createBook(input: $input) {
+    book {
+      id
+      tenantId
+      title
+      author
+      publishedYear
+      format
+    }
+    userErrors {
+      code
+      message
+      inputPath
+    }
+  }
+}
+```
+
+Variables:
+
+```json title="Variables mutation"
+{
+  "input": {
+    "tenantId": "tenant-7",
+    "title": "GraphQL in Action",
+    "author": "Samer Buna",
+    "publishedYear": 2022,
+    "format": "HARDCOVER",
+    "idempotencyKey": "create-book-001"
+  }
+}
+```
+
+Response thành công:
+
+```json title="Response mutation — minh họa tĩnh"
+{
+  "data": {
+    "createBook": {
+      "book": {
+        "id": "book-3",
+        "tenantId": "tenant-7",
+        "title": "GraphQL in Action",
+        "author": "Samer Buna",
+        "publishedYear": 2022,
+        "format": "HARDCOVER"
+      },
+      "userErrors": []
+    }
+  }
+}
+```
+
+Nếu input đúng kiểu GraphQL nhưng vi phạm rule nghiệp vụ, service có thể trả payload lỗi có cấu trúc:
+
+```json title="Domain error — minh họa tĩnh"
+{
+  "data": {
+    "createBook": {
+      "book": null,
+      "userErrors": [
+        {
+          "code": "TITLE_BLANK",
+          "message": "Title không được để trống.",
+          "inputPath": ["title"]
+        },
+        {
+          "code": "PUBLISHED_YEAR_INVALID",
+          "message": "Published year không nằm trong khoảng được hỗ trợ.",
+          "inputPath": ["publishedYear"]
+        }
+      ]
+    }
+  }
+}
+```
+
+`userErrors` ở đây là field của payload, không phải top-level `errors` của GraphQL. Nếu query thiếu `createBook` selection set, gửi `publishedYear` sai kiểu hoặc thiếu `input`, lỗi thường xảy ra ở parse/validation/coercion trước khi method chạy và nằm ở top-level `errors`. [Mutation và input/payload](/docs/query-mutation-subscription/mutation-input-payload) và [Xử lý lỗi trong mutation](/docs/query-mutation-subscription/xu-ly-loi-trong-mutation) trình bày sâu hơn cách chọn hai boundary này.
+
+### Subscription và message next
+
+Operation subscription dùng cùng output type `Book`:
+
+```graphql title="OnBookAdded.graphql"
+subscription OnBookAdded($tenantId: ID!) {
+  bookAdded(tenantId: $tenantId) {
+    id
+    tenantId
+    title
+    author
+    publishedYear
+    format
+  }
+}
+```
+
+Variables:
+
+```json title="Variables subscription"
+{
+  "tenantId": "tenant-7"
+}
+```
+
+Nếu application đã cấu hình một transport hỗ trợ GraphQL subscription và event `book-3` được phép phát tới subscriber, một message `next` theo protocol có thể có dạng:
+
+```json title="Message next — minh họa tĩnh"
+{
+  "id": "sub-42",
+  "type": "next",
+  "payload": {
+    "data": {
+      "bookAdded": {
+        "id": "book-3",
+        "tenantId": "tenant-7",
+        "title": "GraphQL in Action",
+        "author": "Samer Buna",
+        "publishedYear": 2022,
+        "format": "HARDCOVER"
+      }
+    }
+  }
+}
+```
+
+`OnBookAdded` là operation name, còn `sub-42` là ID của operation trong protocol; hai tên này không phải tên method Java. `@SubscriptionMapping` chỉ tạo mapping để GraphQL lấy `Publisher`; nó không tự tạo event, không tự mở WebSocket và không đảm bảo message trên sẽ xuất hiện. Xem [Subscription và WebSocket](/docs/query-mutation-subscription/subscription-websocket) khi cần đi từ schema đến protocol và deployment.
+
+## Controller discovery và registration
+
+### Điều kiện để method được phát hiện
+
+Một controller GraphQL thông thường là Spring bean có `@Controller`:
+
+```java
+package com.example.catalog.graphql;
+
+import org.springframework.stereotype.Controller;
+
+@Controller
+public class CatalogController {
+    // Các method có @QueryMapping, @MutationMapping hoặc @SubscriptionMapping.
+}
+```
+
+Trong ứng dụng Spring Boot, class cần nằm trong vùng **component scan** (vùng package mà Spring quét để tìm bean), thường là package con của class có `@SpringBootApplication`, hoặc được đưa vào scan bằng cấu hình phù hợp. `@Controller` vừa cho phép Spring phát hiện bean vừa đánh dấu đây là thành phần data fetching; nó không phải một HTTP controller method như `@GetMapping`.
+
+Spring for GraphQL dùng cơ chế annotated controller/configurer để phát hiện các handler method và đăng ký chúng thành `DataFetcher` trong runtime wiring. Với Boot starter thông thường, phần configurer được auto-configure. Nếu project tự xây `GraphQlSource`, thay web stack hoặc tắt auto-configuration, cần kiểm tra configurer của version đang dùng thay vì giả định annotation đã được bật.
+
+Các điểm dễ nhầm:
+
+- Không cần `@RequestMapping`, `@PostMapping` hoặc `@GetMapping` cho method GraphQL.
+- `@RestController` không phải điều kiện bắt buộc; dùng `@Controller` theo programming model của Spring for GraphQL.
+- Method không phải một endpoint riêng. Tất cả root field có thể đi qua cùng GraphQL HTTP endpoint.
+- Class có tên `BookController` không tự map vào type `Book`; annotation và field/type trong SDL mới quyết định mapping.
+- `@Controller` đúng package nhưng SDL không được nạp vẫn không tạo ra GraphQL field hợp lệ.
+
+Nếu query đã hợp lệ theo schema nhưng method không được gọi, kiểm tra theo thứ tự: schema location, component scan, `@Controller`, annotation đúng loại, tên field và lỗi mapping lúc application context khởi động. Xem [Lỗi mapping resolver](/docs/xu-ly-su-co/loi-mapping-resolver) khi cần playbook riêng.
+
+### Một mapping cho một field
+
+Trong một executable schema, mỗi cặp **parent type + field** cần một data fetcher chính. Root mapping có thể được chia ở nhiều class:
+
+```java
+@Controller
+public class CatalogQueryController {
+
+    @QueryMapping
+    public Book book(@Argument("id") String id) {
+        return catalogService.findBook(id);
+    }
+}
+
+@Controller
+public class CatalogMutationController {
+
+    @MutationMapping
+    public CreateBookPayload createBook(
+            @Argument("input") CreateBookInput input) {
+        return catalogService.createBook(input);
+    }
+}
+```
+
+Tách class không có nghĩa có nhiều `Query` hoặc nhiều endpoint. Các method vẫn được hợp nhất vào cùng executable schema. Do đó:
+
+- mỗi class nên có boundary domain rõ;
+- không để hai team cùng đăng ký một field vì nghĩ class khác nhau sẽ tạo overload;
+- mapping trùng thường làm runtime wiring/application context thất bại khi đăng ký, chứ không có quy tắc “method khai báo sau thắng method trước” được bảo đảm;
+- hãy xóa mapping cũ hoặc đổi tên field trong SDL có migration, không chữa collision bằng thứ tự scan package.
+
+## `@QueryMapping`: map field của Query
+
+`@QueryMapping` dành cho field dưới root type `Query`. Query nên đọc snapshot/trạng thái và không tạo side effect quan sát được. Từ khóa `query` của client và annotation `@QueryMapping` liên quan về ngữ nghĩa, nhưng operation name của client không được dùng để tìm method:
+
+```graphql
+query CatalogPage {
+  books {
+    id
+    title
+  }
+}
+```
+
+Method được tìm theo field `books`, không theo operation name `CatalogPage`:
+
+```java
+@QueryMapping
+public List<Book> books() {
+    return catalogService.findBooks();
+}
+```
+
+### Tên method và tên field
+
+Nếu annotation không chỉ rõ tên, Spring dùng tên method làm tên field GraphQL. Có thể chỉ rõ tên bằng `name` hoặc `value` khi method Java cần tên khác:
+
+```java
+@QueryMapping(name = "book")
+public Book findVisibleBook(@Argument("id") String id) {
+    return catalogService.findBook(id);
+}
+```
+
+`name = "book"` là tên **field GraphQL**, không phải tên operation name và không phải tên alias trong query. Với query:
+
+```graphql
+query CompareBooks {
+  primary: book(id: "book-1") {
+    id
+  }
+  comparison: book(id: "book-2") {
+    id
+  }
+}
+```
+
+Cả hai selection đều đi vào mapping `Query.book`. `primary` và `comparison` chỉ là response key do client đặt; không tạo hai method `primary()` và `comparison()`. Xem [Query, selection set và alias](/docs/query-mutation-subscription/query-selection-set-alias) để phân biệt field schema với alias.
+
+### Return type của query
+
+Return type Java phải diễn tả được output GraphQL, nhưng Java không tự quyết định toàn bộ nullability:
+
+| SDL | Java minh họa | Điều cần tự bảo đảm |
+| --- | --- | --- |
+| `book: Book` | `Book` | Có thể trả `null` khi đó là kết quả nghiệp vụ hợp lệ. |
+| `books: [Book!]!` | `List<Book>` | Không trả list `null` hoặc phần tử `null`; list rỗng dùng cho không có kết quả. |
+| `hello: String!` | `String` | Không trả `null`; chuỗi rỗng vẫn là chuỗi khác `null` và có thể cần business validation riêng. |
+| `book: Book` | `Mono<Book>` hoặc kiểu async được version hỗ trợ | Completion async không làm field nullable/non-null tự thay đổi. |
+
+Các return type bất đồng bộ cần được kiểm tra theo Spring for GraphQL/GraphQL Java version và web stack. Không dùng `List<Book>` như bằng chứng rằng SDL `[Book!]!` đã được bảo vệ: Java generic không cấm list `null` hay phần tử `null`.
+
+Query cũng không nên dùng tên “đọc” để làm side effect. Nếu method `books()` ghi audit hoặc kích hoạt đồng bộ dữ liệu, đó là dấu hiệu contract nên được review lại; hãy đặt hành động thay đổi dưới `Mutation` để client, cache và retry policy hiểu đúng ngữ nghĩa.
+
+## `@MutationMapping`: map hành động ghi
+
+`@MutationMapping` dành cho field dưới root type `Mutation`. Annotation này chỉ đăng ký handler; nó không tự biến method thành transaction và không tự bảo đảm retry an toàn.
+
+Với SDL xuyên suốt, controller có thể viết:
+
+```java
+import org.springframework.graphql.data.method.annotation.Argument;
+import org.springframework.graphql.data.method.annotation.MutationMapping;
+import org.springframework.stereotype.Controller;
+
+@Controller
+public class CatalogMutationController {
+
+    private final CatalogService catalogService;
+
+    public CatalogMutationController(CatalogService catalogService) {
+        this.catalogService = catalogService;
+    }
+
+    @MutationMapping
+    public CreateBookPayload createBook(
+            @Argument("input") CreateBookInput input) {
+        return catalogService.createBook(input);
+    }
+}
+```
+
+Tên method `createBook` khớp `Mutation.createBook`. `$input` trong operation chỉ là variable; `input` trong `createBook(input: $input)` mới là tên argument mà `@Argument("input")` bind.
+
+### Bind input bằng `@Argument`
+
+`@Argument` bind một **named GraphQL argument** vào tham số method. GraphQL đã parse, validate và coerce input theo SDL trước; Spring tiếp tục bind map input vào kiểu Java đích.
+
+```java
+@MutationMapping
+public CreateBookPayload createBook(
+        @Argument("input") CreateBookInput input) {
+    // input đã được bind từ argument GraphQL tên "input".
+    return catalogService.createBook(input);
+}
+```
+
+Kiểu Java minh họa khớp với `CreateBookInput`:
+
+```java
+import java.util.List;
+
+public record CreateBookInput(
+        String tenantId,
+        String title,
+        String author,
+        Integer publishedYear,
+        BookFormat format,
+        String idempotencyKey) {
+}
+
+public enum BookFormat {
+    PAPERBACK,
+    HARDCOVER,
+    EBOOK
+}
+
+public record CreateBookPayload(
+        Book book,
+        List<CreateBookError> userErrors) {
+}
+
+public record CreateBookError(
+        CreateBookErrorCode code,
+        String message,
+        List<String> inputPath) {
+}
+```
+
+Record, constructor, setter hoặc cách bind field cụ thể cần phù hợp với binder và version Spring đang dùng. Tên `tenantId`, `title`, `author`, `publishedYear`, `format` và `idempotencyKey` phải tương ứng với field input. Enum Java nên dùng vocabulary khớp enum SDL hoặc có mapping tường minh; đừng đổi enum thành `String` chỉ để né một tên không khớp.
+
+`@Argument` không có cờ `required` hoặc default riêng. Required/default là trách nhiệm của SDL và GraphQL Java:
+
+- `CreateBookInput!` chặn thiếu `input` hoặc `input: null`;
+- `title: String!` chặn thiếu title hoặc title `null`;
+- `format: BookFormat! = PAPERBACK` áp default khi field bị bỏ qua;
+- `idempotencyKey: ID` cho phép omitted/null về mặt GraphQL, còn service quyết định có bắt buộc trong một flow nào không.
+
+Nếu tên tham số Java đã có metadata compiler, một số trường hợp có thể viết `@Argument String id`. Tuy nhiên, `@Argument("id")` rõ hơn và không phụ thuộc vào việc build có giữ parameter name hay không. Xem [Binding arguments và input](/docs/tich-hop-spring-for-graphql/binding-arguments-input) để đi sâu vào binder, enum và input object.
+
+### Validation và error boundary
+
+Chia validation thành các lớp thay vì nhồi tất cả vào controller:
+
+| Lớp | Ví dụ | Method mutation có chạy không? | Kênh lỗi thường gặp |
+| --- | --- | --- | --- |
+| Parse/validation GraphQL | Field không tồn tại, object thiếu selection set | Không | Top-level `errors`. |
+| Input coercion | `publishedYear: "2022"`, enum sai, thiếu field non-null | Không hoặc chưa vào body method | Top-level `errors`. |
+| Spring binding | Record/setter không bind được, enum Java không tương thích | Có thể fail lúc invoke | Top-level execution error theo error policy. |
+| Business validation | Title toàn khoảng trắng, năm ngoài range, duplicate | Có | `userErrors` typed hoặc exception theo contract. |
+| Hạ tầng/execution | Database timeout, downstream unavailable, serialization lỗi | Có thể đã chạy | Top-level `errors`, có thể partial data. |
+
+`String!` không thay thế `@NotBlank`, và `@NotBlank` cũng không thay thế authorization hoặc invariant ở service. Một rule như “ISBN không trùng” phải nằm ở application/domain service để các đường vào khác ngoài GraphQL cũng được bảo vệ.
+
+Với chiến lược payload của ví dụ, service có thể trả `CreateBookPayload(book = null, userErrors = ...)` cho lỗi dự kiến. Nếu lỗi không thể hoàn tất payload, có thể ném domain/infrastructure exception để error handling map thành GraphQL `errors` an toàn. Hai kênh này cần nhất quán; client không nên đoán dựa vào message tự do.
+
+### Transaction và idempotency
+
+`@MutationMapping` **không**:
+
+- tự mở transaction;
+- tự rollback khi downstream thất bại;
+- biến nhiều database thành một distributed transaction;
+- tự làm request retry trở nên an toàn;
+- tự phát hiện hai lần gửi cùng một input.
+
+Đặt transaction boundary ở application service khi use case thật sự cần. Ví dụ khái niệm:
+
+```java
+@Service
+public class CatalogService {
+
+    @Transactional
+    public CreateBookPayload createBook(CreateBookInput input) {
+        // Kiểm tra invariant, lưu dữ liệu và tạo outcome trong boundary phù hợp.
+        return createBookUseCase.execute(input);
+    }
+}
+```
+
+Đoạn code chỉ minh họa vị trí boundary; annotation transaction, transaction manager và reactive/imperative stack phải khớp ứng dụng thật. Nếu mutation vừa ghi database vừa gửi message hoặc gọi HTTP, commit database không tự rollback side effect bên ngoài. Có thể cần outbox, compensation hoặc workflow riêng.
+
+Nếu client timeout sau khi server đã commit, retry mutation có thể tạo duplicate. `idempotencyKey` trong SDL chỉ là một field dữ liệu, không phải bằng chứng server đã deduplicate. Muốn công bố semantics idempotency, service cần ít nhất:
+
+1. scope key theo principal/tenant và loại mutation;
+2. lưu key cùng trạng thái hoặc kết quả với retention rõ;
+3. trả lại outcome cũ khi cùng key và cùng input được gửi lại;
+4. từ chối khi cùng key đi kèm input khác;
+5. quy định trạng thái pending, timeout và side effect bên ngoài.
+
+Xem [Mutation và input/payload](/docs/query-mutation-subscription/mutation-input-payload) để nối payload, transaction và duplicate submission với thiết kế mutation.
+
+## `@SubscriptionMapping`: map event stream
+
+`@SubscriptionMapping` dành cho field dưới root type `Subscription`. Khác query/mutation thường hoàn tất một kết quả, subscription tạo một đăng ký có thể phát nhiều execution result theo thời gian.
+
+```java
+import org.reactivestreams.Publisher;
+import org.springframework.graphql.data.method.annotation.Argument;
+import org.springframework.graphql.data.method.annotation.SubscriptionMapping;
+import org.springframework.stereotype.Controller;
+
+@Controller
+public class CatalogSubscriptionController {
+
+    private final BookEventStream bookEventStream;
+    private final SubscriptionAuthorization authorization;
+
+    public CatalogSubscriptionController(
+            BookEventStream bookEventStream,
+            SubscriptionAuthorization authorization) {
+        this.bookEventStream = bookEventStream;
+        this.authorization = authorization;
+    }
+
+    @SubscriptionMapping
+    public Publisher<Book> bookAdded(@Argument("tenantId") String tenantId) {
+        authorization.checkCanSubscribe(tenantId);
+        return bookEventStream.forTenant(tenantId);
+    }
+}
+```
+
+`BookEventStream`, `SubscriptionAuthorization` và `Book` là tên minh họa. Method này được gọi để tạo/nhận `Publisher` cho operation subscription; không nên hiểu nó là một method được gọi lại từ đầu cho mỗi event. GraphQL execution dùng selection set `bookAdded { ... }` để hoàn tất từng item publisher phát ra.
+
+Argument `tenantId` không cấp quyền. Nó chỉ là input do client gửi. Authorization phải dựa trên principal/context đã xác thực và được kiểm tra ở service/event source; không lọc dữ liệu nhạy cảm chỉ bằng cách tin string này.
+
+### `Publisher` và vòng đời stream
+
+**`Publisher<T>`** là abstraction Reactive Streams phát ra zero, một hoặc nhiều item rồi kết thúc bằng `complete` hoặc `error`. Trong Reactor, `Flux<T>` là implementation thường dùng cho nhiều item. Một stream subscription có vòng đời khái quát:
+
+```text
+subscribe request
+      │ parse/validate/coerce + authorization
+      ▼
+@SubscriptionMapping tạo Publisher
+      │ subscriber đăng ký vào event source
+      ▼
+onNext(Book) ──► GraphQL hoàn tất selection set ──► transport gửi kết quả
+      │
+      ├── complete ──► kết thúc operation bình thường
+      ├── error ─────► error policy của subscription
+      └── cancel ────► hủy source và giải phóng tài nguyên
+```
+
+Một `Publisher` có thể là **cold** (mỗi subscriber tạo nguồn riêng) hoặc **hot** (nguồn phát độc lập với subscriber). Chọn semantics theo event source:
+
+- `Flux` trong một JVM không tự fan-out sang instance khác và có thể mất event khi process restart;
+- broker/durable log có thể cung cấp fan-out, cursor hoặc replay, nhưng cần quản lý consumer và quyền truy cập;
+- `share()` hoặc multicast không tự giải quyết duplicate, ordering, tenant isolation hoặc subscriber chậm;
+- event phát ra trước khi transaction commit có thể khiến client thấy trạng thái đã rollback.
+
+Một method subscription có thể trả `Flux<Book>` nếu controller dùng Reactor trực tiếp:
+
+```java
+@SubscriptionMapping
+public Flux<Book> bookAdded(@Argument("tenantId") String tenantId) {
+    authorization.checkCanSubscribe(tenantId);
+    return bookEventStream.forTenant(tenantId);
+}
+```
+
+Dùng `Publisher<Book>` ở boundary giúp code phụ thuộc vào Reactive Streams interface thay vì Reactor, còn `Flux<Book>` thuận tiện khi cần operator như filter, timeout hoặc cleanup. Return type nào được adapter hỗ trợ phải được kiểm tra theo version; không dùng `Publisher` để che một source blocking hoặc không có lifecycle rõ.
+
+### Backpressure và cleanup
+
+**Backpressure** là cơ chế điều tiết khi producer phát nhanh hơn khả năng xử lý/gửi của subscriber. Reactive Streams có demand, nhưng toàn tuyến còn gồm GraphQL execution, WebSocket frame, proxy và browser; vì vậy vẫn cần policy vận hành rõ:
+
+| Tình huống | Policy nên cân nhắc | Tránh |
+| --- | --- | --- |
+| Event quan trọng, không được mất | Queue bounded, broker/replay và cursor; ngắt subscriber chậm khi vượt giới hạn | Buffer vô hạn trong heap. |
+| UI chỉ cần trạng thái mới nhất | Coalesce/throttle hoặc giữ giá trị mới nhất theo contract | Drop event audit/payment mà không tài liệu hóa. |
+| Burst lớn | Rate limit, batch có kiểm soát, giới hạn số operation | Mỗi connection tạo một consumer vô hạn. |
+| Client disconnect/chậm | Truyền cancel, drop theo policy hoặc đóng operation | Giữ queue vô hạn chờ client quay lại. |
+
+Cleanup phải đi ngược từ transport về event source. Với Reactor, `doFinally` thường phù hợp để xử lý complete, error và cancel; API đóng broker consumer/timer/listener phụ thuộc implementation:
+
+```java
+public Flux<Book> streamForTenant(String tenantId, String subscriptionId) {
+    return bookEventStream.forTenant(tenantId)
+            .doOnCancel(() -> registry.markCancelled(subscriptionId))
+            .doFinally(signal -> registry.release(subscriptionId));
+}
+```
+
+Đoạn code là minh họa lifecycle, không phải cấu hình broker hoàn chỉnh. Test cần xác nhận ít nhất:
+
+- client gửi `complete` thì event source nhận cancellation;
+- socket đóng mà chưa gửi `complete` vẫn giải phóng subscription;
+- publisher `error` và `complete` đều xóa registry/consumer;
+- server shutdown không để lại listener hoặc queue;
+- reconnect không để stream cũ sống song song ngoài ý muốn.
+
+Chi tiết protocol, reconnect, fan-out và cleanup nằm trong [Subscription và WebSocket](/docs/query-mutation-subscription/subscription-websocket). Annotation mapping chỉ là điểm nối đầu vào của lifecycle, không phải lifecycle manager đầy đủ.
+
+### WebSocket là transport riêng
+
+`@SubscriptionMapping` **không tự bật WebSocket**. Ba lớp sau cần được tách:
+
+| Lớp | Câu hỏi |
+| --- | --- |
+| GraphQL schema | Có `Subscription.bookAdded` và kiểu/argument/selection hợp lệ không? |
+| Controller mapping | Method có tạo `Publisher<Book>` và xử lý quyền không? |
+| Transport | Client mở HTTP streaming, WebSocket hoặc transport được hỗ trợ nào; protocol, endpoint, handshake và timeout ra sao? |
+
+Khi dùng WebSocket, client/server còn phải thống nhất protocol và message lifecycle như `connection_init`, `connection_ack`, `subscribe`, `next`, `error`, `complete`. Endpoint WebSocket, web stack MVC/WebFlux, interceptor, reverse proxy và dependency là cấu hình riêng. Không suy ra rằng application có `@SubscriptionMapping` thì `ws://...` đã tồn tại.
+
+Tương tự, subscription qua HTTP/SSE nếu version hỗ trợ cũng là transport riêng, không phải hệ quả tự động của annotation. Xem [Subscription và WebSocket](/docs/query-mutation-subscription/subscription-websocket) và [Subscription WebSocket khi deploy](/docs/trien-khai/subscription-websocket-deployment) trước khi công bố endpoint hoặc delivery guarantee.
+
+## Arguments, method signature và context
+
+### `@Argument` lấy argument, không lấy variable
+
+Có ba tên dễ bị trộn trong một request:
+
+```graphql
+query CatalogPage($bookId: ID!) {
+  book(id: $bookId) {
+    id
+  }
+}
+```
+
+| Vị trí | Tên | Ai sử dụng |
+| --- | --- | --- |
+| Variable definition | `$bookId` | GraphQL operation và variables JSON. |
+| Field argument | `id` | SDL và `@Argument("id")`. |
+| JSON variables key | `bookId` | Transport envelope, không có dấu `$`. |
+
+Method nhận argument sau khi GraphQL đã bind:
+
+```java
+@QueryMapping
+public Book book(@Argument("id") String id) {
+    return catalogService.findBook(id);
+}
+```
+
+`@Argument` không tìm variable bằng tên `$bookId`, không bypass validation và không thêm argument mới vào schema. Nếu schema có `book(id: ID!)`, annotation phải đọc `id`; variable có thể mang tên khác.
+
+Với một scalar, nhận kiểu Java trực tiếp thường đủ. Với input object, nhận record/class typed giúp giữ contract rõ hơn raw `Map`:
+
+```java
+@QueryMapping
+public List<Book> books(@Argument("limit") Integer limit) {
+    return catalogService.findBooks(limit);
+}
+```
+
+Nếu thực sự cần toàn bộ map argument cho một adapter generic, API có `@Arguments`; nếu cần raw value của một named argument, dùng `@Argument` với map theo semantics của version. Đừng dùng raw map để né việc thiết kế input có kiểu khi domain đã biết shape.
+
+### Input object và phân biệt omitted/null
+
+Với một tham số nullable, `@Argument` thông thường có thể không giữ được khác biệt giữa:
+
+- client bỏ qua field;
+- client gửi field với giá trị `null`.
+
+Khác biệt này quan trọng với partial update: omitted có thể nghĩa là “giữ nguyên”, còn `null` có thể nghĩa là “xóa”. Khi use case cần phân biệt, kiểm tra `ArgumentValue<T>` và tài liệu của version Spring for GraphQL đang dùng:
+
+```java
+@MutationMapping
+public UpdateBookPayload updateBook(
+        @Argument("input") ArgumentValue<UpdateBookInput> input) {
+    if (input.isOmitted()) {
+        return updateService.noInputProvided();
+    }
+    return updateService.update(input.value());
+}
+```
+
+Đoạn code chỉ minh họa ý tưởng; import, API và validation cần khớp version. Không tự thêm cờ `required` vào `@Argument` vì annotation này không có cờ đó; hãy đặt required/default ở SDL. [Enum, input object và arguments](/docs/schema-va-type-system/enum-input-arguments) giải thích thêm coercion, default và input contract.
+
+### `DataFetchingEnvironment` và `GraphQLContext`
+
+Method signature có thể nhận trực tiếp `DataFetchingEnvironment` khi cần truy cập thông tin cấp thấp hơn:
+
+```java
+import graphql.GraphQLContext;
+import graphql.schema.DataFetchingEnvironment;
+import org.springframework.graphql.data.method.annotation.Argument;
+import org.springframework.graphql.data.method.annotation.QueryMapping;
+
+@QueryMapping
+public List<Book> books(
+        @Argument("limit") Integer limit,
+        DataFetchingEnvironment environment) {
+
+    GraphQLContext context = environment.getGraphQlContext();
+    String requestId = context.get("requestId");
+    return catalogService.findBooks(limit, requestId);
+}
+```
+
+`DataFetchingEnvironment` có thể cung cấp:
+
+- map argument của field (`getArgument`, `getArguments`);
+- source/parent object của field (`getSource`);
+- `GraphQLContext` của lần execution (`getGraphQlContext`);
+- selection set và metadata field khi implementation cần tối ưu có kiểm soát.
+
+Ưu tiên `@Argument` typed cho input nghiệp vụ. Dùng environment khi thật sự cần selection set, context, source hoặc một adapter generic; đọc raw map ở mọi resolver làm mất type safety và khiến method khó test.
+
+**GraphQL context** là dữ liệu do server tạo, thường gồm principal đã xác thực, tenant đã xác định, correlation ID, deadline hoặc DataLoader registry. Client không thể cấp quyền bằng cách đặt một key trong variables:
+
+```java
+@QueryMapping
+public Book book(
+        @Argument("id") String id,
+        DataFetchingEnvironment environment) {
+
+    PrincipalContext principal = environment.getGraphQlContext()
+            .get("principalContext");
+    return catalogService.findVisibleBook(id, principal);
+}
+```
+
+`PrincipalContext` và key `principalContext` là ví dụ quy ước ứng dụng. Interceptor/security layer phải tạo chúng từ credential đã kiểm tra; không lấy `tenantId` từ input làm principal. Nếu project đã chuẩn hóa context value, có thể dùng `@ContextValue` hoặc nhận `Principal`/`Authentication` theo cơ chế Spring Security được cấu hình. Xem [DataFetcher và GraphQL context](/docs/tich-hop-spring-for-graphql/datafetcher-va-graphql-context) và [Context, interceptor và request lifecycle](/docs/tich-hop-spring-for-graphql/context-interceptor-request-lifecycle).
+
+### Source object chỉ có ở nested field
+
+Root field không có object domain cha như `Book`. Nested field mới nhận source/parent object:
+
+```graphql
+type Book {
+  id: ID!
+  author: Author!
+}
+```
+
+```java
+@SchemaMapping(typeName = "Book", field = "author")
+public Author author(Book book) {
+    return authorService.findByBookId(book.id());
+}
+```
+
+`book` ở đây là source object của `Book.author`, không phải argument GraphQL. Đừng thêm tham số `Book book` vào `@QueryMapping` chỉ vì query root cuối cùng trả về `Book`; root resolver tạo `Book`, còn nested resolver được gọi ở bước sau.
+
+## Root mapping khác nested field mapping
+
+Một query có thể đi qua nhiều mapping khác nhau:
+
+```graphql
+query BookDetails {
+  book(id: "book-1") {
+    id
+    title
+    author {
+      id
+      name
+    }
+  }
+}
+```
+
+Flow khái quát:
+
+```text
+Query.book                         → @QueryMapping
+      │ trả Book
+      ▼
+Book.id, Book.title                → property/default fetcher hoặc mapping riêng
+Book.author                        → @SchemaMapping(typeName = "Book", field = "author")
+      │ trả Author
+      ▼
+Author.id, Author.name             → property/default fetcher hoặc mapping riêng
+```
+
+### Khi dùng `@SchemaMapping`
+
+Dùng `@SchemaMapping` cho field của một output type, không phải chỉ vì method đang ở trong controller GraphQL. Ví dụ:
+
+```java
+@Controller
+public class BookFieldController {
+
+    private final AuthorService authorService;
+
+    public BookFieldController(AuthorService authorService) {
+        this.authorService = authorService;
+    }
+
+    @SchemaMapping(typeName = "Book", field = "author")
+    public Author author(Book book) {
+        return authorService.findByBookId(book.id());
+    }
+}
+```
+
+Nếu tên class Java đơn giản khớp tên GraphQL và source parameter rõ ràng, `@SchemaMapping` có thể suy ra type và field:
+
+```java
+@SchemaMapping
+public Author author(Book book) {
+    return authorService.findByBookId(book.id());
+}
+```
+
+Cách suy ra này tiện cho ví dụ nhỏ. Với DTO tên `BookView`, interface, projection, nhiều class có cùng simple name hoặc mapping quan trọng về security/latency, ghi rõ `typeName` và `field` giúp tránh nhầm. Bài [`@SchemaMapping` và nested field](/docs/tich-hop-spring-for-graphql/schema-mapping-va-nested-field) dành riêng cho boundary này.
+
+Không cần thêm nested mapping nếu property data fetcher mặc định đã đọc đúng getter/record component và không có logic riêng. Thêm annotation cho mọi scalar chỉ làm wiring dài hơn; thêm mapping khi cần gọi service, kiểm tra quyền, batch loading, tính toán hoặc chuyển đổi dữ liệu có chủ đích.
+
+### Khi không nên dùng annotation mơ hồ
+
+Các tình huống nên tránh:
+
+- Dùng bare `@SchemaMapping` cho root field rồi hy vọng type được suy ra dù method không có source parameter phù hợp.
+- Dùng `@SchemaMapping` không có `typeName` trong controller chứa nhiều output type hoặc nhiều method trùng tên.
+- Đặt `@QueryMapping` và `@SchemaMapping` lên cùng method.
+- Dùng `@QueryMapping` cho `Book.author`; annotation đó luôn nhắm root `Query`, không nhắm type `Book`.
+- Dùng `@SubscriptionMapping` để xử lý một field nested phát ra từ `Book`; subscription chỉ dành cho root `Subscription`.
+- Dùng `@SchemaMapping(typeName = "Query")` cho tất cả root chỉ vì muốn một annotation chung, làm mất tín hiệu query/mutation/subscription trong code review.
+
+Nếu root type đã đổi tên, hãy dùng `@SchemaMapping` **tường minh**. Nếu field nested có source type không rõ, hãy khai báo `typeName`/`field` và kiểu parent rõ. Mục tiêu không phải dùng ít annotation nhất, mà là làm cho cặp type/field được đọc ra ngay từ code.
+
+## Naming collision và signature pitfalls
+
+### Collision trong SDL và collision trong mapping
+
+Có hai loại collision cần tách:
+
+1. **SDL collision:** hai file cùng định nghĩa type/field hoặc cùng thêm `Query.book`. Schema hợp nhất có thể không build được.
+2. **Mapping collision:** SDL chỉ có một `Query.book`, nhưng hai method Spring cùng đăng ký vào cặp `Query.book`.
+
+Ví dụ mapping collision:
+
+```java
+@Controller
+public class FirstQueryController {
+
+    @QueryMapping
+    public Book book(@Argument("id") String id) {
+        return firstService.find(id);
+    }
+}
+
+@Controller
+public class SecondQueryController {
+
+    @QueryMapping(name = "book")
+    public Book anotherBook(@Argument("id") String id) {
+        return secondService.find(id);
+    }
+}
+```
+
+Không có overload GraphQL tự động ở đây. Runtime thường phát hiện ambiguity khi đăng ký mapping hoặc khởi động; hành vi “chọn method đầu tiên” không phải contract. Cách sửa là chọn một owner, hợp nhất logic ở service, hoặc công khai field khác với semantics khác sau khi review SDL.
+
+Java overload cũng không tạo GraphQL overload:
+
+```java
+// Không nên: cả hai đều nhắm Query.book.
+@QueryMapping
+public Book book(@Argument("id") String id) { /* ... */ }
+
+@QueryMapping
+public Book book(@Argument("slug") String slug) { /* ... */ }
+```
+
+GraphQL field có một tên và một tập argument được schema định nghĩa; Java signature khác nhau không làm client có hai phiên bản `book`. Nếu use case thật sự khác, đặt field rõ như `bookById` và `bookBySlug`, hoặc thiết kế một input có chủ đích.
+
+### Những chữ ký method dễ sai
+
+| Pitfall | Vì sao sai hoặc rủi ro | Cách rà soát |
+| --- | --- | --- |
+| `@Argument("bookId")` trong khi SDL là `book(id: ID!)` | Tên argument không khớp; variable name không thay tên argument. | Đối chiếu tên trong SDL, không đối chiếu tên `$bookId`. |
+| Java `String`/`Integer` nullable nhưng SDL `!` | Schema cấm null, nhưng code vẫn có thể làm lộ null từ service. | Bảo vệ invariant ở service và test nullability. |
+| `int` cho `publishedYear: Int` nullable | Primitive không biểu diễn `null`; có thể biến “chưa biết” thành `0`. | Dùng `Integer` nếu domain cho phép null. |
+| `Long` cho GraphQL `Int` | GraphQL `Int` thường là signed 32-bit; không tự coi mọi Java number là tương thích. | Dùng kiểu Java phù hợp hoặc custom scalar đã cấu hình. |
+| `List<Book>` cho `[Book!]!` | Generic Java không cấm list/phần tử null. | Chuẩn hóa list và kiểm tra phần tử trước khi trả. |
+| Trả `Book` cho field payload object mà không có selection set | Output object cần selection set ở query; return type phải khớp SDL/payload. | Kiểm tra SDL, query và response cùng nhau. |
+| Dùng raw `Map` cho mọi input | Mất type safety, validation và khả năng tiến hóa typed. | Chỉ dùng map ở adapter generic; ưu tiên record/class input. |
+| Dựa vào Java parameter name không explicit | Build có thể không giữ metadata tên parameter. | Viết `@Argument("name")` cho public contract. |
+| Đưa HTTP request trực tiếp vào mọi resolver | Trộn transport với GraphQL/domain và khó dùng lại qua WebSocket. | Đưa metadata cần thiết vào GraphQL context/interceptor. |
+| Trả `Publisher<Mono<Book>>` | Stream lồng sai hình dạng; item cần khớp output event. | Dùng `Publisher<Book>` hoặc kiểu được version hỗ trợ. |
+
+Return type và argument binder có thể mở rộng theo version, nhưng schema vẫn là nguồn contract. Đừng sửa Java signature trước khi đọc SDL và operation thực tế.
+
+## Error, authorization và boundary nghiệp vụ
+
+### Phân lớp lỗi
+
+Một resolver mapping tốt giúp đặt lỗi ở đúng lớp:
+
+```text
+transport/route/auth biên
+        ▼
+parse + validation + input coercion
+        ▼
+@QueryMapping/@MutationMapping/@SubscriptionMapping
+        ▼
+argument binding + service
+        ▼
+execution/serialization hoặc Publisher signal
+```
+
+| Tín hiệu | Resolver đã chạy chưa? | Cách xử lý |
+| --- | --- | --- |
+| Sai endpoint, HTTP method, handshake hoặc body JSON | Thường chưa | Kiểm tra transport/configuration. |
+| Field không tồn tại, sai selection set, variable sai kiểu | Chưa vào resolver field | Sửa SDL/query/variables; lỗi ở top-level `errors`. |
+| Bind input thất bại | Có thể chưa vào body method | Giữ error mapping an toàn; test field path nếu contract công bố. |
+| Title trắng, duplicate hoặc năm không hợp lệ | Có | Payload `userErrors` hoặc domain exception theo policy. |
+| Database/downstream timeout | Có thể đã gọi service | Exception resolver tạo top-level GraphQL error, không trả stack trace. |
+| `Publisher` phát error sau khi subscribe | Method tạo publisher đã chạy | Cần error policy cho stream; `DataFetcherExceptionResolver` không nhất thiết thấy signal về sau. |
+
+Với controller exception, Spring for GraphQL có các extension point error resolver theo version. Riêng lỗi phát ra sau đó từ subscription `Publisher`, tài liệu Spring có `SubscriptionExceptionResolver` ở các version hỗ trợ vì data fetcher ban đầu chỉ tạo `Publisher`. Không tự coi `DataFetcherExceptionResolver` là nơi bắt mọi lỗi reactive về sau; hãy kiểm tra version và integration test.
+
+Client nên đọc cả `data` và top-level `errors`. `data.createBook.userErrors` là outcome typed của use case; `errors.path` là lỗi GraphQL execution. HTTP `200` không chứng minh mutation thành công hoàn toàn. Xem [Mô hình request/response](/docs/nen-tang/mo-hinh-request-response) và [Xử lý lỗi tập trung](/docs/tich-hop-spring-for-graphql/xu-ly-loi-tap-trung) để tách các boundary này.
+
+### Authorization không nằm trong tên argument
+
+Argument như `tenantId`, `id` hoặc `userId` là dữ liệu client gửi, không phải credential. Một flow an toàn thường là:
+
+1. interceptor/security layer xác thực credential và tạo principal trong context;
+2. controller nhận `@Argument` cùng context/`Principal`;
+3. service kiểm tra principal có quyền trên resource/tenant không;
+4. repository/event source áp dụng filter phòng thủ nhiều lớp;
+5. error mapping không tiết lộ resource mà caller không có quyền biết.
+
+Query:
+
+```java
+@QueryMapping
+public Book book(
+        @Argument("id") String id,
+        Principal principal) {
+    return catalogService.findVisibleBook(id, principal);
+}
+```
+
+Subscription cần kiểm tra tối thiểu lúc subscribe, và có thể cần filter/kiểm tra lại từng event nếu membership thay đổi trong lúc stream sống:
+
+```java
+@SubscriptionMapping
+public Publisher<Book> bookAdded(
+        @Argument("tenantId") String tenantId,
+        Principal principal) {
+    return bookEventStream.authorizedFor(tenantId, principal);
+}
+```
+
+`Principal`, `authorizedFor` và event source là minh họa. Không dùng việc ẩn field khỏi GraphiQL, đổi tên method hoặc tin `tenantId` làm authorization. Xem [Authorization theo field và resolver](/docs/bao-mat-va-quan-sat/authorization-field-resolver) khi project có policy security cụ thể.
+
+### Mutation không tự có transaction hoặc idempotency
+
+Cùng một method `@MutationMapping` có thể được gọi lại sau timeout, retry của client hoặc double-click. Vì vậy review mutation phải hỏi:
+
+- side effect nào đã commit trước khi response về;
+- transaction bao phủ database nào và không bao phủ hệ thống nào;
+- duplicate business key được xử lý bằng constraint/service ra sao;
+- `idempotencyKey` có scope, retention, conflict và replay result không;
+- event phát sau commit hay trước commit;
+- lỗi “không biết đã commit hay chưa” hướng client kiểm tra trạng thái thế nào.
+
+Annotation không thể trả lời các câu hỏi này. Đặt chúng ở service/application layer, rồi viết test contract để client biết khi nào retry an toàn. Đừng ghi trong tài liệu rằng mutation idempotent chỉ vì input có field tên `idempotencyKey`.
+
+## Kiểm thử mapping
+
+Repository này không có backend Spring Boot để chạy test. Khi áp dụng vào project thật, nên kiểm tra theo nhiều lớp thay vì chỉ gọi một request thành công.
+
+### Test schema và mapping
+
+**Schema/contract test**:
+
+- load toàn bộ `.graphqls` và kiểm tra root type, field, argument, input/output, enum và nullability;
+- kiểm tra mỗi field root quan trọng có đúng một mapping hoặc runtime data fetcher;
+- kiểm tra schema chia module không có duplicate type/field;
+- kiểm tra custom root type dùng `@SchemaMapping` tường minh;
+- nếu có schema registry/operation check, validate query thật của client trước release.
+
+**Controller slice test** trong Spring Boot thường có thể dùng `@GraphQlTest` cùng `GraphQlTester` theo version:
+
+```java
+@GraphQlTest(CatalogQueryController.class)
+class CatalogQueryControllerTest {
+
+    @Autowired
+    GraphQlTester graphQlTester;
+
+    @Test
+    void mapsBookField() {
+        graphQlTester.document("""
+                query BookById($id: ID!) {
+                  book(id: $id) { id title }
+                }
+                """)
+                .variable("id", "book-1")
+                .execute()
+                .path("book.id")
+                .entity(String.class)
+                .isEqualTo("book-1");
+    }
+}
+```
+
+Đây là khung minh họa; annotation mock, bean filter, test slice và API `GraphQlTester` có thể thay đổi giữa Spring Boot versions. Mock service để test mapping, không dùng slice test để kết luận transaction hoặc broker đã đúng.
+
+Test thêm một trường hợp operation name/alias để bảo đảm method vẫn map field schema gốc, không map theo alias:
+
+```graphql
+query CompareBooks {
+  primary: book(id: "book-1") { id }
+  comparison: book(id: "book-2") { id }
+}
+```
+
+### Test argument, lỗi và nullability
+
+Một bộ test tối thiểu cho query/mutation nên bao gồm:
+
+- argument scalar đúng tên và input object bind đúng field;
+- enum, default, field omitted và `null` theo SDL;
+- variable sai kiểu, thiếu required input, unknown argument và object thiếu selection set bị chặn trước service;
+- service nhận `ID`/`Integer` đúng kiểu và authorization nhận principal từ context;
+- query `book` trả `null` đúng semantics khi không tìm thấy, không biến timeout thành `null` im lặng;
+- `books` trả `[]` cho không có kết quả và không có phần tử `null` khi SDL là `[Book!]!`;
+- mutation success có payload, domain validation có `userErrors`, execution exception có top-level `errors`;
+- payload `book` nullable và `userErrors` list non-null tạo null bubbling đúng như contract;
+- transaction rollback, duplicate constraint và idempotency retry được test ở service/integration boundary, không chỉ trong controller slice.
+
+Khi assert error, ưu tiên `code`, `path`, `inputPath` hoặc category đã được API công bố. Không khóa test vào nguyên văn `message` nếu GraphQL Java/Spring version không cam kết chuỗi đó.
+
+### Test stream và transport
+
+Subscription cần test riêng **resolver**, **publisher** và **transport**:
+
+1. Unit test service/event source: tenant filter, principal, event ordering/dedup semantics và behavior khi source lỗi.
+2. Publisher test: subscribe nhận event, `complete` kết thúc, `error` được map theo policy và cancellation gọi cleanup.
+3. Backpressure test: queue bounded, subscriber chậm bị drop/coalesce/disconnect đúng policy; không dùng buffer vô hạn.
+4. WebSocket/SSE integration test nếu transport đó được chọn: handshake, protocol, `subscribe`, `next`, `error`, `complete`, reconnect và token expiry.
+5. Multi-instance test nếu event source phân tán: event từ instance khác, broker lag, duplicate và shutdown/drain.
+
+`@SubscriptionMapping` test thành công không chứng minh WebSocket endpoint đã được expose. Transport integration test mới kiểm tra route, handshake, protocol và reverse proxy. Xem [Subscription và WebSocket](/docs/query-mutation-subscription/subscription-websocket) để dùng checklist lifecycle phù hợp.
+
+## Version awareness và endpoint HTTP
+
+Các annotation mapping đã có trong programming model Spring for GraphQL từ dòng 1.x, nhưng chi tiết method argument, binder, reactive adapter, exception resolver, WebSocket handler và property có thể thay đổi theo Spring for GraphQL, Spring Boot và GraphQL Java version.
+
+Rà soát các điểm sau trước khi sao chép code:
+
+- import annotation từ `org.springframework.graphql.data.method.annotation` của dependency thật;
+- Spring Boot BOM/parent đang quản lý version tương thích; không tự ghim `spring-graphql` hoặc `graphql-java` khác dòng nếu không có lý do;
+- `@Argument` explicit name, binder cho record/setter, `ArgumentValue`, `@ContextValue` và raw map theo reference đúng version;
+- return adapter của `Mono`, `Flux`, `Publisher`, `CompletableFuture` hoặc `DataFetcherResult` theo stack thật;
+- `DataFetcherExceptionResolver` và `SubscriptionExceptionResolver` nếu cần xử lý exception từ stream;
+- custom root type: shortcut chỉ nhắm các type quy ước `Query`, `Mutation`, `Subscription`;
+- MVC/WebFlux, WebSocket/SSE, interceptor và reverse proxy là các boundary riêng.
+
+Khi bài có nhắc HTTP endpoint, giữ quy ước property theo Spring Boot:
+
+| Version Spring Boot | Property HTTP |
+| --- | --- |
+| 3.5+ | `spring.graphql.http.path` |
+| 3.4 trở xuống | `spring.graphql.path` |
+
+Ví dụ `/graphql` chỉ là giá trị minh họa khi application cấu hình path tương ứng. Không cấu hình đồng thời hai key cho cùng một project, không suy ra WebSocket path từ HTTP path và không coi `@SubscriptionMapping` là bật transport. Đọc [Thêm dependency và cấu hình](/docs/bat-dau/them-dependency-va-cau-hinh) để xem endpoint/schema location theo version; nếu project không dùng đúng route này, kiểm tra configuration metadata và reference của version đang chạy.
+
+Mã Java trong bài cố ý minh họa tĩnh. Một snippet đúng cú pháp vẫn có thể không chạy nếu thiếu bean service, schema location, runtime wiring, security context hoặc transport config. [Viết query đầu tiên](/docs/bat-dau/viet-query-dau-tien) là bước thực hành root query nhỏ nhất sau khi project backend đã được cấu hình.
+
+## Checklist review controller
+
+Trước khi merge một controller GraphQL, kiểm tra:
+
+- [ ] SDL đã khai báo đúng root field, argument, input/output và nullability chưa?
+- [ ] `@QueryMapping`, `@MutationMapping`, `@SubscriptionMapping` có nhắm đúng root operation chưa?
+- [ ] Nếu root type custom, mapping có dùng `@SchemaMapping(typeName = ..., field = ...)` tường minh chưa?
+- [ ] Class có `@Controller` và nằm trong component scan không?
+- [ ] Method name có khớp field GraphQL, hoặc `name`/`value` đã ghi rõ chưa?
+- [ ] Operation name, alias và field schema có được phân biệt không?
+- [ ] Mỗi cặp type/field chỉ có một mapping; Java overload không bị hiểu nhầm là GraphQL overload chưa?
+- [ ] `@Argument` dùng đúng tên argument, không dùng tên variable thay thế chưa?
+- [ ] Input typed, enum và record/class bind đúng field; omitted/null có cần `ArgumentValue` không?
+- [ ] Java return type giữ cam kết `[T!]!`, `T!`, `T` và `Publisher<T>` theo SDL chưa?
+- [ ] Resolver có gọi service thay vì sao chép invariant ở controller không?
+- [ ] Validation structure, binding, business và execution error đã có boundary rõ chưa?
+- [ ] Authorization dùng principal/context server tạo, không tin `tenantId` hoặc `id` từ client chưa?
+- [ ] Mutation đã review transaction, timeout sau commit, duplicate và idempotency chưa?
+- [ ] Subscription có event source, cancellation, cleanup, backpressure và per-event authorization chưa?
+- [ ] Transport WebSocket/SSE đã được cấu hình và test riêng; không coi annotation là enablement chưa?
+- [ ] Test positive, negative, nullability, mapping collision và stream lifecycle đã có chưa?
+- [ ] Code/property có được đối chiếu với Spring Boot/Spring for GraphQL version thật chưa?
+
+## Câu hỏi thường gặp
+
+<Accordions type="single">
+  <Accordion title="Có thể dùng @SchemaMapping thay cho cả ba annotation không?">
+    Có, nếu khai báo đúng typeName và field, ví dụ @SchemaMapping(typeName = "Query", field = "book"). Tuy nhiên, root-specific annotation truyền đạt rõ intent hơn. Không đặt cả @QueryMapping và @SchemaMapping lên cùng method, và không dùng mapping suy luận mơ hồ khi root type đã đổi tên.
+  </Accordion>
+  <Accordion title="@SubscriptionMapping có tự mở WebSocket không?">
+    Không. Annotation chỉ map root field tới method tạo Publisher. WebSocket hoặc SSE cần transport handler, endpoint, protocol, authentication/interceptor, timeout và cấu hình web stack riêng theo version. Hãy test transport ngoài test mapping.
+  </Accordion>
+  <Accordion title="Nếu HTTP trả 200 thì mutation đã thành công chưa?">
+    Chưa chắc. Body có thể có top-level errors, partial data hoặc payload userErrors. Client cần đọc data, errors, code/path và semantics transaction; cũng không được retry mù mutation sau timeout nếu idempotency chưa được server bảo đảm.
+  </Accordion>
+</Accordions>
 
 ## Bước tiếp theo
 
-Sau khi trang được điền nội dung, đọc bài kế tiếp trong nhóm để tiếp tục lộ trình.
+- Ôn [Kiến trúc GraphQL](/docs/nen-tang/kien-truc-graphql) để đặt transport, schema, resolver, service và data source vào đúng boundary.
+- Đọc [SDL và nguyên tắc thiết kế schema](/docs/schema-va-type-system/sdl-va-thiet-ke-schema) để chốt root operation, naming, input/output và nullability trước code.
+- Thực hành [Viết query đầu tiên](/docs/bat-dau/viet-query-dau-tien) để nối `Query` với controller trong một project Spring Boot thật.
+- Xem [Binding arguments và input](/docs/tich-hop-spring-for-graphql/binding-arguments-input) để đi sâu vào `@Argument`, input object và omitted/null.
+- Học [`@SchemaMapping` và nested field](/docs/tich-hop-spring-for-graphql/schema-mapping-va-nested-field) để tách root mapping khỏi field lồng nhau.
+- Đọc [DataFetcher và GraphQL context](/docs/tich-hop-spring-for-graphql/datafetcher-va-graphql-context) cùng [Context, interceptor và request lifecycle](/docs/tich-hop-spring-for-graphql/context-interceptor-request-lifecycle) khi resolver cần principal, tenant hoặc correlation metadata.
+- Đọc [Mutation và input/payload](/docs/query-mutation-subscription/mutation-input-payload) và [Xử lý lỗi trong mutation](/docs/query-mutation-subscription/xu-ly-loi-trong-mutation) để thiết kế outcome, transaction caveat và error contract.
+- Đọc [Subscription và WebSocket](/docs/query-mutation-subscription/subscription-websocket) trước khi triển khai Publisher, reconnect, backpressure và transport.
+
+<Cards>
+  <Card title="Viết query đầu tiên" href="/docs/bat-dau/viet-query-dau-tien" description="Nối field Query với resolver Java và đọc execution result." />
+  <Card title="Binding arguments và input" href="/docs/tich-hop-spring-for-graphql/binding-arguments-input" description="Bind argument, input object, variables và kiểu Java." />
+  <Card title="Schema mapping và nested field" href="/docs/tich-hop-spring-for-graphql/schema-mapping-va-nested-field" description="Resolve field lồng nhau và phân biệt source object." />
+  <Card title="Subscription và WebSocket" href="/docs/query-mutation-subscription/subscription-websocket" description="Nối Publisher, lifecycle và transport realtime đúng boundary." />
+</Cards>

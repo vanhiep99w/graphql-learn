@@ -1,23 +1,850 @@
 ---
-title: "Pagination"
-description: "So sánh offset pagination với cursor pagination và cách biểu diễn page metadata trong schema."
+title: "Pagination trong GraphQL"
+description: "Thiết kế offset pagination và cursor keyset pagination với contract ổn định cho GraphQL API."
 ---
 
-Trang này sẽ trình bày **Pagination** trong bối cảnh xây dựng GraphQL API với Spring Boot.
+Pagination là cách chia một collection (tập dữ liệu) thành những **trang** nhỏ để client không phải tải toàn bộ dữ liệu trong một request. Trong GraphQL, pagination không chỉ là thêm `limit` vào query. Một contract dùng được trong production còn phải quy định thứ tự, cửa sổ dữ liệu, metadata, nullability, giới hạn chi phí và cách phản ứng khi dữ liệu thay đổi.
+
+<Callout type="info" title="Phạm vi và giả định">
+Trang này tập trung vào contract và quyết định thiết kế chung cho GraphQL. Các SDL, operation, variables và response là ví dụ tĩnh dùng chung một schema `Book`; chúng không phải backend Spring Boot đã chạy trong repository này. Phần Spring for GraphQL chỉ nêu boundary và điểm cần kiểm tra, còn implementation repository hoặc query database thuộc [Cursor và offset pagination trong Spring](/docs/truy-cap-du-lieu-va-hieu-nang/cursor-offset-pagination-spring).
+</Callout>
 
 ## Mục lục
 
-- [Nội dung dự kiến](#nội-dung-dự-kiến)
-- [Bước tiếp theo](#bước-tiếp-theo)
+- [Pagination là gì và không phải gì](#pagination-là-gì-và-không-phải-gì)
+  - [Pagination không thay thế filtering và sorting](#pagination-không-thay-thế-filtering-và-sorting)
+- [Chọn chiến lược pagination](#chọn-chiến-lược-pagination)
+  - [Offset pagination](#offset-pagination)
+  - [Cursor và keyset pagination](#cursor-và-keyset-pagination)
+  - [So sánh trade off](#so-sánh-trade-off)
+- [Thiết kế contract GraphQL](#thiết-kế-contract-graphql)
+  - [SDL minh họa nhất quán](#sdl-minh-họa-nhất-quán)
+  - [Giải thích type field và argument](#giải-thích-type-field-và-argument)
+  - [Page metadata và nullability](#page-metadata-và-nullability)
+- [Offset pagination từ query đến response](#offset-pagination-từ-query-đến-response)
+  - [Operation và variables JSON](#operation-và-variables-json)
+  - [Response JSON và semantics](#response-json-và-semantics)
+- [Cursor pagination từ query đến response](#cursor-pagination-từ-query-đến-response)
+  - [Operation trang đầu](#operation-trang-đầu)
+  - [Request trang tiếp theo](#request-trang-tiếp-theo)
+  - [Cursor opaque và phạm vi an toàn](#cursor-opaque-và-phạm-vi-an-toàn)
+- [Tính nhất quán khi dữ liệu thay đổi](#tính-nhất-quán-khi-dữ-liệu-thay-đổi)
+  - [Insert delete và update](#insert-delete-và-update)
+  - [Khi cần snapshot](#khi-cần-snapshot)
+- [Quy tắc production](#quy-tắc-production)
+  - [Ordering deterministic và tie breaker](#ordering-deterministic-và-tie-breaker)
+  - [Validation page size và chi phí query](#validation-page-size-và-chi-phí-query)
+  - [Authorization và filter](#authorization-và-filter)
+  - [Cache](#cache)
+- [Cách client duyệt trang](#cách-client-duyệt-trang)
+  - [Vòng lặp offset](#vòng-lặp-offset)
+  - [Vòng lặp cursor](#vòng-lặp-cursor)
+  - [Đổi filter sort hoặc quyền](#đổi-filter-sort-hoặc-quyền)
+- [Tiến hóa contract và tương thích](#tiến-hóa-contract-và-tương-thích)
+- [Ranh giới với Spring Boot và Spring for GraphQL](#ranh-giới-với-spring-boot-và-spring-for-graphql)
+  - [Điểm cần kiểm tra](#điểm-cần-kiểm-tra)
+  - [Endpoint theo version Spring Boot](#endpoint-theo-version-spring-boot)
+- [Test cases và checklist](#test-cases-và-checklist)
+  - [Test cases tối thiểu](#test-cases-tối-thiểu)
+  - [Checklist trước production](#checklist-trước-production)
+- [Học tiếp](#học-tiếp)
 
-## Nội dung dự kiến
+## Pagination là gì và không phải gì
 
-Nội dung chi tiết sẽ bao gồm khái niệm chính, ví dụ code và các lưu ý thực hành liên quan đến chủ đề này.
+Một trang là một **cửa sổ** trong tập kết quả. Server trước hết xác định những record người dùng được phép thấy, áp dụng filter, sắp xếp theo một thứ tự xác định, rồi mới lấy cửa sổ offset hoặc cursor. Có thể hình dung pipeline như sau:
 
-<Callout type="info" title="Trang placeholder">
-Đây là trang khung. Hãy dùng skill `fumadocs-technical-writer` để viết đầy đủ trang này trong bước tiếp theo.
-</Callout>
+```text
+authorization scope → filter → deterministic sort → page window → page metadata
+```
 
-## Bước tiếp theo
+GraphQL không có một kiểu pagination bắt buộc. `BookOffsetPage`, `BookConnection`, `items`, `nodes` và `pageInfo` chỉ là tên trong contract mà team chọn. Điều quan trọng là mỗi tên phải được khai báo trong SDL và có semantics mà client có thể dựa vào.
 
-Sau khi trang được điền nội dung, đọc bài kế tiếp trong nhóm để tiếp tục lộ trình.
+### Pagination không thay thế filtering và sorting
+
+**Filtering** quyết định record nào thuộc tập kết quả. **Sorting** quyết định thứ tự của tập đó. **Pagination** chỉ chọn một phần của tập đã lọc và sắp xếp. Ba khái niệm này không thể thay thế cho nhau.
+
+Trong ví dụ của trang này:
+
+- `filter: BookFilter` lọc theo `titleContains` và `genre`.
+- `sort: BookSortInput` chọn field cùng chiều sắp xếp.
+- `offset` và `limit` hoặc `after` và `first` chọn trang.
+
+Nếu client đổi filter hoặc sort giữa hai request, đó là một danh sách mới. Client phải quay về trang đầu, không dùng tiếp offset hoặc cursor của danh sách cũ. Đọc [Filtering và sorting](/docs/query-mutation-subscription/filtering-va-sorting) để thiết kế hai phần đó riêng với pagination.
+
+## Chọn chiến lược pagination
+
+Hãy chọn chiến lược theo cách người dùng duyệt dữ liệu, kích thước dataset và mức độ thay đổi của collection. Không có lựa chọn “tốt nhất” cho mọi root field.
+
+### Offset pagination
+
+Offset pagination dùng hai con số:
+
+- `offset` là số record bỏ qua, bắt đầu từ `0`.
+- `limit` là số record tối đa trả về.
+
+Ví dụ `offset: 20, limit: 20` yêu cầu cửa sổ từ record thứ 21 đến thứ 40 theo thứ tự đã công bố. Nếu UI có page number bắt đầu từ `0`, công thức thường là `offset = pageNumber * limit`. Page number là cách client trình bày; `offset` mới là argument trong contract của ví dụ này.
+
+Offset dễ hiểu và phù hợp với bảng quản trị cần nhảy đến một trang cụ thể. Nó cũng thuận tiện khi cần `totalCount` để tính tổng số trang. Đổi lại, database có thể phải đi qua và bỏ qua rất nhiều record trước khi lấy phần cần trả. Khi `offset` lớn, thời gian và công việc có thể tăng đáng kể tùy execution plan (kế hoạch thực thi) và index.
+
+Offset còn nhạy với thay đổi giữa các request. Một record mới chèn vào phía trước có thể đẩy các record cũ sang vị trí khác. Client có thể nhận trùng một record hoặc bỏ sót một record khi chuyển từ trang này sang trang kế tiếp. Vì vậy, offset không mặc nhiên tạo ra một snapshot nhất quán.
+
+### Cursor và keyset pagination
+
+Cursor pagination truyền một token `after` đại diện cho vị trí cuối trang trước, cùng với `first` là số record muốn lấy. Client không cần biết vị trí nội bộ của record. Trong production, cursor nên đi cùng **keyset pagination**: server dùng các giá trị sắp xếp trong cursor để tìm record sau vị trí đó, thay vì biến cursor thành một `offset` được mã hóa.
+
+Ví dụ thứ tự của contract là `publishedYear DESC, id ASC`. Nếu cursor đại diện cho `(publishedYear = 2020, id = book-7)`, điều kiện keyset ở mức khái niệm là:
+
+```text
+publishedYear < 2020
+OR (publishedYear = 2020 AND id > "book-7")
+ORDER BY publishedYear DESC, id ASC
+```
+
+Đây là pseudo-query để giải thích logic, không phải cú pháp GraphQL mà client gửi. Cursor phải chứa hoặc tham chiếu đủ các thành phần của thứ tự, bao gồm tie-breaker `id`. Nếu cursor chỉ chứa `id` trong khi danh sách đang sort theo `title`, server không thể xác định chính xác vị trí.
+
+Keyset thường ổn định và hiệu quả hơn khi người dùng duyệt tuần tự một dataset lớn hoặc thay đổi thường xuyên. Nó không thuận tiện cho việc nhảy thẳng đến “trang 50”, vì client cần có cursor ở vị trí trước đó. Cursor cũng không tự tạo snapshot; record có thể được thêm, xóa hoặc đổi sort key trong lúc client đang duyệt.
+
+### So sánh trade off
+
+| Tiêu chí | Offset | Cursor và keyset |
+| --- | --- | --- |
+| Argument thường dùng | `offset`, `limit` | `after`, `first` |
+| Nhảy tới trang bất kỳ | Thuận tiện | Không thuận tiện nếu chưa có cursor ở vị trí đó |
+| Dataset rất lớn | Offset sâu có thể đắt | Thường phù hợp hơn nếu có keyset/index đúng |
+| Insert/delete trước vị trí đang đọc | Dễ gây trùng hoặc bỏ sót | Thường ít bị dịch cửa sổ hơn, nhưng không có snapshot tuyệt đối |
+| Page number và `totalCount` | Tự nhiên hơn | Có thể thêm nhưng count thường không cần thiết hoặc tốn kém |
+| Infinite scroll hoặc feed | Có thể dùng nhưng dễ dịch trang | Phù hợp hơn |
+| Độ phức tạp contract | Dễ bắt đầu | Cần cursor opaque, ordering và lỗi cursor |
+
+Một API có thể dùng offset cho `booksOffset` và cursor cho `books`, như SDL minh họa bên dưới. Đây là hai field có tên khác nhau để client không nhầm semantics. Một API thực tế cũng có thể chỉ chọn một chiến lược cho một use case; không cần công khai cả hai nếu không có nhu cầu.
+
+## Thiết kế contract GraphQL
+
+Contract nên làm rõ window, thứ tự mặc định, giới hạn, metadata và trạng thái rỗng ngay trong schema hoặc description. Đừng để client phải suy ra các quy tắc đó từ một `List<Book>` phía Java.
+
+### SDL minh họa nhất quán
+
+SDL dưới đây là schema minh họa hoàn chỉnh cho cả hai lựa chọn. Các operation và JSON ở những phần sau dùng đúng tên type, field và argument trong block này.
+
+```graphql title="schema.graphqls"
+schema {
+  query: Query
+}
+
+type Query {
+  # Dùng cho màn hình cần offset và nhảy tới vị trí bất kỳ.
+  booksOffset(
+    filter: BookFilter
+    sort: BookSortInput! = { field: TITLE, direction: ASC }
+    offset: Int! = 0
+    limit: Int! = 20
+  ): BookOffsetPage!
+
+  # Dùng cho duyệt tuần tự bằng cursor keyset.
+  books(
+    filter: BookFilter
+    sort: BookSortInput! = { field: TITLE, direction: ASC }
+    first: Int! = 20
+    after: String
+  ): BookConnection!
+}
+
+input BookFilter {
+  titleContains: String
+  genre: BookGenre
+}
+
+input BookSortInput {
+  field: BookSortField!
+  direction: SortDirection!
+}
+
+enum BookSortField {
+  TITLE
+  PUBLISHED_YEAR
+  ID
+}
+
+enum SortDirection {
+  ASC
+  DESC
+}
+
+enum BookGenre {
+  PROGRAMMING
+  DATABASE
+  SOFTWARE_DESIGN
+}
+
+type Book {
+  id: ID!
+  title: String!
+  publishedYear: Int!
+  genre: BookGenre!
+}
+
+type BookOffsetPage {
+  items: [Book!]!
+  pageInfo: OffsetPageInfo!
+}
+
+type OffsetPageInfo {
+  offset: Int!
+  limit: Int!
+  returnedCount: Int!
+  hasNextPage: Boolean!
+  totalCount: Int
+}
+
+type BookConnection {
+  nodes: [Book!]!
+  pageInfo: CursorPageInfo!
+}
+
+type CursorPageInfo {
+  returnedCount: Int!
+  hasNextPage: Boolean!
+  endCursor: String
+}
+```
+
+### Giải thích type field và argument
+
+Có thể đối chiếu từng phần của SDL với cách client gọi:
+
+| Thành phần | Vai trò trong ví dụ | Vì sao tên và kiểu khớp |
+| --- | --- | --- |
+| `Query.booksOffset` | Root field cho offset | Tên nói rõ chiến lược; trả `BookOffsetPage!`, không trả trực tiếp list nên có chỗ cho metadata. |
+| `Query.books` | Root field cho cursor | Đây là collection chính của ví dụ; `first` và `after` diễn tả duyệt tiến về phía trước. |
+| `BookFilter` | Input xác định membership | `titleContains` và `genre` là field input, không phải field output của `Book`. |
+| `BookSortInput` | Input xác định thứ tự | `field` và `direction` đều bắt buộc khi client truyền object sort. |
+| `BookOffsetPage.items` | Các record của trang offset | `items` là `[Book!]!`, nên trang thành công dùng `[]` khi không có record. |
+| `BookConnection.nodes` | Các record của trang cursor | `nodes` là tên được chọn trong contract này; GraphQL không tự tạo tên `edges` hay `items`. |
+| `OffsetPageInfo` | Metadata offset | Echo `offset`, `limit`, số record trả về, cờ còn trang và count tùy chọn. |
+| `CursorPageInfo` | Metadata cursor | `endCursor` là cursor của record cuối trang, còn `null` khi trang không có record. |
+
+`sort` có default `TITLE ASC` ở cấp schema. Bỏ hẳn argument `sort` sẽ dùng default, còn truyền `null` vào argument non-null này là input không hợp lệ. Ngoài field mà client chọn, contract còn quy định server luôn thêm `id ASC` làm tie-breaker, trừ khi `ID` đã là sort field. Với `title`, so sánh hoa thường và collation (quy tắc so sánh chuỗi) cũng phải được định nghĩa ổn định ở API; không nên để mỗi database hoặc locale cho một kết quả khác nhau.
+
+`titleContains` trong ví dụ là tìm chuỗi con không phân biệt hoa thường theo quy tắc đã công bố của API. Nếu sản phẩm cần tìm kiếm token, accent-insensitive hoặc full-text, hãy đổi tên hoặc mô tả semantics thay vì để client đoán từ một field chung như `text`. [SDL và nguyên tắc thiết kế schema](/docs/schema-va-type-system/sdl-va-thiet-ke-schema) giải thích cách chọn tên, input/output và nullability theo contract-first.
+
+`BookOffsetPage` và `BookConnection` là output object nên client phải chọn field con. `BookFilter` và `BookSortInput` là input object nên chỉ xuất hiện trong arguments hoặc variables. `BookConnection` là một convention thường gặp, không phải type pagination built-in của GraphQL. Contract minh họa chỉ hỗ trợ đi tới trang sau bằng `after`; nếu cần đi ngược, hãy thêm `before`, `last`, `startCursor` và `hasPreviousPage` cùng semantics rõ ràng thay vì ngầm suy ra từ contract forward. Nếu client cần cursor cho từng node thay vì chỉ cursor cuối trang, có thể thiết kế thêm một `BookEdge` với các field `node` và `cursor`, nhưng đó là một contract khác cần mô tả và kiểm thử.
+
+### Page metadata và nullability
+
+Các wrapper trong SDL có chủ ý:
+
+- `BookOffsetPage!` và `BookConnection!` cam kết một request hợp lệ nhận được page object. Không có kết quả là page có list rỗng, không phải page `null`.
+- `items: [Book!]!` và `nodes: [Book!]!` cam kết list luôn tồn tại và record trong list không `null` khi execution thành công. Lỗi đọc record nên đi qua error contract và null propagation, không bị che bằng một phần tử `null` tùy tiện.
+- `returnedCount: Int!` luôn là số phần tử thực sự trả về, từ `0` đến giới hạn page. Client không cần suy ra số này từ shape khác.
+- `hasNextPage: Boolean!` phải phản ánh việc còn record trong cùng tập đã lọc và cùng quyền truy cập tại thời điểm server đánh giá. Client không nên suy ra `true` chỉ vì số node bằng `first`.
+- `endCursor: String` là nullable vì một trang rỗng không có record cuối. Trang cuối nhưng vẫn có record thường có `hasNextPage: false` và `endCursor` khác `null`.
+- `totalCount: Int` là nullable vì việc đếm chính xác có thể tốn kém hoặc không được expose. `null` nghĩa là count không có trong contract của response đó, không có nghĩa là zero. Nếu API cam kết luôn tính count, có thể chọn `Int!` nhưng phải chấp nhận chi phí và định nghĩa snapshot của count.
+
+GraphQL không biểu diễn trực tiếp quy tắc “`endCursor` non-null khi list không rỗng”. Vì vậy, `String` nullable là lựa chọn trung thực hơn việc khai báo `String!` rồi trả giá trị giả cho trang rỗng. Tương tự, đừng đổi list thành nullable chỉ để biểu diễn không có kết quả. [List và nullable](/docs/schema-va-type-system/list-va-nullable) trình bày sâu hơn về `[]`, `null` và lỗi lan truyền.
+
+Bảng semantics tối thiểu nên được giữ ổn định:
+
+| Trạng thái | `items` hoặc `nodes` | `returnedCount` | `hasNextPage` | `endCursor` | `totalCount` nếu có |
+| --- | --- | ---: | --- | --- | --- |
+| Có trang giữa | Có record | Số record trả về | `true` | Cursor cuối trang | Count của tập được phép thấy |
+| Trang cuối có record | Có record | Số record trả về | `false` | Cursor cuối record | Count của tập được phép thấy |
+| Không có record khớp | `[]` | `0` | `false` | `null` với cursor | `0` nếu count được tính |
+| Offset vượt cuối | `[]` | `0` | `false` | Không áp dụng | Count hiện tại nếu được tính |
+
+Nếu request sai, chẳng hạn `limit` vượt maximum hoặc cursor không hợp lệ, đó không phải empty result. Server nên trả lỗi GraphQL theo error contract đã thống nhất thay vì trả `[]` để che lỗi input.
+
+## Offset pagination từ query đến response
+
+### Operation và variables JSON
+
+Operation sau gọi đúng `Query.booksOffset` trong SDL. Nó dùng `filter`, `sort`, `offset` và `limit` làm arguments; các field trong selection set cũng đúng với `BookOffsetPage`, `OffsetPageInfo` và `Book`.
+
+```graphql
+query BooksOffsetPage(
+  $filter: BookFilter
+  $sort: BookSortInput!
+  $offset: Int!
+  $limit: Int!
+) {
+  booksOffset(
+    filter: $filter
+    sort: $sort
+    offset: $offset
+    limit: $limit
+  ) {
+    items {
+      id
+      title
+      publishedYear
+      genre
+    }
+    pageInfo {
+      offset
+      limit
+      returnedCount
+      hasNextPage
+      totalCount
+    }
+  }
+}
+```
+
+Variables JSON tách khỏi query document. Enum trong JSON là chuỗi đúng tên enum; số nguyên là JSON number, không phải string:
+
+```json title="Variables của BooksOffsetPage"
+{
+  "filter": {
+    "titleContains": "GraphQL",
+    "genre": "PROGRAMMING"
+  },
+  "sort": {
+    "field": "PUBLISHED_YEAR",
+    "direction": "DESC"
+  },
+  "offset": 3,
+  "limit": 3
+}
+```
+
+`offset: 3` nghĩa là bỏ qua ba record đầu tiên trong tập đã lọc và sắp xếp, không phải “trang số 3”. Với page size `3`, một UI đánh số trang từ `0` sẽ gọi đây là trang số `1`. Nếu client cần page number, hãy giữ phép tính ở client và vẫn gửi `offset` theo contract.
+
+Các argument `offset`, `limit` và `sort` trong SDL là non-null nhưng có default. Vì vậy client có thể bỏ hẳn chúng khi dùng default. Trong operation trên, variable definition là non-null và được truyền tường minh, nên variables JSON phải có đủ ba key tương ứng. Không đổi `$limit` thành `$pageSize` mà quên đổi argument; tên variable có thể khác, nhưng `limit` bên phải phải tồn tại trong SDL.
+
+### Response JSON và semantics
+
+Response minh họa dưới đây có ba sách thuộc tập filter. `totalCount: 8` là count của toàn bộ tập đã lọc và được phép thấy tại thời điểm query, không phải số record trong trang:
+
+```json title="Response của BooksOffsetPage"
+{
+  "data": {
+    "booksOffset": {
+      "items": [
+        {
+          "id": "book-4",
+          "title": "GraphQL in Action",
+          "publishedYear": 2021,
+          "genre": "PROGRAMMING"
+        },
+        {
+          "id": "book-5",
+          "title": "GraphQL Java",
+          "publishedYear": 2020,
+          "genre": "PROGRAMMING"
+        },
+        {
+          "id": "book-6",
+          "title": "Learning GraphQL",
+          "publishedYear": 2019,
+          "genre": "PROGRAMMING"
+        }
+      ],
+      "pageInfo": {
+        "offset": 3,
+        "limit": 3,
+        "returnedCount": 3,
+        "hasNextPage": true,
+        "totalCount": 8
+      }
+    }
+  }
+}
+```
+
+Client có thể tính số trang từ `totalCount` nếu API thực sự cung cấp count, nhưng không nên coi count là bất biến cho request kế tiếp. Trong lúc client chuyển trang, insert, delete hoặc thay đổi quyền có thể làm count và membership thay đổi.
+
+Offset vượt cuối vẫn là một execution thành công nếu request hợp lệ:
+
+```json
+{
+  "data": {
+    "booksOffset": {
+      "items": [],
+      "pageInfo": {
+        "offset": 99,
+        "limit": 20,
+        "returnedCount": 0,
+        "hasNextPage": false,
+        "totalCount": 8
+      }
+    }
+  }
+}
+```
+
+Không trả `null` cho `items` hoặc biến một danh sách rỗng thành lỗi “not found”. `null` của `totalCount` chỉ nên xuất hiện khi contract cho phép server không tính count; nếu count được tính thì zero kết quả có thể có `totalCount: 0`.
+
+## Cursor pagination từ query đến response
+
+### Operation trang đầu
+
+Operation sau gọi `Query.books` với cùng filter và sort như ví dụ offset. `after` là nullable vì trang đầu chưa có cursor; gửi `null` là hợp lệ theo SDL. `first` giới hạn số node, không phải offset.
+
+```graphql
+query BooksFirstPage(
+  $filter: BookFilter
+  $sort: BookSortInput!
+  $first: Int!
+  $after: String
+) {
+  books(
+    filter: $filter
+    sort: $sort
+    first: $first
+    after: $after
+  ) {
+    nodes {
+      id
+      title
+      publishedYear
+      genre
+    }
+    pageInfo {
+      returnedCount
+      hasNextPage
+      endCursor
+    }
+  }
+}
+```
+
+Variables cho trang đầu:
+
+```json title="Variables của BooksFirstPage"
+{
+  "filter": {
+    "titleContains": "GraphQL",
+    "genre": "PROGRAMMING"
+  },
+  "sort": {
+    "field": "PUBLISHED_YEAR",
+    "direction": "DESC"
+  },
+  "first": 3,
+  "after": null
+}
+```
+
+Response có thể là:
+
+```json title="Response trang đầu"
+{
+  "data": {
+    "books": {
+      "nodes": [
+        {
+          "id": "book-1",
+          "title": "GraphQL Fundamentals",
+          "publishedYear": 2024,
+          "genre": "PROGRAMMING"
+        },
+        {
+          "id": "book-2",
+          "title": "GraphQL in Practice",
+          "publishedYear": 2023,
+          "genre": "PROGRAMMING"
+        },
+        {
+          "id": "book-3",
+          "title": "GraphQL for Java Developers",
+          "publishedYear": 2022,
+          "genre": "PROGRAMMING"
+        }
+      ],
+      "pageInfo": {
+        "returnedCount": 3,
+        "hasNextPage": true,
+        "endCursor": "cursor_v1_A7f3KpQ"
+      }
+    }
+  }
+}
+```
+
+`cursor_v1_A7f3KpQ` chỉ là một string minh họa. Client không được suy ra năm, ID hoặc offset từ nội dung của nó. Client chỉ lưu cursor và gửi lại nó trong variable `after`.
+
+### Request trang tiếp theo
+
+Để lấy trang kế tiếp, giữ nguyên `filter` và `sort`, rồi gán `endCursor` của response trước vào `after`:
+
+```json title="Variables trang tiếp theo"
+{
+  "filter": {
+    "titleContains": "GraphQL",
+    "genre": "PROGRAMMING"
+  },
+  "sort": {
+    "field": "PUBLISHED_YEAR",
+    "direction": "DESC"
+  },
+  "first": 3,
+  "after": "cursor_v1_A7f3KpQ"
+}
+```
+
+Cùng operation trả trang kế tiếp như sau:
+
+```json title="Response trang tiếp theo"
+{
+  "data": {
+    "books": {
+      "nodes": [
+        {
+          "id": "book-4",
+          "title": "GraphQL in Action",
+          "publishedYear": 2021,
+          "genre": "PROGRAMMING"
+        },
+        {
+          "id": "book-5",
+          "title": "GraphQL Java",
+          "publishedYear": 2020,
+          "genre": "PROGRAMMING"
+        },
+        {
+          "id": "book-6",
+          "title": "Learning GraphQL",
+          "publishedYear": 2019,
+          "genre": "PROGRAMMING"
+        }
+      ],
+      "pageInfo": {
+        "returnedCount": 3,
+        "hasNextPage": true,
+        "endCursor": "cursor_v1_K9m2RzL"
+      }
+    }
+  }
+}
+```
+
+Request sau đó dùng `cursor_v1_K9m2RzL` và có thể nhận trang cuối với hai node:
+
+```json title="Variables trang cuối"
+{
+  "filter": {
+    "titleContains": "GraphQL",
+    "genre": "PROGRAMMING"
+  },
+  "sort": {
+    "field": "PUBLISHED_YEAR",
+    "direction": "DESC"
+  },
+  "first": 3,
+  "after": "cursor_v1_K9m2RzL"
+}
+```
+
+```json title="Response trang cuối"
+{
+  "data": {
+    "books": {
+      "nodes": [
+        {
+          "id": "book-7",
+          "title": "GraphQL Performance",
+          "publishedYear": 2018,
+          "genre": "PROGRAMMING"
+        },
+        {
+          "id": "book-8",
+          "title": "GraphQL Patterns",
+          "publishedYear": 2017,
+          "genre": "PROGRAMMING"
+        }
+      ],
+      "pageInfo": {
+        "returnedCount": 2,
+        "hasNextPage": false,
+        "endCursor": "cursor_v1_N4t8QxB"
+      }
+    }
+  }
+}
+```
+
+`hasNextPage` là tín hiệu dừng. Không dùng `nodes.length === first` để tự quyết định còn trang, vì một trang cuối có thể có đúng `first` node. Ở đây `endCursor` vẫn khác `null` vì trang cuối có node, dù `hasNextPage` là `false`.
+
+Một cách server thường xác định `hasNextPage` là dùng lookahead (đọc trước) nhiều hơn một record so với số client yêu cầu, giữ lại tối đa `first` record và dùng record dư để biết còn trang. Cách thực hiện cụ thể phụ thuộc data source; contract chỉ cần bảo đảm cờ được tính theo cùng filter, sort và authorization.
+
+### Cursor opaque và phạm vi an toàn
+
+**Opaque cursor** là cursor mà client chỉ coi như token, không phụ thuộc vào format bên trong. Cursor có thể là token tham chiếu lưu server-side hoặc token đã được ký/mã hóa. Base64 chỉ là encoding, không phải mã hóa và không bảo vệ bí mật.
+
+Một cursor production nên có các đặc tính sau:
+
+- Có version để server nhận biết format cũ và thực hiện migration hoặc trả lỗi rõ ràng.
+- Chứa hoặc tham chiếu đủ các giá trị ordering, gồm tie-breaker. Cursor cho `publishedYear DESC, id ASC` không thể chỉ dựa trên `publishedYear` vì nhiều sách có thể cùng năm.
+- Có thể ràng buộc với filter, sort, tenant, scope authorization hoặc policy version. Nếu client gửi cursor của một danh sách khác, server nên từ chối thay vì tiếp tục từ vị trí không xác định.
+- Có chữ ký chống sửa đổi. Nếu token chứa dữ liệu cần giữ bí mật, dùng cơ chế bảo mật phù hợp hoặc token server-side; không coi việc đổi tên field thành cursor là bảo vệ dữ liệu.
+- Không encode thông tin nhận diện cá nhân (PII), secret, access token hoặc dữ liệu nhạy cảm. Ngay cả dữ liệu không nhạy cảm cũng có thể xuất hiện trong log, URL hoặc telemetry, nên cursor cần được che hoặc redact khi ghi log.
+- Có giới hạn độ dài, thời hạn hoặc cơ chế invalidation nếu policy của hệ thống cần. Lỗi malformed, expired, tampered hoặc context mismatch phải là lỗi input có thể nhận diện, không phải empty page.
+
+Cursor cũng không nên âm thầm chứa `offset` rồi gọi đó là keyset. Nếu cursor chỉ mã hóa số offset, nó vẫn chịu giới hạn hiệu năng và tính không ổn định của offset. Hãy gọi đúng chiến lược để client và reviewer hiểu trade-off.
+
+## Tính nhất quán khi dữ liệu thay đổi
+
+Không có pagination nào tự động làm cho nhiều request trở thành một transaction đọc bất biến. **Snapshot** (ảnh chụp nhất quán của tập dữ liệu) là cách mạnh hơn để giữ cùng membership giữa nhiều trang, nhưng có chi phí riêng. Hãy chọn mức consistency mà sản phẩm cần và mô tả rõ trong contract hoặc tài liệu client.
+
+### Insert delete và update
+
+Giả sử client đã đọc trang đầu và chuẩn bị đọc trang tiếp theo. Các thay đổi sau có tác động khác nhau:
+
+| Thay đổi giữa hai request | Offset | Cursor và keyset |
+| --- | --- | --- |
+| Insert trước vị trí đang đọc | Offset có thể lặp record đã đọc hoặc bỏ sót record bị đẩy vị trí. Cursor thường không đưa record mới đứng trước cursor vào các trang tiếp theo; client có thể cần refresh để thấy nó. |
+| Delete trước vị trí đang đọc | Offset làm các record phía sau dịch lên và có thể bỏ sót. Cursor thường tiếp tục theo keyset nếu cursor đủ thông tin để so sánh, kể cả khi record dùng làm mốc đã bị xóa. |
+| Insert hoặc delete sau vị trí | Cả hai có thể làm `hasNextPage` và count thay đổi. Membership của trang kế tiếp không phải snapshot cố định. |
+| Thay đổi field đang sort | Cả hai có thể làm record di chuyển, dẫn đến trùng hoặc bỏ sót. Tie-breaker không sửa được việc một record đổi vị trí. |
+| Thay đổi quyền nhìn thấy record | Cả hai phải được tính lại trên tập authorized. Không được tiếp tục dùng cursor hoặc count của scope cũ. |
+
+“Cursor ổn định hơn” không có nghĩa là “cursor luôn nhất quán”. Keyset giảm việc cửa sổ bị dịch vì insert/delete trước vị trí, nhưng không ngăn record mới xuất hiện phía sau, record bị xóa, hoặc sort key bị cập nhật. Nếu UX là feed, thường có thể chấp nhận việc dữ liệu mới chỉ xuất hiện sau refresh. Nếu UX là export hoặc báo cáo, cần thiết kế mạnh hơn.
+
+Một chi tiết quan trọng là cursor tham chiếu record bằng cách nào. Nếu server chỉ lưu database ID và bắt buộc record đó còn tồn tại, việc xóa mốc có thể làm cursor lỗi. Nếu server lưu đủ ordering tuple hoặc một snapshot token, keyset có thể tiếp tục mà không cần tìm lại record mốc. Đây là quyết định implementation phải được test, không thể suy ra chỉ từ kiểu `String` trong SDL.
+
+### Khi cần snapshot
+
+Cân nhắc snapshot hoặc `asOf` token khi client cần:
+
+- cùng một tập record từ trang đầu đến trang cuối;
+- số liệu tổng hợp hoặc export không được thay đổi giữa các trang;
+- khả năng retry một trang mà không đổi membership;
+- audit có thể giải thích chính xác dữ liệu tại một thời điểm.
+
+Snapshot có chi phí và vòng đời riêng: database isolation, retention, token expiry, giới hạn tài nguyên và authorization tại thời điểm đọc. Không thêm một `snapshot` argument tùy tiện nếu chưa định nghĩa các semantics đó. Với màn hình thông thường, có thể công bố rằng các trang phản ánh dữ liệu tại từng request và cho phép client refresh khi nhận lỗi cursor hoặc thấy dữ liệu thay đổi.
+
+`totalCount` cũng cần nói rõ mức nhất quán. Count có thể đúng tại thời điểm count chạy nhưng đã cũ ngay khi response đến client. Đừng hứa “tổng số bất biến” nếu query không dùng snapshot chung cho count và page.
+
+## Quy tắc production
+
+### Ordering deterministic và tie breaker
+
+Một thứ tự **deterministic** luôn đặt hai record khác nhau vào một vị trí có thể xác định. Sort theo một field không unique, như `title` hoặc `publishedYear`, là chưa đủ. Hai sách cùng title hoặc cùng năm có thể đổi chỗ giữa các query nếu không có tie-breaker.
+
+Contract minh họa dùng các thứ tự sau:
+
+```text
+sort field TITLE, direction ASC       → title ASC, id ASC
+sort field PUBLISHED_YEAR, DESC       → publishedYear DESC, id ASC
+sort field ID, direction DESC         → id DESC
+```
+
+`id` phải unique và bất biến trong phạm vi pagination. Nếu ID công khai có thể đổi, chọn một khóa ổn định khác ở phía server. Cursor phải biểu diễn toàn bộ thứ tự này, không chỉ field chính.
+
+Cần quy định thêm các chi tiết dễ bị bỏ quên:
+
+- `title` có phân biệt hoa thường, accent và locale hay không;
+- `publishedYear` có được phép `null` hay không, và nếu có thì `NULLS FIRST` hay `NULLS LAST`;
+- timezone và độ chính xác nếu sort theo thời gian;
+- cách xử lý record bị soft delete (xóa logic);
+- field sort nào được phép để tránh client yêu cầu một cột đắt hoặc nhạy cảm.
+
+Ví dụ `Book.publishedYear: Int!` trong SDL tránh phải định nghĩa thứ tự của `null`. Nếu domain thật sự cho phép năm chưa biết, đổi thành `Int` và mô tả rõ quy tắc null trước khi đưa field đó vào sort. Index phục vụ đúng thứ tự cũng cần được kiểm tra ở tầng data source; GraphQL SDL không tự tạo index.
+
+### Validation page size và chi phí query
+
+`Int` chỉ kiểm tra input là integer. Nó không tự cấm số âm, zero, số quá lớn hoặc giá trị gây tốn tài nguyên. Với contract minh họa, có thể quy định:
+
+- `offset >= 0`;
+- `1 <= limit <= 100`;
+- `1 <= first <= 100`;
+- `after` phải là cursor hợp lệ và không vượt giới hạn độ dài;
+- `titleContains` có giới hạn độ dài và sort field chỉ thuộc enum đã allow-list (danh sách cho phép).
+
+Hãy trả lỗi input rõ ràng khi vi phạm. Không âm thầm biến `limit: 1000` thành `100`, vì client sẽ không biết server trả thiếu dữ liệu; nếu muốn clamp, đó phải là semantics được mô tả và phản ánh bằng metadata. Giới hạn maximum có thể khác theo role, nhưng phải có policy và quan sát được.
+
+Pagination không loại bỏ rủi ro query quá sâu hoặc quá đắt. Client vẫn có thể chọn nhiều field nested bên trong mỗi `Book`, dùng fragments hoặc alias để nhân số lần resolve. Hãy kết hợp page-size cap với:
+
+- depth limit cho selection lồng nhau;
+- complexity hoặc cost analysis tính đến số node `first`/`limit` và field nested;
+- timeout, rate limit và budget theo operation;
+- giới hạn riêng cho count hoặc sort đắt;
+- kiểm thử query plan ở dataset lớn.
+
+Ví dụ, một page có `20` node nhưng mỗi node còn chọn nhiều field object lồng nhau có thể nhân chi phí resolve. Xem [Giới hạn độ sâu và complexity](/docs/bao-mat-va-quan-sat/depth-va-complexity-limit) để đặt các lớp bảo vệ ngoài validation argument.
+
+### Authorization và filter
+
+Authorization phải được áp dụng trước khi cắt trang. Thứ tự logic cần giữ là:
+
+```text
+authorized records → filter → stable sort → offset hoặc keyset window → metadata
+```
+
+Không lấy 100 record toàn cục, lọc các record user không được thấy rồi trả phần còn lại. Cách đó làm page ngắn bất ngờ, làm `hasNextPage` sai và có thể làm lộ count hoặc timing của dữ liệu không được phép thấy.
+
+`totalCount`, `hasNextPage`, cursor và mọi nested field đều phải tuân theo cùng tenant (phạm vi khách hàng hoặc tổ chức), user, role và policy. Nếu quyền thay đổi giữa các request, cursor của scope cũ có thể không còn hợp lệ; từ chối cursor và yêu cầu bắt đầu lại an toàn hơn là tiếp tục từ vị trí có thể làm lộ dữ liệu.
+
+Filter cũng là một phần của identity của danh sách. Client phải giữ nguyên filter giữa các trang. Server có thể đưa fingerprint của filter đã chuẩn hóa vào cursor để phát hiện request dùng sai context. Fingerprint không được chứa nguyên văn dữ liệu nhạy cảm; chỉ dùng dạng an toàn, hoặc lưu context phía server.
+
+### Cache
+
+Cache pagination phải phân biệt đủ các yếu tố làm thay đổi kết quả. Một cache key tối thiểu thường bao gồm operation/field, filter đã chuẩn hóa, sort, `offset` và `limit` hoặc `after` và `first`, cùng tenant và authorization scope. Không dùng một key chung cho mọi user chỉ vì query document giống nhau.
+
+Một số điểm cần kiểm tra:
+
+- Offset page có thể cache theo `(offset, limit)`, nhưng insert/delete làm các page sau bị lệch. TTL (thời gian sống) ngắn hoặc invalidation theo collection thường an toàn hơn cache vô thời hạn.
+- Cursor page nên được merge theo thứ tự server trả về và ID ổn định. Không nối hai page nếu filter, sort hoặc context khác nhau. Dedupe ID có thể bảo vệ UI khỏi record lặp, nhưng không được dùng để che lỗi ordering phía server.
+- `totalCount` và `hasNextPage` có thể stale. Client không nên coi giá trị trong cache là sự thật vĩnh viễn.
+- Cursor token có thể xuất hiện trong log hoặc cache metadata. Redact token nếu nó mang context nội bộ, dù token không chứa PII.
+- Response có authorization không được đưa vào shared cache nếu cache không vary đúng theo identity và scope.
+
+Đọc thêm [Caching](/docs/truy-cap-du-lieu-va-hieu-nang/caching) khi thiết kế cache nhiều lớp, và phân biệt cache của operation với cache normalized (cache tách object theo ID) ở client.
+
+## Cách client duyệt trang
+
+Client nên giữ query document ổn định, truyền giá trị động qua variables và đọc cả `data` lẫn `errors`. Không tạo query string bằng cách nối `offset`, filter hoặc cursor từ input người dùng. Quy tắc về variables và envelope nằm ở [Variables, arguments và fragments](/docs/query-mutation-subscription/variables-arguments-fragments).
+
+### Vòng lặp offset
+
+Với offset, client giữ `limit` ổn định và tăng offset sau mỗi trang thành công. Pseudocode sau minh họa logic, không phải một client library cụ thể:
+
+```text
+pageNumber = 0
+repeat:
+  offset = pageNumber * limit
+  page = request BooksOffsetPage(filter, sort, offset, limit)
+  render page.items
+  if page.pageInfo.hasNextPage is false:
+    stop
+  pageNumber = pageNumber + 1
+```
+
+Nếu request trả lỗi, dừng hoặc retry theo policy; không tăng offset như thể page rỗng. Nếu `hasNextPage` là `true` nhưng `returnedCount` là `0`, đó là trạng thái bất thường cần telemetry để tránh vòng lặp vô hạn. Khi UI nhảy tới page number, tính offset từ page size hiện tại và reset khi filter hoặc sort đổi.
+
+### Vòng lặp cursor
+
+Với cursor, client lưu `endCursor` của page trước và chỉ gửi cursor đó khi `hasNextPage` là `true`:
+
+```text
+after = null
+repeat:
+  page = request BooksFirstPage(filter, sort, first, after)
+  append page.nodes theo đúng thứ tự response
+  if page.pageInfo.hasNextPage is false:
+    stop
+  if page.pageInfo.endCursor is null:
+    báo lỗi contract và stop
+  after = page.pageInfo.endCursor
+```
+
+Client không decode, sửa, nối hoặc tự tạo cursor. Nếu server báo cursor malformed, expired hoặc context mismatch, hiển thị trạng thái có thể refresh về trang đầu thay vì thử một cursor khác. Khi merge vào cache, giữ `filter`, `sort`, authorization context và thứ tự response như một tuple thống nhất.
+
+### Đổi filter sort hoặc quyền
+
+Khi một trong các yếu tố sau đổi, hãy bắt đầu lại từ trang đầu và xóa hoặc tách cache cũ:
+
+- `filter`, kể cả một field input nullable chuyển từ bỏ qua sang có giá trị;
+- `sort` hoặc collation;
+- tenant, user, role hoặc policy authorization;
+- snapshot/as-of context;
+- page-size nếu client đang merge theo các page cố định.
+
+Với offset, không dùng `offset` cũ sau khi danh sách mới bắt đầu. Với cursor, không dùng `endCursor` của danh sách cũ cho filter hoặc sort mới. Đây là lỗi client phổ biến vì cả hai giá trị đều có kiểu đơn giản (`Int` hoặc `String`) nhưng semantics lại gắn với toàn bộ request context.
+
+## Tiến hóa contract và tương thích
+
+Đổi pagination thường là đổi output shape, không phải chỉ đổi tên argument. Nếu schema cũ là:
+
+```graphql
+type Query {
+  books: [Book!]!
+}
+```
+
+thì đổi trực tiếp thành `books: BookConnection!` sẽ làm query cũ không còn hợp lệ: client cũ đang chọn `books { id title }`, trong khi client mới phải chọn `nodes` và các field cụ thể trong `pageInfo`. Đoạn SDL này chỉ là contract legacy độc lập để minh họa migration, không ghép thêm vào SDL hai chiến lược ở trên. Cách an toàn hơn là giữ field cũ, thêm field mới như `booksConnection` hoặc `booksOffset`, thông báo migration, rồi deprecate field cũ theo usage thực tế.
+
+Các thay đổi cần review compatibility gồm:
+
+- đổi list output thành page object hoặc connection;
+- đổi semantics từ 0-based offset sang 1-based page number;
+- đổi tên `limit` thành `first` nhưng không giữ field tương thích;
+- đổi default sort, collation, filter semantics hoặc thứ tự tie-breaker;
+- đổi `[]`, `null`, `totalCount` hoặc `hasNextPage` mà không cập nhật client;
+- thêm input argument non-null không có default;
+- đổi max page size khiến client cũ nhận ít record hơn;
+- thay đổi format cursor mà làm cursor đang lưu của client luôn lỗi.
+
+Thêm một output field nullable thường là additive. Thêm một root field mới cho connection cũng thường additive vì client cũ không cần chọn field đó. Nếu cursor có version, server có thể chấp nhận version cũ trong một thời gian hoặc trả lỗi yêu cầu refresh; đừng âm thầm diễn giải token cũ theo format mới. Xem [Tiến hóa schema và deprecation](/docs/production/schema-evolution-va-deprecation) để lập migration và deprecation plan.
+
+## Ranh giới với Spring Boot và Spring for GraphQL
+
+### Điểm cần kiểm tra
+
+Trong Spring for GraphQL, SDL là contract còn resolver, service và repository là implementation. Với schema minh họa, các root mapping cần kiểm tra là `Query.booksOffset` và `Query.books`. Các argument GraphQL cần được bind đúng tên: `filter`, `sort`, `offset`, `limit`, `first` và `after`.
+
+Trước khi coi pagination đã sẵn sàng, đối chiếu các boundary sau trong backend thật:
+
+1. Schema resource đã được nạp và root field có mapping phù hợp chưa?
+2. Binding của `@Argument` có đúng input object, enum và nullability của version Spring for GraphQL đang dùng không?
+3. Repository hoặc data source có áp dụng authorization và filter trước page window không?
+4. Ordering có append tie-breaker ổn định và có index/query plan phù hợp không?
+5. Cursor có được ký hoặc lưu server-side, kiểm tra version, filter, sort và scope không?
+6. `hasNextPage` có dùng lookahead hoặc cách tương đương thay vì đoán từ số node không?
+7. `totalCount` có bị tính vô điều kiện dù client không chọn field đó không, và count có cùng scope với page không?
+8. Transaction, isolation, snapshot và hành vi khi insert/delete có khớp semantics đã tài liệu hóa không?
+9. Kiểu Java như `List`, `Page` hoặc `Slice` có được map vào output GraphQL có chủ ý không? Kiểu Java không tự quyết định `[Book!]!`, `[]` hay `null`.
+
+Trang [Cursor và offset pagination trong Spring](/docs/truy-cap-du-lieu-va-hieu-nang/cursor-offset-pagination-spring) là boundary để đi sâu vào repository/query database. Trang này không tuyên bố có controller, resolver, database hoặc runtime Spring tương ứng trong repository hiện tại.
+
+### Endpoint theo version Spring Boot
+
+Endpoint HTTP không phải một phần của pagination contract, nhưng cần đúng khi smoke test backend thật:
+
+- Spring Boot `3.5+` dùng `spring.graphql.http.path`.
+- Spring Boot `3.4` trở xuống dùng `spring.graphql.path`.
+
+Không cấu hình đồng thời hai key cho cùng endpoint. Đối chiếu version thật của project trước khi gửi request; xem [Thêm dependency và cấu hình](/docs/bat-dau/them-dependency-va-cau-hinh). Thay đổi endpoint không thay đổi tên `books`, arguments hoặc page metadata trong SDL.
+
+## Test cases và checklist
+
+### Test cases tối thiểu
+
+| Nhóm test | Dữ liệu hoặc thao tác | Điều cần xác nhận |
+| --- | --- | --- |
+| Boundary offset | `offset: 0`, `limit: 1`, offset cuối và offset vượt count | Không bỏ sót record hợp lệ; page rỗng có `[]`, `returnedCount: 0`, `hasNextPage: false`. |
+| Boundary cursor | `after: null`, page có đúng `first`, page ít hơn `first` | Trang đầu không cần cursor; cờ `hasNextPage` và `endCursor` đúng semantics. |
+| Page size | `limit` hoặc `first` âm, `0`, `101` và giá trị maximum | Input ngoài `1..100` bị từ chối theo error contract, không bị biến thành empty page. |
+| Ordering | Nhiều `Book` cùng `title` hoặc `publishedYear` | Thứ tự có tie-breaker ổn định; lặp qua các page không duplicate hoặc miss record do tie. |
+| Cursor integrity | Cursor malformed, bị sửa, hết hạn, sai version, sai filter hoặc sort | Server từ chối rõ ràng; không decode tùy tiện và không trả dữ liệu ở scope khác. |
+| Concurrent insert/delete | Thay đổi record trước cursor hoặc trước offset giữa hai request | Kết quả khớp consistency semantics đã công bố; không hứa snapshot nếu chưa có snapshot. |
+| Sort-key update | Đổi `title` hoặc `publishedYear` của record đã đọc | Test ghi nhận record có thể di chuyển; nếu cần bất biến thì yêu cầu snapshot. |
+| Authorization | Hai user hoặc tenant có tập record khác nhau | Filter, page, `totalCount`, `hasNextPage` và cursor đều chỉ dựa trên record được phép thấy. |
+| Failure | Timeout hoặc exception ở data source | Không biến failure kỹ thuật thành `[]` hoặc `totalCount: 0`; client nhận `errors` theo contract. |
+| Compatibility | Query legacy và query connection mới cùng tồn tại | Client cũ vẫn validate được trong thời gian migration; field deprecated có reason và usage plan. |
+
+Nên kiểm tra cả validation trước resolver và integration với data source thật. Một query GraphQL parse được chưa chứng minh `ORDER BY`, authorization, index hoặc transaction boundary đúng.
+
+### Checklist trước production
+
+- [ ] Đã chọn offset hay cursor/keyset theo use case, không chỉ theo thói quen.
+- [ ] Filter, sort và pagination được phân biệt trong SDL, tài liệu và cache key.
+- [ ] Có thứ tự mặc định deterministic và tie-breaker unique, ổn định.
+- [ ] Đã định nghĩa collation, null sort, soft delete và timezone nếu các field đó được sort.
+- [ ] `offset` bắt đầu từ `0`; `limit`/`first` có minimum, maximum và lỗi input rõ ràng.
+- [ ] Page object và list dùng nullability phản ánh đúng `[]`, `null` và execution error.
+- [ ] `hasNextPage`, `returnedCount`, `endCursor` và `totalCount` có semantics cho trang giữa, trang cuối và empty page.
+- [ ] Cursor opaque, có version/integrity check, không chứa dữ liệu nhạy cảm và không bị dùng như offset được mã hóa.
+- [ ] Authorization và filter được áp dụng trước window; cursor không dùng chéo tenant hoặc scope.
+- [ ] Đã quyết định consistency khi insert/delete/update và có snapshot nếu nghiệp vụ cần.
+- [ ] Complexity/depth, timeout, rate limit, count cost và nested selection đã được giới hạn.
+- [ ] Cache key gồm đủ filter, sort, page args, cursor và authorization context; cache private không bị chia sẻ sai.
+- [ ] Client reset page khi đổi filter, sort, quyền hoặc snapshot; client dừng theo `hasNextPage`.
+- [ ] Có kế hoạch additive field, deprecation và tương thích cursor khi thay đổi schema.
+- [ ] Có test cho empty/end, tie-breaker, cursor tampering, authorization, concurrent writes và failure.
+- [ ] Đã đối chiếu binding, repository query và endpoint với version Spring Boot/Spring for GraphQL thật.
+
+## Học tiếp
+
+- [Filtering và sorting](/docs/query-mutation-subscription/filtering-va-sorting) — tách membership và ordering khỏi page window.
+- [Variables, arguments và fragments](/docs/query-mutation-subscription/variables-arguments-fragments) — giữ operation ổn định và gửi variables JSON đúng kiểu.
+- [SDL và nguyên tắc thiết kế schema](/docs/schema-va-type-system/sdl-va-thiet-ke-schema) — thiết kế input/output, nullability và schema evolution theo contract-first.
+- [Cursor và offset pagination trong Spring](/docs/truy-cap-du-lieu-va-hieu-nang/cursor-offset-pagination-spring) — đi sâu vào boundary repository và query database trong Spring.
+- [Caching](/docs/truy-cap-du-lieu-va-hieu-nang/caching) — thiết kế cache cho query và response có pagination.
+- [Giới hạn độ sâu và complexity](/docs/bao-mat-va-quan-sat/depth-va-complexity-limit) — bảo vệ server trước query nested và page cost lớn.
+
+<Cards>
+  <Card title="Filtering và sorting" href="/docs/query-mutation-subscription/filtering-va-sorting" description="Thiết kế tập kết quả và thứ tự ổn định trước khi chia trang." />
+  <Card title="Pagination trong Spring" href="/docs/truy-cap-du-lieu-va-hieu-nang/cursor-offset-pagination-spring" description="Nối contract pagination với service, repository và query database." />
+  <Card title="Variables và arguments" href="/docs/query-mutation-subscription/variables-arguments-fragments" description="Gửi offset, limit, first, after và input qua variables đúng kiểu." />
+  <Card title="Schema evolution" href="/docs/production/schema-evolution-va-deprecation" description="Thêm field pagination mới mà không phá client cũ." />
+</Cards>
