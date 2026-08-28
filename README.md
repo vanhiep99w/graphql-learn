@@ -40,7 +40,7 @@ Dùng các thiết lập sau trong Cloudflare Pages:
 - **Build command:** `npm run build`
 - **Build output directory:** `dist`
 
-`next.config.ts` đã bật `output: 'export'` và `distDir: 'dist'` để khớp với output directory này.
+`next.config.ts` đã bật `output: 'export'` và `distDir: 'dist'` để khớp với output directory này. File `public/_redirects` chuyển URL gốc `/` thẳng vào `/docs`.
 
 ## Ghi chú layout
 
