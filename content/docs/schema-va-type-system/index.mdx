@@ -1,33 +1,293 @@
 ---
 title: "Schema và type system"
-description: "Cách mô hình hóa API bằng GraphQL SDL và hệ thống type an toàn."
+description: "Thiết kế GraphQL SDL, type, nullability và ranh giới module cho API Spring for GraphQL có thể mở rộng."
 ---
 
-Đây là trang khung của nhóm **Schema và type system** trong lộ trình học GraphQL với Spring Boot. Nội dung chi tiết sẽ được bổ sung theo từng bài bên dưới.
+Nhóm **Schema và type system** dành cho người đã biết những khái niệm GraphQL cơ bản và muốn chuyển từ việc đọc một schema nhỏ sang thiết kế contract có thể dùng lâu dài. Bạn sẽ đi từ SDL, type và field đến input/output, nullability, polymorphism và cách chia schema theo boundary của domain.
 
-<Callout type="info" title="Trạng thái nội dung">
-Các bài trong nhóm hiện là placeholder. Hãy đi theo thứ tự sidebar để giữ mạch học đề xuất.
+<Callout type="info" title="Phạm vi và trạng thái">
+Nhóm **Bắt đầu** đã có các bài thực hành chi tiết về schema nhập môn, resolver và request; một số bài trong **Nền tảng** cũng đã hoàn thiện. Sáu bài con của nhóm này đang được bổ sung theo từng batch và hiện có trạng thái không đồng đều; một số trang vẫn là trang khung. Trang overview này cung cấp mental model và bản đồ học ngay từ bây giờ, nhưng không thay thế ví dụ chi tiết trong từng bài. Repository hiện là docs-only, không có backend Spring Boot để xác nhận build hoặc runtime.
 </Callout>
 
 ## Mục lục
 
-- [Phạm vi dự kiến](#phạm-vi-dự-kiến)
-- [Các bài trong nhóm](#các-bài-trong-nhóm)
-- [Bước tiếp theo](#bước-tiếp-theo)
+- [Trang này dành cho ai](#trang-này-dành-cho-ai)
+- [Điều kiện tiên quyết](#điều-kiện-tiên-quyết)
+- [Kết quả học tập](#kết-quả-học-tập)
+- [Mental model về schema là contract](#mental-model-về-schema-là-contract)
+  - [SDL là contract của API](#sdl-là-contract-của-api)
+  - [Type, field và scalar tạo nên graph](#type-field-và-scalar-tạo-nên-graph)
+  - [Input và output là hai hướng của contract](#input-và-output-là-hai-hướng-của-contract)
+  - [Nullability là một cam kết](#nullability-là-một-cam-kết)
+  - [Polymorphism với interface và union](#polymorphism-với-interface-và-union)
+  - [Module boundary và ownership](#module-boundary-và-ownership)
+  - [Giữ contract ổn định khi schema lớn lên](#giữ-contract-ổn-định-khi-schema-lớn-lên)
+- [Thứ tự học đề xuất](#thứ-tự-học-đề-xuất)
+- [Liên hệ với Spring for GraphQL](#liên-hệ-với-spring-for-graphql)
+  - [SDL, executable schema và resolver](#sdl-executable-schema-và-resolver)
+  - [Nhiều file SDL thành một schema](#nhiều-file-sdl-thành-một-schema)
+- [Sau khi hoàn thành nhóm này](#sau-khi-hoàn-thành-nhóm-này)
 
-## Phạm vi dự kiến
+## Trang này dành cho ai
 
-Thiết kế schema có thể đọc được, kiểm soát nullability và tổ chức type để Spring for GraphQL dễ mở rộng.
+Trang này phù hợp với:
 
-## Các bài trong nhóm
+- Người đã đọc [GraphQL là gì?](/docs/nen-tang/graphql-la-gi) và hiểu operation, selection set, resolver cùng execution result.
+- Người đã đi qua [Tạo schema đầu tiên](/docs/bat-dau/tao-schema-dau-tien) nhưng muốn biết cách chọn type thay vì chỉ sao chép một schema mẫu.
+- Backend developer dùng Spring Boot, frontend developer cần hiểu contract, hoặc người review schema cho nhiều client cùng sử dụng.
+- Team đang chuyển từ một file SDL nhỏ sang schema có nhiều domain, nhiều owner và vòng đời thay đổi dài hơn.
 
-- [SDL và nguyên tắc thiết kế schema](/docs/schema-va-type-system/sdl-va-thiet-ke-schema) — Giới thiệu GraphQL SDL và các nguyên tắc đặt tên, ownership, boundary cho schema.
-- [Scalar, object và field](/docs/schema-va-type-system/scalar-object-field) — Phân biệt scalar với object type và cách field tạo nên contract của API.
-- [Enum, input object và arguments](/docs/schema-va-type-system/enum-input-arguments) — Mô hình hóa lựa chọn hữu hạn, input gửi vào mutation/query và arguments có kiểu rõ ràng.
-- [List và nullable](/docs/schema-va-type-system/list-va-nullable) — Đọc ký hiệu list/non-null và chọn nullability phù hợp cho dữ liệu trả về.
-- [Interface và union](/docs/schema-va-type-system/interface-va-union) — Dùng interface và union để biểu diễn nhiều loại kết quả trong cùng một field.
-- [Tách schema theo module](/docs/schema-va-type-system/tach-schema-theo-module) — Tổ chức nhiều file SDL theo domain và để Spring for GraphQL hợp nhất thành một schema.
+Bạn không cần biết GraphQL Java hay JPA trước. Spring for GraphQL sẽ xuất hiện như lớp tích hợp để thực thi contract; các quyết định về type system vẫn là quyết định thiết kế API trước khi là quyết định framework.
 
-## Bước tiếp theo
+## Điều kiện tiên quyết
 
-Bắt đầu từ bài đầu tiên của nhóm hoặc yêu cầu viết chi tiết một trang cụ thể bằng skill `fumadocs-technical-writer`.
+Nên có các nền tảng sau trước khi đọc sâu nhóm này:
+
+- Biết GraphQL client gửi `query`, `mutation` hoặc `subscription`, rồi chọn field bằng selection set.
+- Đọc được JSON và hiểu khác nhau giữa dữ liệu đầu vào, dữ liệu trả về và lỗi trong execution result.
+- Nắm khái niệm schema, resolver và data source. Resolver thực hiện field; schema không tự tạo database, object Java hay dữ liệu.
+- Có Java cơ bản nếu bạn muốn nối SDL với Spring Boot ngay sau nhóm này. Nếu chỉ học thiết kế contract, Java chưa phải điều kiện bắt buộc.
+
+Nếu còn lẫn lộn giữa schema và resolver, hãy đọc lại [Mô hình request/response](/docs/nen-tang/mo-hinh-request-response) và [Viết query đầu tiên](/docs/bat-dau/viet-query-dau-tien). Hai bài này tạo cầu nối từ contract trên giấy đến field được thực thi trong ứng dụng.
+
+## Kết quả học tập
+
+Sau khi hoàn thành lộ trình của nhóm, bạn có thể:
+
+- Viết và đọc SDL theo hướng contract-first: xác định root operation, type, field, argument và kiểu trả về trước khi chọn implementation.
+- Phân biệt output object, input object, scalar, enum, interface và union; biết khi nào một field cần selection set và khi nào phải dừng ở scalar.
+- Chọn list và nullability dựa trên quy tắc domain. Bạn có thể giải thích sự khác nhau giữa list rỗng, `null`, phần tử `null` và lỗi lan truyền trong một response.
+- Mô hình hóa các kết quả có nhiều biến thể bằng interface hoặc union mà vẫn giữ contract dễ dùng cho client.
+- Chia SDL theo module và ownership mà vẫn tạo ra một graph thống nhất. Bạn biết lúc nào cần `extend type Query` và vì sao không nên để nhiều module cùng định nghĩa một type.
+- Liên hệ từng quyết định trong SDL với cách Spring for GraphQL nạp schema, map resolver và lấy dữ liệu từ service hoặc repository.
+
+## Mental model về schema là contract
+
+Hãy xem schema như một hợp đồng có kiểu giữa client và server. Hợp đồng này trả lời bốn câu hỏi: client được bắt đầu ở đâu, có thể chọn field nào, phải gửi đầu vào gì và nhận kết quả có hình dạng nào. Resolver và data source chỉ là implementation phía sau hợp đồng đó.
+
+```text
+Client: operation + variables
+              │
+              ▼
+SDL: output graph, input, scalar, nullability, polymorphism
+              │  parse và validate
+              ▼
+Executable schema
+              │  map field vào resolver
+              ▼
+Spring for GraphQL → service/repository/data source
+              │
+              ▼
+Execution result theo selection set của client
+```
+
+Mỗi lớp có một trách nhiệm riêng. SDL không phải database schema. Annotation của Spring không tự bổ sung field vào SDL. Client không thể yêu cầu một field chỉ vì object Java hoặc bảng database có cột tương ứng.
+
+### SDL là contract của API
+
+SDL (*Schema Definition Language*) là cách viết contract dưới dạng văn bản. Ví dụ tối thiểu:
+
+```graphql
+type Query {
+  book(id: ID!): Book
+}
+
+type Book {
+  id: ID!
+  title: String!
+}
+```
+
+Từ đoạn này, client biết `book` nhận một `id` bắt buộc và có thể trả về một `Book`. Client cũng biết `Book` có `id` và `title`, đều không được `null` trong contract minh họa. Client chưa biết resolver sẽ gọi database, REST service hay một list trong bộ nhớ. Đó là chủ ý: schema công khai khả năng và hình dạng, không khóa API vào một data source.
+
+Thiết kế SDL trước giúp team review tên field, ý nghĩa dữ liệu, quyền sở hữu và khả năng tương thích trước khi code đi quá xa. Khi implementation thay đổi từ repository sang service khác, contract có thể giữ nguyên nếu ngữ nghĩa và kiểu dữ liệu vẫn được bảo đảm.
+
+### Type, field và scalar tạo nên graph
+
+**Type** mô tả một loại giá trị có tên. `Book` trong ví dụ là output object type. **Field** là đơn vị nhỏ nhất mà client chọn trên type; nó có tên, kiểu trả về và có thể có arguments. **Scalar** là giá trị ở lá của response, như `ID`, `String`, `Int`, `Float` hoặc `Boolean`.
+
+```graphql
+type Book {
+  id: ID!
+  title: String!
+  publishedYear: Int
+}
+```
+
+`Book` tạo ra hình dạng object. `id`, `title` và `publishedYear` là các field. Client có thể đi từ `Query.book` đến `Book.title`, nhưng không thể chọn field con bên trong `title` vì `String` là scalar. Ngược lại, một field trả về object hoặc list của object cần selection set để client nói rõ các field con muốn nhận.
+
+`Query`, `Mutation` và `Subscription` cũng là object type, nhưng đóng vai trò root của từng loại operation. Các type còn lại nối với nhau thành graph qua field. Vì vậy, đừng thiết kế type chỉ như bản sao của class Java hoặc bảng database. Hãy bắt đầu từ hành vi và ngôn ngữ domain mà client cần dùng.
+
+### Input và output là hai hướng của contract
+
+GraphQL tách type dùng để trả dữ liệu khỏi type dùng để nhận dữ liệu. Ví dụ một field tìm sách có thể nhận input object:
+
+```graphql
+input BookSearchInput {
+  text: String
+  limit: Int
+}
+
+type Query {
+  search(input: BookSearchInput!): [Book!]!
+}
+```
+
+`BookSearchInput` đi từ client vào server qua argument và variables. `Book` đi từ server ra client qua response. Input object không thể được chọn như output object; output object cũng không tự trở thành input chỉ vì có các field cùng tên. Một mutation thường cần `CreateBookInput` hoặc `UpdateBookInput` riêng vì quyền ghi, field bắt buộc và quy tắc validation khác với dữ liệu đọc.
+
+Cách tách hai hướng này làm contract rõ hơn. Client biết trường nào được phép gửi, server không phải nhận nguyên entity nội bộ, và team có thể tiến hóa payload đọc mà không vô tình mở thêm khả năng ghi. Arguments nên diễn tả mục đích của field; variables giữ giá trị runtime tách khỏi query document để dễ kiểm tra và chạy lại.
+
+### Nullability là một cam kết
+
+Trong GraphQL, kiểu không có `!` là nullable. Dấu `!` biến giá trị đó thành non-null. Quyết định này không chỉ phục vụ validation; nó là lời hứa mà resolver và data source phải giữ.
+
+```graphql
+type Query {
+  books: [Book!]!
+}
+```
+
+`[Book!]!` cam kết hai điều: bản thân list không `null`, và mỗi phần tử trong list không `null`. List rỗng vẫn hợp lệ. Cam kết này khác với việc trả `null` để nói “không có kết quả”, và cũng khác với list có phần tử `null`.
+
+Hãy chọn nullability từ quy tắc domain:
+
+- Dùng non-null khi ứng dụng thực sự có thể bảo đảm giá trị tồn tại ở ranh giới API.
+- Dùng nullable khi việc vắng mặt là trạng thái hợp lệ, chẳng hạn một `featuredBook` chưa được chọn.
+- Với list, quyết định riêng cho list và phần tử. Đừng thêm `!` cho mọi vị trí chỉ để schema trông chặt chẽ hơn.
+- Nhớ rằng lỗi ở một field non-null có thể làm `null` lan lên object cha. Client vì vậy cần hiểu cả nullability và `errors`, không chỉ nhìn vào HTTP status.
+
+Thay đổi một field nullable thành non-null có thể phá client hoặc làm lộ dữ liệu cũ không đáp ứng contract. Đây là lý do nullability cần được review như một phần của API evolution, không phải chi tiết trang trí của SDL.
+
+### Polymorphism với interface và union
+
+Khi một field có thể trả về nhiều loại object, **polymorphism** giúp schema mô tả biến thể mà không ép mọi kết quả thành một object khổng lồ. Có hai công cụ chính:
+
+```graphql
+interface SearchHit {
+  id: ID!
+}
+
+type Book implements SearchHit {
+  id: ID!
+  title: String!
+}
+
+type Author implements SearchHit {
+  id: ID!
+  name: String!
+}
+
+union SearchResult = Book | Author
+
+type Query {
+  results: [SearchResult!]!
+}
+```
+
+Dùng **interface** khi các type triển khai một contract chung có ý nghĩa. Client có thể chọn `id` trên interface, rồi dùng inline fragment như `... on Book` để lấy `title`. Dùng **union** khi chỉ cần công khai tập các type có thể xuất hiện, nhưng các type đó không cần chia sẻ field chung ngoài metadata kiểu. Client thường dùng `__typename` và inline fragment để xử lý từng biến thể.
+
+Interface và union trong ví dụ là output types. Chúng không thay thế input object khi server cần nhận một cấu trúc đầu vào có nhiều dạng. Hãy chọn interface khi phần chung ổn định và hữu ích; chọn union khi sự khác biệt giữa các biến thể là bản chất của kết quả.
+
+### Module boundary và ownership
+
+Khi schema lớn lên, tách file theo domain giúp mỗi team làm việc trong một phạm vi dễ review hơn. Tuy nhiên, nhiều file SDL không có nghĩa client nhìn thấy nhiều graph độc lập. Sau khi được nạp, chúng vẫn phải hợp thành một schema hợp lệ và thống nhất.
+
+Một cách tổ chức khái niệm là:
+
+```graphql title="catalog.graphqls"
+type Book {
+  id: ID!
+  title: String!
+}
+
+type Query {
+  book(id: ID!): Book
+}
+```
+
+```graphql title="search.graphqls"
+extend type Query {
+  search(input: BookSearchInput!): [SearchResult!]!
+}
+```
+
+Module đầu tiên định nghĩa `Query` gốc; module thứ hai mở rộng root bằng `extend type Query`. Trong thực tế, module cũng có thể sở hữu enum, input, interface và các field trên type của domain đó. Tránh để hai file cùng định nghĩa `type Book` hoặc cùng thêm một field `Query.book` vì schema hợp nhất sẽ bị trùng hoặc ownership trở nên mơ hồ.
+
+Một boundary tốt trả lời được ba câu hỏi:
+
+1. Ai chịu trách nhiệm ngữ nghĩa và chất lượng của type hoặc field này?
+2. Resolver và data source nào cung cấp giá trị, và policy authorization nằm ở đâu?
+3. Thay đổi này ảnh hưởng những module hoặc client nào?
+
+Tách module vì thế là quyết định về ownership và hướng phụ thuộc, không chỉ là quyết định tạo thêm thư mục. Giữ các type dùng chung nhỏ và ổn định; tránh một `JSON` scalar tổng quát dùng để né việc thiết kế contract.
+
+### Giữ contract ổn định khi schema lớn lên
+
+Schema có thể mở rộng mà không phá client nếu team xem mỗi thay đổi là một thay đổi contract:
+
+- Ưu tiên thêm field hoặc type mới thay vì đổi ý nghĩa của field đang có.
+- Đánh dấu field cũ là deprecated, đưa ra hướng thay thế và theo dõi usage trước khi xóa.
+- Review kỹ việc đổi tên, đổi kiểu, đổi nullability và xóa enum value. Những thay đổi này có thể làm client cũ không còn hợp lệ.
+- Giữ tên type và field theo ngôn ngữ nghiệp vụ. Đừng để cấu trúc bảng hoặc class persistence quyết định toàn bộ graph công khai.
+- Gắn ownership, mô tả và quy tắc tương thích vào quy trình review schema. Một graph dùng chung cần governance trước khi cần thêm nhiều framework.
+
+Nói ngắn gọn: type system mở rộng tốt khi nó làm rõ domain, giữ các cam kết ổn định và cho phép thêm khả năng theo hướng additive. Nó không phải là việc gom mọi dữ liệu vào một type hoặc trì hoãn quyết định bằng một payload không có kiểu.
+
+## Thứ tự học đề xuất
+
+Đọc theo thứ tự từ cú pháp và nguyên tắc, qua các loại type, rồi đến boundary của schema. Trạng thái các bài con có thể không đồng đều trong lúc từng batch được bổ sung; bảng dưới đây mô tả vai trò học tập, không khẳng định rằng mọi nội dung chi tiết đã hoàn thiện.
+
+| Bước | Bài | Vai trò trong lộ trình |
+| --- | --- | --- |
+| 1 | [SDL và nguyên tắc thiết kế schema](/docs/schema-va-type-system/sdl-va-thiet-ke-schema) | **SDL và design:** học cách đọc/viết contract, đặt tên, xác định ownership và chọn boundary trước khi thêm type. |
+| 2 | [Scalar, object và field](/docs/schema-va-type-system/scalar-object-field) | **Scalar, object và field:** phân biệt giá trị ở lá với object có selection set, rồi đọc cách field nối các phần của graph. |
+| 3 | [Enum, input object và arguments](/docs/schema-va-type-system/enum-input-arguments) | **Enum, input và arguments:** mô hình hóa lựa chọn hữu hạn, dữ liệu client gửi vào và mục đích của từng tham số field. |
+| 4 | [List và nullable](/docs/schema-va-type-system/list-va-nullable) | **List và nullability:** giải mã các wrapper như `[Book!]!`, chọn cam kết phù hợp và dự đoán ảnh hưởng khi có `null`. |
+| 5 | [Interface và union](/docs/schema-va-type-system/interface-va-union) | **Polymorphism:** biểu diễn một field có nhiều loại kết quả bằng interface hoặc union, để client xử lý biến thể có chủ đích. |
+| 6 | [Tách schema theo module](/docs/schema-va-type-system/tach-schema-theo-module) | **Module boundary:** chia SDL theo domain, mở rộng root type đúng cách và giữ một graph chung với ownership rõ ràng. |
+
+Bạn có thể đọc overview này trước khi các batch nội dung chi tiết hoàn tất. Khi một bài con được bổ sung, hãy quay lại mental model tương ứng thay vì học từng cú pháp như một danh sách rời rạc.
+
+## Liên hệ với Spring for GraphQL
+
+SDL là phần contract; Spring for GraphQL là lớp giúp contract đó trở thành executable schema trong một ứng dụng Spring Boot. Hai phần liên quan chặt chẽ nhưng không thay thế nhau.
+
+### SDL, executable schema và resolver
+
+Trong một backend Spring Boot, `spring-boot-starter-graphql` cung cấp tích hợp để đọc các resource SDL trên classpath và xây dựng GraphQL runtime. Với convention của các bài nhập môn, schema nằm dưới `src/main/resources/graphql/`. Sau khi schema được parse và hợp nhất, Spring kết nối field với method resolver:
+
+- `@QueryMapping` thường map field ở root `Query`.
+- `@MutationMapping` và `@SubscriptionMapping` map các root operation tương ứng.
+- `@SchemaMapping` map field lồng trên một object như `Book`.
+
+Annotation không tạo ra field mà SDL chưa khai báo. Ngược lại, SDL hợp lệ cũng chưa tạo ra dữ liệu. Method resolver phải trả kiểu Java phù hợp với output type và nullability; service, repository hoặc data source phía sau mới quyết định giá trị thực tế. Xem [Viết query đầu tiên](/docs/bat-dau/viet-query-dau-tien) để theo dõi mapping đơn giản, rồi đọc nhóm [Tích hợp Spring for GraphQL](/docs/tich-hop-spring-for-graphql) khi cần đi sâu vào API framework.
+
+Quy trình thực hành nên giữ ranh giới này rõ ràng:
+
+1. Viết SDL để thống nhất contract.
+2. Kiểm tra input, output, list và nullability theo domain.
+3. Nối field với resolver và service phù hợp.
+4. Gửi operation để kiểm tra selection set, `data` và `errors`.
+
+Bài [Thêm dependency và cấu hình](/docs/bat-dau/them-dependency-va-cau-hinh) giải thích phần wiring và schema location. Bài đó cũng nhấn mạnh rằng schema hợp lệ là điều kiện để runtime khởi động, nhưng không phải bằng chứng rằng resolver nghiệp vụ đã trả dữ liệu đúng.
+
+### Nhiều file SDL thành một schema
+
+Spring for GraphQL có thể đọc nhiều file SDL khớp schema location rồi hợp nhất chúng thành một executable schema. Đây là cơ chế phù hợp để tổ chức file theo module trong một ứng dụng, miễn là các định nghĩa không trùng và các `extend type` trỏ đến type đã có.
+
+Vì client vẫn thấy một graph, module không nên tự ý đổi nullability hoặc ý nghĩa của field do module khác sở hữu. Hãy thống nhất owner, review schema và quy tắc thay đổi trước khi tách file. Khi cần cách đặt file, pattern classpath hoặc xử lý lỗi schema lúc startup, xem [Tách schema theo module](/docs/schema-va-type-system/tach-schema-theo-module) cùng phần schema location trong [Tạo schema đầu tiên](/docs/bat-dau/tao-schema-dau-tien).
+
+## Sau khi hoàn thành nhóm này
+
+Sau khi hiểu cách thiết kế type system, hãy chuyển sang các nhóm sử dụng contract đó:
+
+- [Query, mutation và subscription](/docs/query-mutation-subscription) để tổ chức operation, variables, filtering, pagination và subscription.
+- [Tích hợp Spring for GraphQL](/docs/tich-hop-spring-for-graphql) để map root/nested field, binding input, context và lifecycle vào ứng dụng Spring Boot.
+- [Truy cập dữ liệu và hiệu năng](/docs/truy-cap-du-lieu-va-hieu-nang) để nối resolver với data layer và kiểm soát chi phí của graph lồng nhau.
+- [Tiến hóa schema và deprecation](/docs/production/schema-evolution-va-deprecation) để quản lý thay đổi contract khi đã có client sử dụng.
+
+<Cards>
+  <Card title="Query, mutation và subscription" href="/docs/query-mutation-subscription" description="Dùng type system để viết operation và truy vấn dữ liệu thực tế." />
+  <Card title="Tích hợp Spring for GraphQL" href="/docs/tich-hop-spring-for-graphql" description="Đưa SDL vào resolver, context và lifecycle của Spring Boot." />
+  <Card title="Tiến hóa schema và deprecation" href="/docs/production/schema-evolution-va-deprecation" description="Mở rộng contract có kiểm soát và tránh breaking change cho client." />
+</Cards>

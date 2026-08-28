@@ -3,21 +3,377 @@ title: "Scalar, object và field"
 description: "Phân biệt scalar với object type và cách field tạo nên contract của API."
 ---
 
-Trang này sẽ trình bày **Scalar, object và field** trong bối cảnh xây dựng GraphQL API với Spring Boot.
+Trong GraphQL, **schema** (hợp đồng có kiểu của API) mô tả những gì client được phép yêu cầu. Ba mảnh ghép cốt lõi của schema là **scalar** (kiểu giá trị ở lá), **object type** (kiểu có các field con) và **field** (trường mà client có thể chọn). Client diễn tả lựa chọn đó bằng **selection set** (tập các field nằm trong operation). Ghép đúng các mảnh ghép này giúp schema trở thành một contract rõ ràng giữa client và server.
+
+<Callout type="info" title="Phạm vi và giả định">
+Các SDL, query và JSON trong bài là ví dụ minh họa độc lập. Mô hình giữ lại `hello`, `Book` và các field quen thuộc từ [Tạo schema đầu tiên](/docs/bat-dau/tao-schema-dau-tien), rồi mở rộng vừa đủ để minh họa argument và object lồng nhau. Repository này là docs-only, không có backend Spring Boot để chạy các ví dụ; giá trị trong response cũng là dữ liệu giả định, không phải output đã được kiểm chứng runtime.
+</Callout>
 
 ## Mục lục
 
-- [Nội dung dự kiến](#nội-dung-dự-kiến)
+- [Các mảnh ghép cùng tạo contract](#các-mảnh-ghép-cùng-tạo-contract)
+- [Scalar là giá trị ở lá](#scalar-là-giá-trị-ở-lá)
+- [Object type mô tả cấu trúc có thể lồng nhau](#object-type-mô-tả-cấu-trúc-có-thể-lồng-nhau)
+- [Root type và nested object](#root-type-và-nested-object)
+- [SDL hoàn chỉnh cho hello và Book](#sdl-hoàn-chỉnh-cho-hello-và-book)
+- [List và nullable đọc nhanh ký hiệu kiểu](#list-và-nullable-đọc-nhanh-ký-hiệu-kiểu)
+- [Selection set quyết định response](#selection-set-quyết-định-response)
+- [Arguments làm field cụ thể hơn](#arguments-làm-field-cụ-thể-hơn)
+- [Schema không phải Java class hay database entity](#schema-không-phải-java-class-hay-database-entity)
+- [Ánh xạ nhập môn với Spring for GraphQL](#ánh-xạ-nhập-môn-với-spring-for-graphql)
+- [Custom scalar là bước mở rộng](#custom-scalar-là-bước-mở-rộng)
+- [Checklist đọc một contract](#checklist-đọc-một-contract)
 - [Bước tiếp theo](#bước-tiếp-theo)
 
-## Nội dung dự kiến
+## Các mảnh ghép cùng tạo contract
 
-Nội dung chi tiết sẽ bao gồm khái niệm chính, ví dụ code và các lưu ý thực hành liên quan đến chủ đề này.
+Một contract GraphQL trả lời hai câu hỏi: client được đi vào đâu, và sau đó được chọn những gì? Schema trả lời ở cấp toàn API. Type nhóm các giá trị có hình dạng liên quan. Field là điểm truy cập cụ thể bên trong một type.
 
-<Callout type="info" title="Trang placeholder">
-Đây là trang khung. Hãy dùng skill `fumadocs-technical-writer` để viết đầy đủ trang này trong bước tiếp theo.
+| Mảnh ghép | Vai trò | Ví dụ |
+| --- | --- | --- |
+| **Schema** | Khai báo root operation và toàn bộ type mà API công khai | `schema { query: Query }` |
+| **Object type** | Mô tả một giá trị có các field con | `Book`, `Author` |
+| **Scalar** | Mô tả một giá trị đơn, nằm ở lá của response | `String`, `Int`, `ID` |
+| **Field** | Tên một giá trị mà client có thể chọn, kèm kiểu trả về và có thể có arguments | `Book.title: String!` |
+| **Selection set** | Các field client chọn trong operation | `book { id title }` |
+
+Ví dụ, `Query.book` là một field. Field này trả về `Book`, nên client có thể đi tiếp vào các field của `Book`. `Book.title` trả về `String`, nên đó là điểm dừng. Quy tắc “object phải đi tiếp, scalar phải dừng” là cách đọc nhanh nhất khi xem schema.
+
+## Scalar là giá trị ở lá
+
+**Scalar** là kiểu dữ liệu không có field con để chọn. GraphQL có năm scalar tích hợp thường dùng:
+
+| Built-in scalar | Giá trị biểu diễn | Ví dụ sử dụng |
+| --- | --- | --- |
+| `String` | Chuỗi văn bản | `title: String!` |
+| `Int` | Số nguyên 32-bit có dấu | `publishedYear: Int!` |
+| `Float` | Số thực | `score: Float` |
+| `Boolean` | `true` hoặc `false` | `isAvailable: Boolean!` |
+| `ID` | Định danh, thường được serialize thành chuỗi | `id: ID!` |
+
+Trong một object type, các field dùng scalar kết thúc selection set:
+
+```graphql
+type Book {
+  id: ID!
+  title: String!
+  publishedYear: Int!
+  score: Float
+  isAvailable: Boolean!
+}
+```
+
+Với `title`, client chỉ viết `title`. Query như `title { value }` không hợp lệ vì `String` không có field `value`. Tương tự, client không thể mở `{ ... }` sau `id`, `publishedYear`, `score` hoặc `isAvailable`.
+
+Dấu `!` trong các ví dụ là quy tắc non-null (không được trả về `null`), không biến scalar thành một kiểu khác. Phần [List và nullable đọc nhanh ký hiệu kiểu](#list-và-nullable-đọc-nhanh-ký-hiệu-kiểu) sẽ liên hệ quy tắc này với object và list.
+
+## Object type mô tả cấu trúc có thể lồng nhau
+
+**Object type** là kiểu mô tả một giá trị gồm nhiều field. Những field đó có thể là scalar, một object type khác hoặc một list. Ví dụ dưới đây mô tả một sách có thông tin tác giả lồng nhau:
+
+```graphql
+type Author {
+  id: ID!
+  name: String!
+}
+
+type Book {
+  id: ID!
+  title: String!
+  author: Author!
+}
+```
+
+`Book.author` không trả về một chuỗi. Nó trả về `Author`, nên query phải chọn tiếp `id` hoặc `name` của `Author`. Object type vì vậy mô tả **hình dạng có thể duyệt**, chứ không chỉ là một tên class.
+
+Object type dùng cho dữ liệu output. Nó khác **input object type**, kiểu dành cho dữ liệu client gửi vào arguments. Không dùng `Book` làm input chỉ vì cả hai đều có field `title`; hãy xem [Enum, input object và arguments](/docs/schema-va-type-system/enum-input-arguments) khi cần mô hình hóa dữ liệu đầu vào.
+
+## Root type và nested object
+
+`Query` cũng là một object type, nhưng nó có vai trò đặc biệt: đây là **root type** (kiểu gốc, điểm bắt đầu) của operation `query`. Client không tự query `Book` từ một URL riêng. Client đi từ một field dưới `Query`, rồi mới đi vào các object lồng nhau.
+
+```text
+Query.books ──► Book.authorProfile ──► Author.name
+   root field       nested field          scalar leaf
+```
+
+Trong sơ đồ này:
+
+- `Query.books` là field ở root. Đây là nơi operation bắt đầu.
+- `Book.authorProfile` là field của nested object (object lồng nhau). Nó chỉ được xử lý sau khi một `Book` đã được lấy ra.
+- `Author.name` là scalar leaf (giá trị scalar ở lá). Client dừng tại field này.
+
+Root type không đồng nghĩa với bảng database hoặc “object cha” duy nhất trong code Java. Root type chỉ định vị trí bắt đầu của GraphQL execution. Tên root cũng có thể khác `Query` nếu schema nối tường minh bằng `schema { query: SomeQuery }`.
+
+## SDL hoàn chỉnh cho hello và Book
+
+**SDL** (*Schema Definition Language*, ngôn ngữ định nghĩa schema) là dạng văn bản dùng để viết contract GraphQL. Ví dụ sau giữ các field `hello`, `featuredBook` và `books` của schema nhập môn. `book(id: ID!)` và `authorProfile` được thêm để minh họa argument cùng object lồng nhau:
+
+```graphql
+schema {
+  query: Query
+}
+
+type Query {
+  hello: String!
+  featuredBook: Book
+  book(id: ID!): Book
+  books: [Book!]!
+}
+
+type Book {
+  id: ID!
+  title: String!
+  author: String!
+  authorProfile: Author
+  publishedYear: Int!
+  score: Float
+  isAvailable: Boolean!
+  tags: [String!]!
+}
+
+type Author {
+  id: ID!
+  name: String!
+}
+```
+
+Đọc schema từ trên xuống sẽ thấy contract được nối thành một graph có kiểu:
+
+- `Query.hello` là scalar `String!`, nên query có thể dừng ngay ở `hello`.
+- `Query.featuredBook` và `Query.book` trả về `Book` nullable. Không có `!` ở cuối nghĩa là resolver có thể trả `null`, chẳng hạn khi không tìm thấy sách.
+- `Query.books` trả về list của `Book`. Client phải chọn field con của từng `Book`.
+- `Book.authorProfile` đi tới object `Author`, nên nó cần một selection set riêng nếu được yêu cầu.
+- `Book.author`, `Book.title`, `Book.publishedYear`, `Book.score`, `Book.isAvailable` và `Book.tags` minh họa các scalar đơn lẻ và scalar nằm trong list.
+
+Khối `schema` nói rằng operation `query` bắt đầu ở `Query`. Nó không phải URL HTTP, không tạo database và cũng không tự cung cấp dữ liệu. [SDL và nguyên tắc thiết kế schema](/docs/schema-va-type-system/sdl-va-thiet-ke-schema) đi sâu hơn vào cách đặt tên, ownership và boundary của contract.
+
+## List và nullable đọc nhanh ký hiệu kiểu
+
+List và non-null là các wrapper quanh một kiểu cơ bản. Chỉ cần đọc dấu `!` ở từng vị trí:
+
+| Kiểu SDL | Ý nghĩa |
+| --- | --- |
+| `Book` | Một `Book` hoặc `null`. |
+| `Book!` | Luôn có một `Book`, không được `null`. |
+| `[Book!]!` | Luôn có một list; từng phần tử trong list cũng không được `null`. List rỗng vẫn hợp lệ. |
+| `[String!]!` | Luôn có một list chuỗi; list không có phần tử `null`. |
+
+Vì vậy, `featuredBook: Book` cho phép cả field là `null`, còn `books: [Book!]!` cam kết trả về list. Nếu một phần tử của `books` bị lỗi và trở thành `null`, GraphQL có thể lan lỗi lên list vì phần tử có `!`. Chọn nullability theo quy tắc dữ liệu thật, không chỉ thêm `!` để schema trông chặt hơn.
+
+Xem [List và nullable](/docs/schema-va-type-system/list-va-nullable) để phân tích đầy đủ các biến thể `[T]`, `[T!]`, `[T]!` và `[T!]!`, cũng như cách `null` lan truyền khi execution gặp lỗi.
+
+## Selection set quyết định response
+
+**Selection set** là phần nằm trong `{ ... }` của operation. Nó cho GraphQL biết chính xác field nào client muốn nhận. Scalar không có selection set con; object và list object thì bắt buộc phải có.
+
+Với SDL ở trên, client có thể gửi operation sau:
+
+```graphql
+query Catalog($bookId: ID!) {
+  hello
+  featuredBook {
+    id
+    title
+    author
+    authorProfile {
+      name
+    }
+  }
+  books {
+    id
+    title
+    author
+  }
+  book(id: $bookId) {
+    id
+    title
+    author
+  }
+}
+```
+
+Variables của operation là một JSON object riêng:
+
+```json
+{
+  "bookId": "book-1"
+}
+```
+
+Với dữ liệu giả định, response có thể là:
+
+```json
+{
+  "data": {
+    "hello": "Xin chào từ GraphQL!",
+    "featuredBook": {
+      "id": "book-1",
+      "title": "Effective Java",
+      "author": "Joshua Bloch",
+      "authorProfile": {
+        "name": "Joshua Bloch"
+      }
+    },
+    "books": [
+      {
+        "id": "book-1",
+        "title": "Effective Java",
+        "author": "Joshua Bloch"
+      },
+      {
+        "id": "book-2",
+        "title": "Designing Data-Intensive Applications",
+        "author": "Martin Kleppmann"
+      }
+    ],
+    "book": {
+      "id": "book-1",
+      "title": "Effective Java",
+      "author": "Joshua Bloch"
+    }
+  }
+}
+```
+
+Có thể đối chiếu từng phần của response với selection set:
+
+- `hello` là scalar nên xuất hiện như một chuỗi, không có object con.
+- `featuredBook`, `books` và `book` là object hoặc list object nên response có các object con tương ứng.
+- `authorProfile` cũng là object. Query chỉ chọn `name`, nên response không tự thêm `id` của `Author`.
+- `score`, `isAvailable`, `publishedYear`, `tags` và các field khác không xuất hiện vì client không chọn chúng.
+
+Quy tắc quan trọng là: **field trả về object không thể tự trả object trong response nếu client không chọn subfield**. Nếu client viết `books` mà không có selection set, GraphQL phải từ chối operation ở bước validation:
+
+```graphql
+query InvalidBooks {
+  books
+}
+```
+
+Response lỗi có thể có dạng sau; message cụ thể phụ thuộc GraphQL implementation:
+
+```json
+{
+  "errors": [
+    {
+      "message": "Field \"books\" of type \"[Book!]!\" must have a selection of subfields. Did you mean \"books { ... }\"?"
+    }
+  ]
+}
+```
+
+Chiều ngược lại cũng không hợp lệ: `hello { value }` cố mở selection set cho một scalar. Lỗi này xảy ra trước khi resolver của field sai được gọi. Vì thế, khi debug, hãy kiểm tra kiểu trả về trong schema trước khi kiểm tra database hoặc code Java.
+
+## Arguments làm field cụ thể hơn
+
+**Argument** là giá trị đầu vào gắn với một field. Trong schema, `book(id: ID!): Book` nói rằng:
+
+- field có tên `book`;
+- client phải cung cấp argument `id`;
+- `id` có kiểu input `ID!`, nên không được bỏ qua hoặc truyền `null`;
+- kết quả là `Book` nullable, vì sách có thể không tồn tại.
+
+Argument không phải là field được trả về. Trong query `book(id: $bookId)`, `id` chỉ giúp resolver tìm đúng sách. Client vẫn phải chọn các subfield `id`, `title` hoặc `author` của `Book` ở phần selection set.
+
+Arguments cũng phải khớp contract về tên và kiểu. Không tự thêm `limit`, `filter` hoặc `sort` vào `books` của schema minh họa này vì field đó không khai báo arguments. Khi một field cần nhiều điều kiện đầu vào, team có thể gom chúng vào input object thay vì tạo một danh sách argument dài; xem [Enum, input object và arguments](/docs/schema-va-type-system/enum-input-arguments) để học phần đó.
+
+## Schema không phải Java class hay database entity
+
+Schema, Java class và database entity có thể cùng mô tả “sách”, nhưng chúng trả lời các câu hỏi khác nhau:
+
+| Khái niệm | Câu hỏi chính | Ví dụ |
+| --- | --- | --- |
+| GraphQL schema | Client được phép yêu cầu field nào và kiểu gì? | `Book.title: String!` |
+| Java class/record/DTO | Code server dùng object nào để xử lý hoặc vận chuyển dữ liệu? | `BookView.getTitle()` |
+| Database entity | Dữ liệu được lưu và quan hệ được quản lý ra sao? | Cột `book_title`, khóa ngoại tác giả |
+
+Không có quy tắc bắt buộc `type Book` phải ánh xạ một-một với class `Book` hoặc bảng `book`:
+
+- GraphQL có thể công khai `title` dù Java property phía sau tên là `displayName`.
+- Một Java DTO có thể có field nội bộ không được đưa vào schema.
+- Một GraphQL object có thể ghép `title` từ database và `authorProfile` từ service khác.
+- Database entity có thể chứa lazy relation, khóa kỹ thuật hoặc cột audit mà client không được thấy.
+
+Vì schema là contract công khai, hãy thay đổi schema như một thay đổi API. Có thể đổi class, repository hoặc câu query SQL phía sau mà không đổi contract nếu response vẫn giữ đúng tên, kiểu, nullability và quy tắc field. Ngược lại, đổi `String` thành object hoặc đổi một field nullable thành non-null có thể yêu cầu client sửa query và cách xử lý response.
+
+<Callout type="warn" title="Đừng suy ra schema từ entity">
+Entity là chi tiết implementation và thường chứa nhiều thông tin hơn client cần. Hãy thiết kế SDL theo nhu cầu API, quyền truy cập và vòng đời contract; sau đó mới chọn class, DTO hoặc resolver để thực hiện contract đó.
 </Callout>
+
+## Ánh xạ nhập môn với Spring for GraphQL
+
+Trong một backend Spring for GraphQL thật, schema là đầu vào để đăng ký các handler. `@QueryMapping` thường nối method với field dưới root `Query`. Ví dụ sau chỉ là fragment minh họa; `greetingService` và `catalogService` là các dependency giả định, không có sẵn trong repository tài liệu này:
+
+```java
+@Controller
+public class CatalogController {
+
+    @QueryMapping
+    public String hello() {
+        return greetingService.message();
+    }
+
+    @QueryMapping
+    public Book book(@Argument String id) {
+        return catalogService.findById(id).orElse(null);
+    }
+}
+```
+
+Field `book(id: ID!)` nhận `id` từ argument và trả về một `Book` hoặc `null`. Method Java không tạo thêm field trong schema; schema vẫn là nơi quyết định query nào hợp lệ.
+
+Khi field nested cần tính toán hoặc lấy từ nguồn riêng, `@SchemaMapping` có thể nối field đó với object cha:
+
+```java
+@SchemaMapping(typeName = "Book", field = "authorProfile")
+public Author authorProfile(Book book) {
+    return authorService.findByBookId(book.getId()).orElse(null);
+}
+```
+
+Nếu `Book` đã có property/getter `authorProfile` phù hợp, cơ chế mặc định có thể đã đủ và không cần viết `@SchemaMapping`. Chỉ thêm mapping riêng khi cần đổi tên, tính toán, gọi service khác hoặc xử lý logic nested. Chi tiết mapping nested nằm ở [@SchemaMapping và nested field](/docs/tich-hop-spring-for-graphql/schema-mapping-va-nested-field); bài [Viết query đầu tiên](/docs/bat-dau/viet-query-dau-tien) trình bày flow `hello` và object/list từ schema đến resolver.
+
+## Custom scalar là bước mở rộng
+
+Built-in scalar phù hợp với chuỗi, số, Boolean và định danh. Khi domain có giá trị cần quy tắc serialize/parse riêng, schema có thể khai báo **custom scalar** (scalar tùy chỉnh):
+
+```graphql
+scalar Date
+
+type Event {
+  startsOn: Date!
+}
+```
+
+`Date` vẫn là scalar leaf. Client viết `startsOn`, không viết `startsOn { year month }`. Cách biểu diễn JSON, định dạng input và cách Java type như `LocalDate` được chuyển đổi phải được thống nhất giữa schema và runtime.
+
+Khai báo `scalar Date` trong SDL chưa đủ để backend chạy. Spring for GraphQL còn cần đăng ký implementation xử lý serialize và parse giá trị. Repository này không có backend để minh họa wiring đó. Khi cần triển khai, đọc [Custom scalar và directive](/docs/tich-hop-spring-for-graphql/custom-scalar-va-directive) thay vì tự coi một Java type là custom scalar GraphQL.
+
+## Checklist đọc một contract
+
+Trước khi viết query hoặc thêm field vào schema, có thể kiểm tra theo thứ tự sau:
+
+1. **Xác định điểm bắt đầu.** Field nằm dưới root `Query`, `Mutation` hoặc một object nested?
+2. **Đọc kiểu trả về.** Đây là scalar, object, list hay một wrapper nullable/non-null?
+3. **Kiểm tra selection set.** Scalar phải dừng tại field; object và list object phải chọn subfield.
+4. **Đọc arguments.** Tên, kiểu, giá trị mặc định và dấu `!` của argument có đúng không?
+5. **Đối chiếu nullability.** Field, list và từng phần tử trong list có thể `null` ở vị trí nào?
+6. **Tách contract khỏi implementation.** Java class, DTO và database entity chỉ là cách thực hiện; chúng không tự quyết định schema.
+7. **Đối chiếu response với selection set.** Field không được chọn không tự xuất hiện, còn field object phải có selection set hợp lệ.
+
+Một field GraphQL được thiết kế tốt thường trả lời rõ: client gọi nó từ đâu, cần input gì, kết quả có hình dạng gì, khi nào có thể `null` và resolver nào chịu trách nhiệm cung cấp giá trị. Đó chính là cách scalar, object type và field cùng tạo nên contract có thể dùng lâu dài.
 
 ## Bước tiếp theo
 
-Sau khi trang được điền nội dung, đọc bài kế tiếp trong nhóm để tiếp tục lộ trình.
+- Đọc [SDL và nguyên tắc thiết kế schema](/docs/schema-va-type-system/sdl-va-thiet-ke-schema) để đi từ cú pháp type/field đến naming, ownership và boundary.
+- Thực hành flow trong [Tạo schema đầu tiên](/docs/bat-dau/tao-schema-dau-tien), sau đó nối field với resolver qua [Viết query đầu tiên](/docs/bat-dau/viet-query-dau-tien).
+- Học tiếp [Enum, input object và arguments](/docs/schema-va-type-system/enum-input-arguments) khi client cần gửi dữ liệu có cấu trúc.
+- Đọc [List và nullable](/docs/schema-va-type-system/list-va-nullable) khi cần thiết kế contract cho danh sách và lỗi một phần.
+- Nếu domain cần kiểu ngày giờ, tiền tệ hoặc định dạng riêng, xem [Custom scalar và directive](/docs/tich-hop-spring-for-graphql/custom-scalar-va-directive).
+
+<Cards>
+  <Card title="Tạo schema đầu tiên" href="/docs/bat-dau/tao-schema-dau-tien" description="Đặt SDL trên classpath và kiểm tra type, scalar, list cùng nullable." />
+  <Card title="Viết query đầu tiên" href="/docs/bat-dau/viet-query-dau-tien" description="Nối field trong schema với resolver và đọc execution result." />
+  <Card title="SDL và nguyên tắc thiết kế schema" href="/docs/schema-va-type-system/sdl-va-thiet-ke-schema" description="Thiết kế contract có tên, boundary và ownership rõ ràng." />
+</Cards>

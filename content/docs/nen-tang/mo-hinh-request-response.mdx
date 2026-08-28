@@ -1,23 +1,526 @@
 ---
 title: "Mô hình request/response"
-description: "Mô tả cấu trúc request GraphQL, execution result, data, errors và extensions."
+description: "Đọc request envelope và execution result của GraphQL trong ứng dụng Spring Boot."
 ---
 
-Trang này sẽ trình bày **Mô hình request/response** trong bối cảnh xây dựng GraphQL API với Spring Boot.
+Một request GraphQL có hai lớp cần đọc riêng: **transport** (lớp vận chuyển, thường là HTTP) và **execution** (quá trình GraphQL thực thi operation). Transport đưa một JSON envelope đến server; execution kiểm tra query, gọi resolver và tạo execution result (kết quả thực thi) cho client.
+
+<Callout type="info" title="Phạm vi và giả định của bài">
+Các ví dụ dùng schema sách minh họa, trong đó có `book(id: ID!): Book` và `books: [Book!]!`. Endpoint `/graphql` chỉ là giả định ứng dụng Spring Boot đã cấu hình; hãy thay bằng path thực tế của project. Mọi JSON response và thông báo lỗi trong bài đều là ví dụ tài liệu, không phải output runtime đã được kiểm chứng trong repository docs-only này.
+</Callout>
 
 ## Mục lục
 
-- [Nội dung dự kiến](#nội-dung-dự-kiến)
-- [Bước tiếp theo](#bước-tiếp-theo)
+- [Bức tranh tổng thể](#bức-tranh-tổng-thể)
+  - [Tách transport khỏi execution](#tách-transport-khỏi-execution)
+- [Đọc query document](#đọc-query-document)
+  - [Query document operation và selection set](#query-document-operation-và-selection-set)
+  - [Operation name và nhiều operation](#operation-name-và-nhiều-operation)
+- [Request envelope](#request-envelope)
+  - [Bốn trường chính](#bốn-trường-chính)
+  - [Request tối thiểu](#request-tối-thiểu)
+  - [Request có variables và operationName](#request-có-variables-và-operationname)
+- [Execution tạo ra response](#execution-tạo-ra-response)
+  - [Các bước parse validation và execution](#các-bước-parse-validation-và-execution)
+  - [Resolver trong ứng dụng Spring Boot](#resolver-trong-ứng-dụng-spring-boot)
+- [Đọc response GraphQL](#đọc-response-graphql)
+  - [Response thành công](#response-thành-công)
+  - [Response có lỗi và partial data](#response-có-lỗi-và-partial-data)
+  - [Ý nghĩa của data errors và extensions](#ý-nghĩa-của-data-errors-và-extensions)
+- [Nullability và null propagation](#nullability-và-null-propagation)
+  - [Nullable và non-null](#nullable-và-non-null)
+  - [Khi lỗi lan truyền lên parent](#khi-lỗi-lan-truyền-lên-parent)
+- [HTTP transport của request GraphQL](#http-transport-của-request-graphql)
+  - [POST và GET](#post-và-get)
+  - [Content-Type và headers](#content-type-và-headers)
+  - [HTTP status không thay thế errors](#http-status-không-thay-thế-errors)
+- [Lỗi validation và lỗi execution](#lỗi-validation-và-lỗi-execution)
+  - [Lỗi parse hoặc validation](#lỗi-parse-hoặc-validation)
+  - [Lỗi execution](#lỗi-execution)
+- [Log và correlation ở mức thực hành](#log-và-correlation-ở-mức-thực-hành)
+- [Checklist đọc request và response](#checklist-đọc-request-và-response)
+- [Học tiếp](#học-tiếp)
 
-## Nội dung dự kiến
+## Bức tranh tổng thể
 
-Nội dung chi tiết sẽ bao gồm khái niệm chính, ví dụ code và các lưu ý thực hành liên quan đến chủ đề này.
+Client không gửi trực tiếp một field vào resolver. Client gửi một **query document** (tài liệu GraphQL chứa một hoặc nhiều operation), có thể kèm variables, qua transport. GraphQL engine sau đó tạo response theo selection set mà client đã viết.
 
-<Callout type="info" title="Trang placeholder">
-Đây là trang khung. Hãy dùng skill `fumadocs-technical-writer` để viết đầy đủ trang này trong bước tiếp theo.
+```text
+Client
+  │  HTTP request: method, headers, JSON envelope
+  ▼
+Spring Boot HTTP endpoint
+  │  lấy query, variables, operationName và extensions
+  ▼
+GraphQL execution engine
+  │  parse → validate → gọi resolver → ghép kết quả
+  ▼
+Execution result
+  │  data, errors và extensions nếu implementation thêm
+  ▼
+Client
+```
+
+Sơ đồ này tách hai câu hỏi thường bị trộn lẫn:
+
+- HTTP request có đến đúng route, đúng method và đúng `Content-Type` không?
+- GraphQL có thực thi operation thành công hoàn toàn, một phần hay thất bại không?
+
+### Tách transport khỏi execution
+
+**Transport** quyết định cách request đi đến server. Với các ví dụ trong bài, transport là HTTP và body là JSON. **Execution** quyết định GraphQL đọc document, đối chiếu schema, gọi resolver và đặt giá trị vào `data` hay lỗi vào `errors` như thế nào.
+
+Spring Boot có thể cung cấp HTTP endpoint và tích hợp Spring for GraphQL. Endpoint không phải là schema, còn schema cũng không phải là URL. [Kiến trúc GraphQL](/docs/nen-tang/kien-truc-graphql) mô tả rõ hơn ranh giới giữa client, server, schema, resolver và data source.
+
+Một HTTP `200` chỉ nói rằng server đã trả một HTTP response. Nó không tự nói rằng mọi field GraphQL đều thành công. Ngược lại, một lỗi `404`, `401` hoặc lỗi kết nối có thể xảy ra trước khi GraphQL tạo được execution result hoàn chỉnh.
+
+## Đọc query document
+
+Trước khi đọc JSON envelope, hãy đọc chuỗi GraphQL nằm trong trường `query`. Chuỗi này là nơi client mô tả operation và dữ liệu muốn nhận.
+
+### Query document operation và selection set
+
+Một **query document** là toàn bộ văn bản GraphQL gửi trong trường `query`. Document có thể chứa một hoặc nhiều **operation** (yêu cầu thực thi có loại, tên và nội dung chọn field). Các loại operation chuẩn gồm `query` để đọc, `mutation` để thay đổi trạng thái và `subscription` để nhận sự kiện dài hơn.
+
+Trong operation sau, `BookCards` là tên operation:
+
+```graphql
+query BookCards {
+  books {
+    id
+    title
+  }
+}
+```
+
+Phần nằm trong `{ ... }` là **selection set** (tập các field client chọn). Selection set của operation chọn field `books`; selection set lồng bên trong `books` chọn `id` và `title` của mỗi `Book`. Vì `id` và `title` là scalar (giá trị ở lá như chuỗi hoặc số), chúng không cần field con.
+
+Schema có thể khai báo thêm `author` hoặc `publishedYear`, nhưng chúng không xuất hiện trong response nếu operation không chọn chúng. Ngược lại, field trả về object thường cần selection set con. Đây là lý do `books` không thể đứng một mình trong ví dụ trên.
+
+### Operation name và nhiều operation
+
+**Operation name** là tên tùy chọn giúp nhận diện operation. Tên này khác với từ khóa `query` ở đầu document. Khi document chỉ có một operation, client thường có thể bỏ `operationName` trong envelope. Khi document có nhiều operation, client phải chỉ rõ operation cần chạy bằng tên tương ứng.
+
+```graphql
+query BookCards {
+  books {
+    id
+    title
+  }
+}
+
+query BookDetail($bookId: ID!) {
+  book(id: $bookId) {
+    id
+    title
+    author
+  }
+}
+```
+
+Nếu muốn chạy operation thứ hai, envelope phải có `"operationName": "BookDetail"`. Server không nên đoán dựa trên vị trí operation. Một document có operation không tên thì không thể được chọn bằng `operationName`; với document nhiều operation, hãy đặt tên rõ ràng.
+
+## Request envelope
+
+**Request envelope** (vỏ request) là object JSON bao quanh document GraphQL và các giá trị điều khiển việc thực thi. Envelope không phải schema và cũng không phải response. Các field thường gặp là `query`, `variables`, `operationName` và `extensions`.
+
+### Bốn trường chính
+
+| Trường | Bắt buộc | Ý nghĩa |
+| --- | --- | --- |
+| `query` | Có | Chuỗi chứa query document, gồm operation và selection set. Tên key `query` không có nghĩa document chỉ được chứa operation loại `query`; document cũng có thể chứa `mutation` hoặc `subscription`. |
+| `variables` | Không phải lúc nào cũng có | Object ánh xạ tên biến với giá trị JSON. Nếu document khai báo biến bắt buộc, envelope phải cung cấp giá trị phù hợp. Key trong object không có dấu `$`. |
+| `operationName` | Không cần khi document chỉ có một operation | Tên operation cần thực thi khi document có nhiều operation. Giá trị phải khớp chính xác tên đã khai báo trong document. |
+| `extensions` | Tùy implementation | Object chứa metadata hoặc thông tin mở rộng theo thỏa thuận của client và server, chẳng hạn persisted query. Không nên tự thêm field này nếu endpoint không tài liệu hóa cách xử lý. |
+
+`variables`, `operationName` và `extensions` đều là field tùy chọn của envelope. Tùy chọn không có nghĩa là có thể điền tùy ý: kiểu biến phải khớp schema, `operationName` phải khớp document, còn `extensions` phải khớp contract của implementation.
+
+### Request tối thiểu
+
+Giả sử schema có `books: [Book!]!`, request nhỏ nhất để lấy hai field là:
+
+```graphql
+query BookCards {
+  books {
+    id
+    title
+  }
+}
+```
+
+Khi gửi qua HTTP, body JSON có thể chỉ chứa `query`:
+
+```json
+{
+  "query": "query BookCards { books { id title } }"
+}
+```
+
+Đây là JSON hợp lệ vì giá trị của `query` là một string. GraphQL document bên trong cũng hợp lệ nếu schema thực tế có `books`, `id` và `title`. Không cần gửi `variables` vì operation không khai báo biến. Không cần gửi `operationName` vì document chỉ có một operation; tên `BookCards` vẫn hữu ích cho log và công cụ phát triển.
+
+Nếu viết query nhiều dòng trong JSON, dấu xuống dòng phải được escape thành `\n`. Có thể xem cách giữ query dễ đọc bằng heredoc trong [Kiểm thử request bằng curl/Postman](/docs/bat-dau/kiem-thu-request-curl-postman).
+
+### Request có variables và operationName
+
+Giả sử schema có `book(id: ID!): Book` và `Book` gồm `id`, `title`, `author`. Document sau tách giá trị ID khỏi query bằng **variables** (các giá trị đầu vào truyền riêng khỏi document):
+
+```graphql
+query BookScreen($bookId: ID!) {
+  book(id: $bookId) {
+    id
+    title
+    author
+  }
+  books {
+    id
+    title
+  }
+}
+```
+
+Envelope tương ứng là:
+
+```json
+{
+  "query": "query BookScreen($bookId: ID!) { book(id: $bookId) { id title author } books { id title } }",
+  "variables": {
+    "bookId": "book-1"
+  },
+  "operationName": "BookScreen"
+}
+```
+
+`$bookId` được khai báo với kiểu `ID!`, trong đó `!` nghĩa là giá trị không được `null`. Key JSON là `bookId`, không phải `$bookId`. `operationName` chọn operation `BookScreen`; nếu document chỉ có operation này thì vẫn có thể bỏ field đó, nhưng giữ lại giúp log và việc phân tích request rõ hơn.
+
+Trường `extensions` có thể được thêm nếu server hỗ trợ một giao thức mở rộng, chẳng hạn truy vấn đã đăng ký trước hoặc persisted query (query được đăng ký bằng hash). Cấu trúc bên trong `extensions` không có một bộ field bắt buộc chung cho mọi server. Hãy coi nó là phần contract riêng của implementation, không phải field mà client được phép đoán.
+
+## Execution tạo ra response
+
+Sau khi nhận envelope, GraphQL engine không gọi resolver ngay lập tức. Nó phải biến document thành operation hợp lệ rồi mới thực thi các field được chọn.
+
+### Các bước parse validation và execution
+
+**Parse** là bước đọc cú pháp và biến document thành cấu trúc mà engine hiểu được. **Validation** là bước kiểm tra cấu trúc đó với schema: field có tồn tại không, argument và variable có đúng kiểu không, object đã có selection set chưa. Chỉ sau hai bước này, engine mới bắt đầu **execution**.
+
+Với request `BookScreen`, flow khái quát là:
+
+1. Parse chuỗi trong `query`. Nếu thiếu dấu `}` hoặc cú pháp hỏng, operation dừng ở đây.
+2. Validate tên `book`, `books`, các field con, argument `id` và việc dùng `$bookId` với schema.
+3. Coerce (đọc và kiểm tra) giá trị `variables` theo kiểu `ID!`. Giá trị thiếu hoặc sai kiểu sẽ tạo lỗi trước khi resolver hoàn tất.
+4. Gọi resolver cho các field root đã chọn. Resolver là code cung cấp hoặc tính giá trị cho một field, thường gọi service, repository hoặc data source.
+5. Xử lý selection set lồng nhau và serialize scalar về dạng JSON.
+6. Ghép execution result với `data` nếu có dữ liệu và `errors` nếu có lỗi.
+
+Các bước trên là mental model để đọc request/response. Implementation có thể tối ưu thứ tự hoặc cách gọi backend, nhưng không được làm thay đổi contract và shape mà query yêu cầu.
+
+### Resolver trong ứng dụng Spring Boot
+
+Trong Spring for GraphQL, một method có `@QueryMapping` thường cung cấp giá trị cho field root trong `Query`. Method có thể trả về object hoặc list; GraphQL engine tiếp tục đọc field con theo selection set. Resolver không tự quyết định trả toàn bộ Java object ra JSON.
+
+Ví dụ mapping khái niệm:
+
+```java
+@QueryMapping
+public Book book(@Argument String id) {
+    return bookService.findById(id);
+}
+```
+
+Đây chỉ là minh họa cho quan hệ giữa field schema và resolver, không phải code đã chạy trong repository này. Cách viết resolver đầy đủ nằm ở [Viết query đầu tiên](/docs/bat-dau/viet-query-dau-tien). Nếu query hợp lệ nhưng resolver chưa được đăng ký, lỗi thuộc execution hoặc cấu hình ứng dụng, không phải lỗi cú pháp JSON.
+
+## Đọc response GraphQL
+
+Một **execution result** thường có `data` và có thể có `errors`, cùng metadata tùy implementation trong `extensions`. Client phải đọc body GraphQL thay vì kết luận chỉ từ HTTP status.
+
+### Response thành công
+
+Với request `BookScreen` ở trên, response thành công có thể là:
+
+```json
+{
+  "data": {
+    "book": {
+      "id": "book-1",
+      "title": "Effective Java",
+      "author": "Joshua Bloch"
+    },
+    "books": [
+      {
+        "id": "book-1",
+        "title": "Effective Java"
+      },
+      {
+        "id": "book-2",
+        "title": "Designing Data-Intensive Applications"
+      }
+    ]
+  },
+  "extensions": {
+    "requestId": "example-only"
+  }
+}
+```
+
+`data` giữ tên và cấu trúc theo selection set: có `book`, có `books`, và mỗi object chỉ có các field đã chọn. `description` hoặc field khác trong schema không tự xuất hiện. `extensions.requestId` ở đây chỉ là metadata giả định do server thêm; server khác có thể không trả top-level `extensions` hoàn toàn.
+
+### Response có lỗi và partial data
+
+**Partial data** (dữ liệu một phần) xảy ra khi một nhánh của operation thất bại nhưng nhánh khác vẫn có thể trả về. Vì `Query.book` trong giả định là nullable, server có thể trả `book: null` nhưng vẫn trả được `books`:
+
+```json
+{
+  "data": {
+    "book": null,
+    "books": [
+      {
+        "id": "book-1",
+        "title": "Effective Java"
+      }
+    ]
+  },
+  "errors": [
+    {
+      "message": "Không thể đọc book-9.",
+      "path": ["book"],
+      "extensions": {
+        "code": "BOOK_LOOKUP_FAILED"
+      }
+    }
+  ],
+  "extensions": {
+    "requestId": "example-only"
+  }
+}
+```
+
+`path` chỉ vị trí field gây lỗi trong kết quả. Client không nên coi response này là thành công hoàn toàn chỉ vì `data.books` có dữ liệu. Cần hiển thị hoặc xử lý phần dữ liệu còn dùng được, đồng thời quyết định cách báo lỗi cho nhánh `book`.
+
+Mã `BOOK_LOOKUP_FAILED`, `requestId` và toàn bộ cấu trúc trong `extensions` chỉ là quy ước minh họa. `extensions` là field tùy implementation; không phải mọi server đều trả top-level field này, và không phải server nào cũng dùng `extensions.code`.
+
+### Ý nghĩa của data errors và extensions
+
+| Field | Cách đọc | Khi có thể vắng mặt |
+| --- | --- | --- |
+| `data` | Dữ liệu được ghép theo selection set. Một field đã chọn có thể có giá trị `null` theo nullability hoặc do lỗi execution. | Có thể không có khi parse/validation thất bại trước execution; hình thức transport cụ thể tùy server. |
+| `errors` | Mảng lỗi GraphQL. Mỗi lỗi thường có `message`, có thể có `locations`, `path` và `extensions`. | Không có khi execution không phát sinh lỗi. |
+| `extensions` | Metadata thêm ở cấp response, do server hoặc middleware định nghĩa. | Hoàn toàn tùy implementation; không được coi là luôn tồn tại. |
+
+`errors` có thể xuất hiện cùng `data`. Đây là điểm khác với cách đọc đơn giản “có `data` là thành công, không có `data` là thất bại”. Với mỗi lỗi, hãy xem `path`, nullability của field và phần `data` còn sử dụng được.
+
+## Nullability và null propagation
+
+**Nullability** là quy tắc schema cho biết một field có được phép nhận `null` hay không. Quy tắc này quyết định partial data giữ được đến đâu khi resolver gặp lỗi.
+
+### Nullable và non-null
+
+Các kiểu GraphQL sau thể hiện những cam kết khác nhau:
+
+| Khai báo | Ý nghĩa |
+| --- | --- |
+| `Book` | Object `Book` có thể là `null`. |
+| `Book!` | Object `Book` không được là `null`. |
+| `[Book!]!` | List không được là `null`, và từng phần tử `Book` trong list cũng không được là `null`. |
+| `String` | Scalar chuỗi có thể là `null`. |
+| `String!` | Scalar chuỗi bắt buộc có giá trị. |
+
+Trong ví dụ `book(id: ID!): Book`, không tìm thấy sách có thể được biểu diễn bằng `data.book: null`. Đây là giá trị có chủ đích cho field đã chọn, khác với việc field `book` không xuất hiện vì client không đưa nó vào selection set.
+
+Không nên thêm `!` chỉ để schema trông chặt chẽ hơn. Nếu data source thật sự có thể không trả giá trị, schema, resolver và client phải thống nhất cách biểu diễn trường hợp đó. Bài [Tạo schema đầu tiên](/docs/bat-dau/tao-schema-dau-tien) minh họa thêm list và nullable trong Spring for GraphQL.
+
+### Khi lỗi lan truyền lên parent
+
+Khi một field non-null trả về `null` hoặc gặp lỗi, GraphQL áp dụng **null propagation** (lan truyền `null`) lên field cha gần nhất có thể là nullable. Ví dụ:
+
+- `book: Book` cho phép `book` trở thành `null` và các field root khác vẫn có thể nằm trong `data`.
+- `book: Book!` không cho phép kết quả `book` là `null`. Lỗi có thể lan lên object cha, thậm chí làm `data` ở cấp root trở thành `null`.
+- Với `[Book!]!`, lỗi ở một phần tử có thể làm lan truyền lỗi lên cả list và parent theo chuỗi non-null của schema.
+
+Hình dạng cuối cùng phụ thuộc vị trí field lỗi và các dấu `!` trên đường đi. Vì vậy, khi debug hãy đọc đồng thời `errors.path`, schema nullability và `data`, thay vì chỉ kiểm tra một field.
+
+## HTTP transport của request GraphQL
+
+GraphQL có thể chạy trên nhiều transport. Trong bài này, HTTP là giả định phù hợp với ứng dụng Spring Boot thông thường. `/graphql` chỉ là path minh họa của endpoint; GraphQL không bắt buộc mọi server phải dùng path này.
+
+### POST và GET
+
+`POST` là lựa chọn phổ biến cho request GraphQL vì body JSON có thể chứa query dài, variables và operation name. Request khái niệm có dạng:
+
+```http
+POST /graphql HTTP/1.1
+Host: localhost:8080
+Content-Type: application/json
+Accept: application/json
+
+{"query":"query BookCards { books { id title } }"}
+```
+
+Ở đây, `/graphql` chỉ đúng nếu ứng dụng Spring Boot đã cấu hình endpoint như vậy. Với version/configuration khác nhau, property endpoint có thể khác; hãy kiểm tra `spring.graphql.http.path` hoặc `spring.graphql.path` và context path thực tế của project.
+
+Một số GraphQL server hỗ trợ `GET` cho operation loại `query`, thường mã hóa `query`, `variables` và `operationName` vào query string:
+
+```http
+GET /graphql?query=...&variables=...&operationName=BookCards HTTP/1.1
+Host: localhost:8080
+Accept: application/json
+```
+
+Đây là dạng rút gọn mang tính khái niệm; giá trị thật phải được URL-encode. `GET` không nên dùng cho `mutation`, vì mutation có thể thay đổi trạng thái. Việc endpoint có hỗ trợ GET hay không là policy của server, framework và proxy; ví dụ `POST` trong bài là lựa chọn an toàn để bắt đầu. Không suy ra rằng mở được `GET /graphql` đồng nghĩa ứng dụng Spring Boot đã bật mọi dạng transport.
+
+### Content-Type và headers
+
+`Content-Type: application/json` nói cho server biết body POST là JSON. Nếu header bị thiếu hoặc body không đúng JSON, request có thể bị từ chối ở lớp HTTP trước khi GraphQL parse document.
+
+`Accept: application/json` thể hiện client mong muốn response JSON. Header xác thực như `Authorization` và header correlation như `X-Request-Id` chỉ có ý nghĩa khi ứng dụng hoặc gateway đã định nghĩa cách xử lý:
+
+```http
+POST /graphql HTTP/1.1
+Content-Type: application/json
+Accept: application/json
+Authorization: Bearer <access-token>
+X-Request-Id: request-example-123
+```
+
+Không đặt `Content-Type`, `Authorization` hoặc `X-Request-Id` vào trong `query`/`variables`. Chúng thuộc HTTP headers, còn envelope thuộc body. Không ghi access token thật vào tài liệu, shell history hoặc log.
+
+### HTTP status không thay thế errors
+
+HTTP status và GraphQL result trả lời hai câu hỏi khác nhau:
+
+- HTTP status cho biết transport, route, authentication, policy hoặc việc server có trả response hay không.
+- `data` và `errors` cho biết GraphQL execution đã làm được gì trong operation.
+
+Một server có thể trả HTTP `200` cùng body chứa `errors` khi query hợp lệ một phần nhưng một resolver thất bại. Một server khác có thể chọn `400` cho parse/validation hoặc status riêng cho policy. `401`, `403`, `404`, `429` và `5xx` vẫn có ý nghĩa khi lỗi xảy ra ở HTTP, gateway, authentication, route hoặc upstream.
+
+Vì mapping status phụ thuộc implementation, client không được dùng quy tắc `200 = GraphQL thành công` và bỏ qua body. Với response JSON, hãy kiểm tra ít nhất `errors` trước khi coi operation là thành công. [GraphQL và REST](/docs/nen-tang/graphql-va-rest) có phần so sánh chi tiết hơn về transport error và execution error.
+
+## Lỗi validation và lỗi execution
+
+Phân biệt hai nhóm lỗi giúp biết nên sửa query/schema hay kiểm tra resolver/data source.
+
+### Lỗi parse hoặc validation
+
+Lỗi **parse** xảy ra khi document không đúng cú pháp, chẳng hạn thiếu dấu `}`. Lỗi **validation** xảy ra khi document parse được nhưng không khớp schema, chẳng hạn dùng field không tồn tại hoặc bỏ selection set của object.
+
+Ví dụ sau sai vì schema `Book` có `title` nhưng không có `titel`:
+
+```graphql
+query InvalidBook {
+  book(id: "book-1") {
+    id
+    titel
+  }
+}
+```
+
+Response minh họa:
+
+```json
+{
+  "errors": [
+    {
+      "message": "Cannot query field \"titel\" on type \"Book\".",
+      "locations": [
+        {
+          "line": 4,
+          "column": 5
+        }
+      ]
+    }
+  ]
+}
+```
+
+Resolver của `book` thường chưa được gọi vì operation bị chặn trước execution. Message, `locations` và status HTTP có thể khác theo GraphQL engine, Spring configuration hoặc error handler. Ý chính không phụ thuộc câu chữ: đối chiếu field, argument, variable và selection set với schema trước khi debug data source.
+
+### Lỗi execution
+
+Lỗi **execution** xảy ra sau khi operation đã hợp lệ và engine bắt đầu gọi resolver. Nguyên nhân có thể là exception trong code, timeout khi gọi service hoặc dữ liệu không phù hợp với nullability.
+
+Query `BookScreen` vẫn hợp lệ nếu `book` là nullable. Khi resolver không đọc được `book-9`, server có thể tạo partial data như ví dụ trước:
+
+```json
+{
+  "data": {
+    "book": null,
+    "books": [
+      {
+        "id": "book-1",
+        "title": "Effective Java"
+      }
+    ]
+  },
+  "errors": [
+    {
+      "message": "Không thể đọc book-9.",
+      "path": ["book"]
+    }
+  ]
+}
+```
+
+Ở đây `path` nối lỗi với vị trí trong `data`. Nếu field lỗi là non-null, null propagation có thể làm mất nhiều phần `data` hơn. Khi điều tra, xem log resolver và data source cùng với `errors.path`; đừng sửa một query vốn đã hợp lệ chỉ vì backend đang timeout.
+
+## Log và correlation ở mức thực hành
+
+**Correlation ID** (mã tương quan) là một định danh được truyền theo request để nối log của gateway, Spring Boot, resolver và service phía sau. Nó giúp đi từ một response lỗi về đúng request mà không cần log toàn bộ payload.
+
+Ở mức đủ dùng cho bài nhập môn, log hoặc trace có thể ghi:
+
+- `operationName` nếu client cung cấp;
+- query hash hoặc tên operation đã chuẩn hóa khi operation name bị bỏ trống;
+- correlation ID, thời gian xử lý và HTTP status;
+- số lượng lỗi GraphQL cùng các `path` lỗi;
+- user hoặc tenant ở dạng đã che dữ liệu nhạy cảm.
+
+Không nên mặc định ghi access token, toàn bộ `variables` hoặc query text có thể chứa dữ liệu nhạy cảm. Query hash cũng không thay thế authorization và không phải bằng chứng rằng execution thành công. Header như `X-Request-Id` chỉ tạo correlation khi các lớp trong hệ thống thực sự đọc và truyền nó tiếp.
+
+Một log minh họa có thể là:
+
+```json
+{
+  "requestId": "request-example-123",
+  "operationName": "BookScreen",
+  "queryHash": "hash-example",
+  "httpStatus": 200,
+  "graphqlErrorCount": 1,
+  "errorPaths": [["book"]]
+}
+```
+
+Đây là ví dụ về cách phân loại log, không phải format bắt buộc và không phải log runtime của repository này. Mục tiêu là khi thấy HTTP `200`, người vận hành vẫn biết response có `errors` hay không.
+
+## Checklist đọc request và response
+
+Khi đọc một request GraphQL qua HTTP, đi theo thứ tự sau:
+
+1. Kiểm tra URL, HTTP method, context path và endpoint thực tế của ứng dụng Spring Boot.
+2. Kiểm tra `Content-Type: application/json` và các header authentication/correlation cần thiết.
+3. Đọc trường `query` như một document: có operation nào, tên gì và selection set chọn field nào.
+4. Đối chiếu `variables` với khai báo `$variable: Type` trong document. Key JSON không có dấu `$`.
+5. Nếu document có nhiều operation, kiểm tra `operationName` có khớp operation cần chạy không.
+6. Chỉ đọc `extensions` khi implementation có tài liệu contract cho field đó.
+7. Đọc HTTP status nhưng không dừng ở đó.
+8. Kiểm tra `errors`; nếu có, xem `message`, `path`, nullability và metadata tùy chọn.
+9. Đọc `data` theo selection set và xác định field nào là `null`, field nào không được chọn, field nào còn dữ liệu một phần.
+10. Nếu lỗi xảy ra trước execution, kiểm tra parse/validation và schema. Nếu lỗi có `path`, kiểm tra resolver, data source và null propagation.
+
+<Callout type="idea" title="Quy tắc nhớ nhanh">
+`query` trong request là document; `data` là phần kết quả; `errors` là lỗi GraphQL; HTTP status chỉ là tín hiệu của transport. `extensions` có thể thêm metadata, nhưng luôn là phần tùy implementation và không phải server nào cũng trả.
 </Callout>
 
-## Bước tiếp theo
+## Học tiếp
 
-Sau khi trang được điền nội dung, đọc bài kế tiếp trong nhóm để tiếp tục lộ trình.
+Để nối mô hình này với các phần còn lại của lộ trình:
+
+- Đọc [GraphQL là gì?](/docs/nen-tang/graphql-la-gi) để ôn schema, operation, selection set và resolver.
+- Đọc [GraphQL và REST](/docs/nen-tang/graphql-va-rest) để so sánh cách hai mô hình xử lý request, response, lỗi và HTTP.
+- Đọc [Kiến trúc GraphQL](/docs/nen-tang/kien-truc-graphql) để đặt endpoint, schema, resolver và data source vào cùng một flow.
+- Đọc [Viết query đầu tiên](/docs/bat-dau/viet-query-dau-tien) để map field GraphQL vào resolver trong Spring for GraphQL.
+- Dùng [Kiểm thử request bằng curl/Postman](/docs/bat-dau/kiem-thu-request-curl-postman) để gửi cùng envelope từ terminal hoặc Postman.
+
+<Cards>
+  <Card title="GraphQL là gì?" href="/docs/nen-tang/graphql-la-gi" description="Ôn lại schema, operation, selection set và resolver." />
+  <Card title="Kiến trúc GraphQL" href="/docs/nen-tang/kien-truc-graphql" description="Theo dõi flow từ client đến data source." />
+  <Card title="Viết query đầu tiên" href="/docs/bat-dau/viet-query-dau-tien" description="Nối query với resolver trong Spring for GraphQL." />
+  <Card title="Kiểm thử bằng curl/Postman" href="/docs/bat-dau/kiem-thu-request-curl-postman" description="Gửi và lặp lại request GraphQL qua HTTP." />
+</Cards>

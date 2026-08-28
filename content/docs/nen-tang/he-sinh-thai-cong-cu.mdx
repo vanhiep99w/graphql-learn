@@ -3,21 +3,295 @@ title: "Hệ sinh thái công cụ"
 description: "Tổng quan Spring for GraphQL, GraphiQL, client library, gateway và công cụ kiểm thử."
 ---
 
-Trang này sẽ trình bày **Hệ sinh thái công cụ** trong bối cảnh xây dựng GraphQL API với Spring Boot.
+GraphQL không phải là một sản phẩm duy nhất. Một hệ thống GraphQL thường ghép **schema**, **runtime thực thi**, **HTTP transport**, **client**, **hạ tầng biên** và **công cụ kiểm thử, quan sát**. Mỗi lớp trả lời một câu hỏi khác nhau: API cho phép gì, request được thực thi ra sao, ai gọi API, và team có kiểm soát được thay đổi trong production hay không.
+
+<Callout type="info" title="Phạm vi và giả định">
+Trang này là bản đồ vai trò, không phải hướng dẫn cài đặt. Repository hiện là docs-only, không có backend Spring Boot, endpoint GraphQL hay client nào được cấu hình và chạy sẵn. Tên thư viện và capability được mô tả ở mức khái niệm; khi triển khai, hãy đối chiếu tài liệu của đúng version Spring Boot, Spring for GraphQL và client bạn chọn.
+</Callout>
 
 ## Mục lục
 
-- [Nội dung dự kiến](#nội-dung-dự-kiến)
+- [Đọc bản đồ hệ sinh thái](#đọc-bản-đồ-hệ-sinh-thái)
+  - [Một request đi qua những lớp nào](#một-request-đi-qua-những-lớp-nào)
+- [Phân loại công cụ theo vai trò](#phân-loại-công-cụ-theo-vai-trò)
+  - [Server và runtime](#server-và-runtime)
+  - [IDE và trình khám phá](#ide-và-trình-khám-phá)
+  - [Công cụ HTTP](#công-cụ-http)
+  - [Client phía frontend](#client-phía-frontend)
+  - [Client Java và WebClient](#client-java-và-webclient)
+  - [Gateway federation và kho đăng ký schema](#gateway-federation-và-kho-đăng-ký-schema)
+  - [Quan sát hệ thống và kiểm thử](#quan-sát-hệ-thống-và-kiểm-thử)
+- [Phân biệt những cặp dễ nhầm](#phân-biệt-những-cặp-dễ-nhầm)
+  - [Server không phải client](#server-không-phải-client)
+  - [Spring for GraphQL và GraphQL Java](#spring-for-graphql-và-graphql-java)
+  - [GraphiQL không phải GraphQL server](#graphiql-không-phải-graphql-server)
+  - [Gateway không phải schema registry](#gateway-không-phải-schema-registry)
+- [Ma trận chọn công cụ](#ma-trận-chọn-công-cụ)
+  - [Chọn theo nhu cầu](#chọn-theo-nhu-cầu)
+  - [Chọn theo tiêu chí đánh đổi](#chọn-theo-tiêu-chí-đánh-đổi)
+- [Quy trình từ schema tới production](#quy-trình-từ-schema-tới-production)
+  - [Từ SDL đến endpoint](#từ-sdl-đến-endpoint)
+  - [Từ endpoint đến client](#từ-endpoint-đến-client)
+  - [Từ client đến production](#từ-client-đến-production)
+- [Điểm rút ra thực hành](#điểm-rút-ra-thực-hành)
 - [Bước tiếp theo](#bước-tiếp-theo)
 
-## Nội dung dự kiến
+## Đọc bản đồ hệ sinh thái
 
-Nội dung chi tiết sẽ bao gồm khái niệm chính, ví dụ code và các lưu ý thực hành liên quan đến chủ đề này.
+[GraphQL là gì?](/docs/nen-tang/graphql-la-gi) giải thích schema, operation và execution result. [Kiến trúc GraphQL](/docs/nen-tang/kien-truc-graphql) sẽ đặt client, server, resolver và data source vào cùng một flow. Trang này bổ sung lớp **công cụ**: công cụ nào đứng ở đâu và nên được đưa vào giai đoạn nào.
 
-<Callout type="info" title="Trang placeholder">
-Đây là trang khung. Hãy dùng skill `fumadocs-technical-writer` để viết đầy đủ trang này trong bước tiếp theo.
+### Một request đi qua những lớp nào
+
+Một ứng dụng nhỏ không cần dùng toàn bộ hệ sinh thái. Luồng dưới đây cho thấy các lớp thường gặp và các lựa chọn có thể thay thế cho nhau trong cùng một vai trò:
+
+```text
+Schema SDL + ownership + review
+             │
+             ├──────────────► schema checks / schema registry
+             │
+             ▼
+GraphQL server application
+Spring for GraphQL ──► graphql-java ──► resolver ──► data source
+             │
+             ▼
+GraphQL endpoint trực tiếp hoặc qua gateway/router
+             │
+       ┌─────┼────────────┬─────────────────┐
+       ▼     ▼            ▼                 ▼
+   GraphiQL  curl      Postman      Apollo / urql / Java client
+       │     │            │                 │
+       └─────┴────────────┴─────────────────┘
+             │
+             ▼
+authentication ── caching ── tests ── telemetry ── production policy
+```
+
+Sơ đồ dùng code block `text` để không phụ thuộc renderer. Repo chưa cấu hình Mermaid renderer, nên không giả định rằng một fence `mermaid` sẽ được dựng thành diagram khi build docs.
+
+Có thể đọc sơ đồ theo hai chiều. Từ trên xuống, schema và ownership định hình contract, server thực thi contract, rồi các client gửi operation. Từ dưới lên, telemetry và test cung cấp bằng chứng rằng request thật phù hợp với contract và chính sách vận hành. Gateway, registry, cache hoặc code generation là các lớp bổ sung theo nhu cầu; chúng không tự biến một project chưa có server thành GraphQL API.
+
+## Phân loại công cụ theo vai trò
+
+### Server và runtime
+
+**Server** là ứng dụng nhận request và áp dụng chính sách của hệ thống. **Runtime** là phần parse, validate và execute operation theo schema. Trong stack Java/Spring, hai tên thường xuất hiện cùng nhau nhưng không cùng một vai trò:
+
+| Công cụ | Lớp | Nó giúp làm gì | Nó không tự làm gì |
+| --- | --- | --- | --- |
+| **Spring for GraphQL** | Tích hợp framework | Nối GraphQL vào Spring Boot, nạp schema, kết nối HTTP hoặc transport phù hợp, đăng ký resolver bằng API/annotation của Spring và đưa context vào request lifecycle. | Không tự thiết kế domain, không tạo dữ liệu, không thay authentication/authorization và không thay resolver. |
+| **graphql-java** | GraphQL execution engine | Parse và validate document, thực thi selection set, xử lý variables, introspection, lỗi và serialization theo GraphQL specification. | Không tự mở cổng HTTP, không cung cấp UI GraphiQL, database, policy quyền hay telemetry hoàn chỉnh. |
+
+Với ứng dụng Spring Boot, `spring-boot-starter-graphql` thường cung cấp các dependency tương thích để Spring for GraphQL dùng GraphQL Java. Hãy để Spring Boot quản lý version qua parent hoặc BOM thay vì trộn các version riêng lẻ. [Tích hợp Spring for GraphQL](/docs/tich-hop-spring-for-graphql) là nhóm bài đi sâu vào mapping, context và lifecycle.
+
+Điểm quan trọng là **Spring for GraphQL và graphql-java phối hợp để tạo phần GraphQL của server, nhưng vẫn cần web stack, schema, resolver, data source và chính sách ứng dụng**. Thêm một thư viện runtime không tự tạo endpoint nghiệp vụ có dữ liệu. Ngược lại, một schema hợp lệ cũng chưa chứng minh resolver đã chạy.
+
+### IDE và trình khám phá
+
+**GraphiQL** là một GraphQL IDE trên trình duyệt. Nó cung cấp editor, autocomplete, Docs explorer, ô variables, headers và vùng hiển thị execution result. GraphiQL thường gọi introspection để đọc metadata schema, nhờ đó người học có thể đi từ `Query` đến field mà không phải nhớ tên bằng tay.
+
+GraphiQL phù hợp nhất cho:
+
+- khám phá contract khi đang phát triển;
+- thử một operation nhỏ và nhìn ngay `data`, `errors`;
+- kiểm tra variables, headers và selection set;
+- tái hiện lỗi validation hoặc execution trước khi viết test tự động.
+
+GraphiQL phải gửi request đến một GraphQL endpoint đang tồn tại. Mở được trang `/graphiql` chỉ chứng minh UI được phục vụ; nó không chứng minh `/graphql` có resolver, data source hoặc quyền truy cập đúng. Introspection cũng chỉ cho biết schema có gì, không cấp quyền đọc dữ liệu. Xem [GraphiQL và công cụ khám phá API](/docs/bat-dau/graphiql-va-kham-pha-api) để phân biệt URL giao diện với endpoint và cách đọc lỗi.
+
+Trong production, GraphiQL và introspection cần policy rõ ràng. Có thể chỉ bật UI ở local, yêu cầu authentication, giới hạn mạng hoặc cung cấp tài liệu chọn lọc. Ẩn Docs explorer không thay thế authorization ở server.
+
+### Công cụ HTTP
+
+`curl` và Postman đều là **HTTP client**. Chúng vận chuyển JSON envelope tới endpoint; chúng không phải GraphQL server và cũng không thay thế GraphQL execution engine.
+
+| Công cụ | Điểm mạnh | Đánh đổi và cách dùng phù hợp |
+| --- | --- | --- |
+| **curl** | Nhẹ, minh bạch request trên wire, dễ đưa vào script hoặc CI smoke test. | Phải tự xử lý JSON, shell escaping, variables và secret. Phù hợp để kiểm tra endpoint, status, headers và một response shape ổn định. |
+| **Postman** | Lưu collection, environment, example, assertion và lịch sử request; thuận tiện cho debug hoặc chia sẻ trong team. | Cần quản lý export, secret và version của collection. Một collection thành công một lần chưa phải contract test nếu thiếu assertion ổn định. |
+
+Cả hai nên gửi tới `/graphql` hoặc path đã cấu hình, không gửi POST tới URL UI `/graphiql`. Body GraphQL thường có `query`, `variables` và `operationName`; authentication nằm ở HTTP headers. Header `Authorization` chỉ mang credentials tới server, không tự bật Spring Security hay tạo quyền cho request.
+
+Bài [Kiểm thử request bằng curl/Postman](/docs/bat-dau/kiem-thu-request-curl-postman) có các ví dụ envelope, negative case và smoke test. Không cần dùng Postman nếu curl đã đủ cho pipeline, cũng không cần dùng GraphiQL trong CI chỉ vì GraphiQL tiện khi khám phá.
+
+### Client phía frontend
+
+**Apollo Client** và **urql** là thư viện phía frontend. Chúng quản lý việc gửi operation, variables, loading state, error state và việc đưa response vào state/cache của ứng dụng. Một số workflow còn dùng schema và operation để sinh TypeScript type, giúp phát hiện sai field ngay trong build.
+
+- **Apollo Client** thường phù hợp khi team cần hệ sinh thái lớn, normalized cache, nhiều policy fetch/error và công cụ phát triển đã tích hợp. Đổi lại, cấu hình và mô hình cache có thể tạo thêm độ phức tạp.
+- **urql** thiên về lõi nhỏ và pipeline có thể lắp ghép qua các exchange. Nó phù hợp khi team muốn tự chọn mức cache, persisted operation hoặc retry; capability thực tế phụ thuộc package và version được thêm vào project.
+
+Hai thư viện này không execute resolver và không bảo vệ dữ liệu ở server. Client cache chỉ là bản sao ở phía gọi API; nó không thay thế cache/invalidation ở server, authorization, rate limit hoặc kiểm tra query complexity. Khi dùng code generation, hãy coi generated code là sản phẩm của pipeline schema và operation, không phải bằng chứng rằng runtime auth hoặc response lỗi một phần đã được xử lý.
+
+### Client Java và WebClient
+
+Khi một ứng dụng Java gọi một GraphQL service khác, có hai hướng thường gặp:
+
+1. **Java GraphQL client có typing hoặc generated code**: công cụ đọc schema và operation để tạo model, request builder hoặc response type. Hướng này giảm lỗi chính tả field và giúp thay đổi schema lộ ra ở bước build. Đổi lại, build phải tải schema đúng version và code sinh ra có thể tạo coupling với contract.
+2. **Spring `WebClient`**: HTTP client bất đồng bộ, cho phép tự tạo JSON envelope và kiểm soát timeout, header, retry, connection pool cùng instrumentation. `WebClient` không tự hiểu schema GraphQL, không tự validate selection set và không tự biến `errors` trong body thành exception nghiệp vụ; application phải xử lý các phần đó hoặc kết hợp một thư viện GraphQL khác.
+
+Chọn generated Java client khi schema ổn định, type safety đáng giá và team chấp nhận pipeline sinh code. Chọn `WebClient` khi cần kiểm soát transport, gọi nhiều API khác nhau hoặc muốn giữ lớp phụ thuộc mỏng. Dù chọn hướng nào, client service vẫn phải đọc cả HTTP status, `data` và `errors`, đặt timeout và truyền authentication theo policy. [Client và tích hợp](/docs/client-va-tich-hop) là bản đồ các bài về [Spring WebClient](/docs/client-va-tich-hop/spring-webclient) và [Java GraphQL client](/docs/client-va-tich-hop/java-graphql-client).
+
+### Gateway federation và kho đăng ký schema
+
+Ba khái niệm này thường xuất hiện khi graph có nhiều service hoặc nhiều team. Chúng có liên quan nhưng không đồng nghĩa:
+
+| Lớp | Trách nhiệm chính | Câu hỏi nó trả lời |
+| --- | --- | --- |
+| **API gateway hoặc GraphQL router** | Điểm vào biên: TLS termination, routing, timeout, rate limit, CORS, policy auth hoặc điều phối request tùy sản phẩm. | Request nên đi vào đâu và policy biên nào được áp dụng? |
+| **Federation** | Chia graph thành các subgraph do domain team sở hữu, rồi dùng router để compose và thực thi các nhánh liên service. | Nhiều owner có thể cùng cung cấp một graph thống nhất như thế nào? |
+| **Schema stitching** | Ghép các schema từ nhiều nguồn ở lớp gateway bằng quy tắc stitching hoặc transform. | Gateway làm sao hợp nhất các schema có sẵn mà không nhất thiết dùng mô hình federation? |
+| **Schema registry** | Lưu snapshot/version schema, chạy compatibility check, theo dõi deprecation hoặc usage tùy hệ thống. | Thay đổi schema có phá client nào và ai cần review? |
+
+Một API gateway HTTP thông thường có thể chỉ route `/graphql`; nó không mặc nhiên compose schema. Federation cần router và implementation tương thích ở các subgraph; việc có Spring for GraphQL không tự bật federation. Schema registry cũng không phải server dữ liệu: registry có thể từ chối một schema breaking trong CI nhưng không resolve query cho client.
+
+Federation có thể làm ownership theo domain rõ hơn, nhưng đổi lại là kế hoạch thực thi phân tán, latency giữa subgraph, auth xuyên service, cache và telemetry khó hơn. Stitching có thể hữu ích khi cần ghép các schema hiện hữu, nhưng mapping tên, lỗi và ownership dễ trở thành trách nhiệm tập trung ở gateway. Đọc [Federation và schema stitching](/docs/client-va-tich-hop/federation-va-schema-stitching) khi hệ thống thật đã có nhu cầu compose; không thêm lớp này chỉ vì một GraphQL endpoint hiện tại có nhiều type.
+
+### Quan sát hệ thống và kiểm thử
+
+**Observability** là khả năng suy ra trạng thái bên trong từ log, metric và trace. Với GraphQL, một URL `/graphql` có thể mang nhiều operation shape, nên chỉ ghi method và URL là chưa đủ. Tùy mức instrumentation, telemetry nên liên kết được:
+
+- `operationName` hoặc query hash đã normalize;
+- thời gian tổng và lỗi theo operation;
+- complexity, depth hoặc số node nếu server có tính;
+- resolver/field chậm và downstream call;
+- cache hit/miss, tenant hoặc user đã được làm mờ;
+- correlation ID để nối request với log và trace.
+
+Không log token, toàn bộ variables hoặc dữ liệu cá nhân vô điều kiện. Query text nguyên bản có thể làm metrics cardinality tăng mạnh; hash hoặc nhóm theo operation giúp dashboard ổn định hơn. Micrometer, OpenTelemetry và hệ thống log/trace của tổ chức chỉ là các lựa chọn instrumentation; repository này không tuyên bố đã cấu hình chúng.
+
+Testing nên trải qua nhiều lớp thay vì giao hết cho một công cụ:
+
+| Lớp kiểm thử | Mục tiêu | Công cụ thường gặp |
+| --- | --- | --- |
+| Schema check | SDL parse được, thay đổi không phá contract đã công bố | CI, schema registry hoặc GraphQL tooling |
+| Resolver/unit | Logic mapping và business rule đúng | Unit test của ứng dụng |
+| Integration | HTTP, execution, auth, data source và error mapping phối hợp đúng | Spring test hoặc test server |
+| Client/contract | Operation thật của frontend/service còn hợp lệ với schema | Code generation, operation check, contract test |
+| Smoke | Endpoint, auth cơ bản và response shape quan trọng còn hoạt động | curl, Postman hoặc script CI |
+| End-to-end | Luồng người dùng qua các service và gateway | Môi trường tích hợp gần production |
+
+[curl/Postman](/docs/bat-dau/kiem-thu-request-curl-postman) phù hợp cho smoke và tái hiện request. Chúng không thay thế integration test, schema compatibility check hoặc trace trong production. [Chiến lược kiểm thử](/docs/production/chien-luoc-kiem-thu) sẽ đặt các lớp này vào quy trình rộng hơn.
+
+## Phân biệt những cặp dễ nhầm
+
+<Callout type="warn" title="Không có công cụ nào tự thay thế server">
+GraphiQL, curl, Postman, Apollo, urql, Java client và WebClient đều là phía gửi request. Gateway có thể route hoặc compose, còn schema registry có thể kiểm tra contract. Chỉ ứng dụng server cùng runtime, schema, resolver, data source và policy phù hợp mới có thể nhận và thực thi operation. Thêm một client hoặc mở một UI không tạo ra dữ liệu và không cấp quyền truy cập.
 </Callout>
+
+### Server không phải client
+
+Server sở hữu việc parse, validate, execute và bảo vệ dữ liệu. Client sở hữu việc chọn operation, truyền variables, hiển thị hoặc tiếp tục xử lý response. Một client có thể gửi query hợp lệ nhưng server vẫn trả lỗi resolver, timeout hoặc `data` một phần. Ngược lại, server có thể chạy tốt dù GraphiQL, Postman hoặc frontend client chưa được cài.
+
+Khi chẩn đoán, hãy hỏi đúng lớp:
+
+| Dấu hiệu | Kiểm tra trước |
+| --- | --- |
+| Không thấy field hoặc selection set sai | Schema, introspection và validation của server |
+| Có `data`/`errors` GraphQL | Resolver, data source, nullability và error handler |
+| `404`, `401`, `403`, timeout hoặc CORS | Endpoint, gateway, auth, network và HTTP policy |
+| UI mở được nhưng query thất bại | Request từ UI tới endpoint, không kết luận từ URL UI |
+
+### Spring for GraphQL và GraphQL Java
+
+GraphQL Java là execution engine. Spring for GraphQL là lớp tích hợp giúp đưa engine đó vào lifecycle Spring Boot và kết nối resolver Java, transport, context cùng configuration. Có thể dùng GraphQL Java trong stack khác, nhưng GraphQL Java một mình không phải một ứng dụng Spring Boot hoàn chỉnh. Có Spring for GraphQL cũng không có nghĩa đã có schema nghiệp vụ, database hoặc authorization.
+
+Phân biệt này giúp chọn đúng bài học: xem [Kiến trúc Spring for GraphQL](/docs/tich-hop-spring-for-graphql/kien-truc-spring-for-graphql) khi cần hiểu wiring trong Spring, và xem [GraphQL là gì?](/docs/nen-tang/graphql-la-gi) khi cần quay lại contract/execution ở mức GraphQL.
+
+### GraphiQL không phải GraphQL server
+
+GraphiQL có thể đọc introspection và gửi:
+
+```text
+POST /graphql
+Content-Type: application/json
+
+{ "query": "query Health { __typename }", "operationName": "Health" }
+```
+
+Nhưng GraphiQL không tự xử lý `__typename`, không gọi resolver và không quyết định `401` hay `403`. Nó chỉ hiển thị kết quả mà server trả về. Vì vậy, một trang GraphiQL có thể tải thành công trong khi endpoint bị sai path, schema chưa nạp hoặc resolver đang lỗi.
+
+### Gateway không phải schema registry
+
+Gateway/router nằm trên đường đi của request runtime. Registry nằm trong quy trình quản lý contract và thường được gọi trong CI, review hoặc release. Gateway có thể trả `401`, áp timeout hoặc chuyển request tới subgraph; registry có thể báo một field bị xóa là breaking change. Registry không thay thế gateway, và gateway không tự cho biết client nào còn dùng field deprecated nếu không có telemetry hoặc hệ thống usage tương ứng.
+
+## Ma trận chọn công cụ
+
+Không nên bắt đầu bằng câu hỏi “thư viện nào tốt nhất”. Hãy bắt đầu bằng use case, owner và bằng chứng cần có. Một công cụ được chọn tốt là công cụ giải quyết trách nhiệm hiện tại mà không kéo theo nhiều lớp vận hành hơn mức team có thể sở hữu.
+
+### Chọn theo nhu cầu
+
+| Nhu cầu | Bộ công cụ bắt đầu | Thêm khi cần | Điểm cần kiểm tra |
+| --- | --- | --- | --- |
+| Học schema và thử query local | Server Spring for GraphQL + GraphQL Java, GraphiQL | Không cần gateway hoặc registry cho một app nhỏ | Endpoint thật, introspection policy, resolver và data source có tồn tại không? |
+| Gửi request giống trên wire | curl | Postman khi cần collection, environment hoặc assertion chia sẻ | `query`, `variables`, headers, secret và HTTP status |
+| Debug request có nhiều biến thể | GraphiQL để khám phá, curl/Postman để tái hiện | Script negative case trong CI | Có đọc cả `data` và `errors`, hay chỉ nhìn HTTP `200`? |
+| Xây frontend web/mobile | Apollo Client hoặc urql | Code generation, persisted operation, client cache policy | Cache key, invalidation, auth refresh, loading/error và dữ liệu stale |
+| Service Java gọi service GraphQL | Java client có typing hoặc WebClient | Generated code, retry/timeout policy, trace propagation | Coupling schema, partial data, timeout và downstream error |
+| Nhiều team sở hữu một graph | Gateway/router + federation hoặc stitching | Schema registry, composition check, usage telemetry | Ownership type/field, cross-service latency, auth và rollback |
+| API cần kiểm soát thay đổi | SDL review + CI schema check | Registry, deprecation tracking, persisted operation | Compatibility với client đang dùng và thời hạn deprecate |
+| Production cần chẩn đoán nhanh | Log/metric/trace theo operation | Cost instrumentation, dashboard, alert và SLO | Query hash, resolver latency, redaction và cardinality |
+
+Một app Spring Boot phục vụ một frontend có thể dừng ở bộ nhỏ: Spring for GraphQL, GraphQL Java, GraphiQL cho local, curl cho smoke test và Apollo hoặc urql cho frontend. Chỉ thêm gateway, federation hoặc registry khi có yêu cầu về boundary, ownership, composition hoặc governance mà app hiện tại không giải quyết được.
+
+### Chọn theo tiêu chí đánh đổi
+
+| Tiêu chí | Câu hỏi cần trả lời | Đánh đổi thường gặp |
+| --- | --- | --- |
+| **Ownership** | Ai review, vận hành và deprecate từng type/field? | Một schema chung giảm số contract phía client nhưng cần owner rõ. Federation/stitching mở rộng ownership nhưng tăng chi phí composition và điều phối incident. |
+| **Caching** | Cache ở CDN/HTTP, client normalized cache, resolver/data source hay nhiều lớp? Cache key có phụ thuộc query, variables, user và tenant không? | Apollo/urql có thể giảm request lặp ở client; persisted operation và HTTP policy có thể hỗ trợ edge. Invalidation, dữ liệu stale và auth context vẫn là trách nhiệm của hệ thống. |
+| **Introspection** | Khi nào explorer và codegen được đọc schema? Production có cần giới hạn introspection không? | Bật introspection giúp onboarding và autocomplete; giới hạn hoặc tắt ở edge giảm bề mặt khám phá. Cả hai không thay authorization cho field thật. |
+| **Authentication** | Token được xác minh ở gateway, server hay cả hai? Quyền có kiểm tra tới field, object và tenant không? | Client chỉ gửi credentials. UI, generated code và registry không cấp quyền. Thêm nhiều lớp auth có thể tăng bảo vệ nhưng phải thống nhất error, context và ownership. |
+| **Generated code** | Schema/operation có ổn định để đưa vào build không? Ai cập nhật generated artifact? | Codegen tăng type safety và phát hiện breaking sớm, nhưng tạo coupling với schema version và pipeline. Không loại bỏ lỗi runtime, partial data hoặc policy auth. |
+| **Telemetry** | Có nhóm được request theo operation name/hash và nhìn thấy resolver/downstream chậm không? | Query text đầy đủ dễ debug nhưng rủi ro secret và cardinality; hash/normalize ổn định hơn nhưng cần tool giải mã khi điều tra incident. |
+| **Vendor lock-in** | Có thể đổi client, router hoặc registry mà vẫn giữ SDL, HTTP envelope và operation không? | Công cụ managed có thể giảm effort ban đầu và thêm usage/composition features. Đổi lại, format metadata, cache policy, router behavior và workflow có thể gắn với vendor. |
+
+Hãy ghi các câu trả lời này vào architecture decision hoặc README của service. Đừng xem “có autocomplete”, “có cache” hoặc “có federation” là tiêu chí đủ; cần ghi rõ ai sở hữu dữ liệu, policy nào bảo vệ request và tín hiệu nào chứng minh hệ thống đang khỏe.
+
+## Quy trình từ schema tới production
+
+Workflow sau là một ví dụ thực hành cho một team Java xây dựng GraphQL API bằng Spring Boot. Đây là thứ tự trách nhiệm, không phải danh sách package bắt buộc.
+
+### Từ SDL đến endpoint
+
+1. **Viết schema và đặt owner.** Bắt đầu bằng SDL, field cần công khai, nullability, pagination và quy tắc deprecation. Review schema như một contract độc lập với database. Nếu nhiều team cùng sửa graph, đưa schema check và ownership vào CI hoặc registry.
+2. **Dựng server runtime.** Kết hợp Spring for GraphQL với GraphQL Java, web stack và schema resource. Nối root field với resolver, service và data source. Đặt authentication, authorization, timeout và giới hạn query ở lớp server hoặc edge phù hợp; không đẩy trách nhiệm đó sang GraphiQL.
+3. **Xác minh contract và execution.** Khi có backend thật, dùng introspection hoặc GraphiQL để kiểm tra schema rồi chạy một query nhỏ. Tiếp theo, thử variables, field nullable và một negative case. Schema hiển thị đúng chưa đủ; cần kiểm tra resolver và response thật.
+
+### Từ endpoint đến client
+
+4. **Ghi lại request trên wire.** Dùng curl để tạo request tối thiểu, giữ `operationName`, variables và headers rõ ràng. Nếu team cần workspace chia sẻ, chuyển request vào Postman collection với environment không chứa secret thật. Assert cả HTTP status, `data` và `errors` theo contract.
+5. **Chọn client theo caller.** Frontend dùng Apollo hoặc urql khi cần quản lý state/cache và lifecycle UI. Một service Java dùng generated client khi ưu tiên typing, hoặc WebClient khi ưu tiên kiểm soát HTTP. Cả hai hướng đều phải xử lý timeout, retry có điều kiện, authentication và lỗi GraphQL trong body.
+6. **Đo trước khi tối ưu.** So sánh payload, số round-trip, cache hit, p95 latency và số downstream call của operation đại diện. Client cache có thể làm UI nhanh hơn nhưng không chứng minh server rẻ hơn; một query GraphQL qua một HTTP request vẫn có thể gọi nhiều service phía sau.
+
+### Từ client đến production
+
+7. **Thêm lớp biên chỉ khi cần.** Một app đơn có thể nhận request trực tiếp. Khi cần TLS, routing, rate limit, WAF, auth tập trung hoặc composition, thêm API gateway/router. Khi graph có nhiều subgraph, cân nhắc federation hoặc stitching cùng quy ước ownership và failure handling.
+8. **Đưa schema vào quy trình release.** Chạy schema compatibility check, kiểm tra operation thật của client và đặt thời hạn cho field deprecated. Registry có thể lưu snapshot và usage, nhưng vẫn cần owner quyết định migration và rollback.
+9. **Gắn telemetry với test.** Ghi operation name/hash, latency resolver, downstream error, cache và correlation ID đã làm sạch. Chạy schema, integration, contract và smoke test trong CI; đặt dashboard/SLO theo trải nghiệm client thay vì chỉ theo số request tới `/graphql`.
+
+<Callout type="idea" title="Bắt đầu nhỏ rồi mở rộng có điều kiện">
+Một bộ công cụ tối thiểu có thể đủ cho giai đoạn đầu: Spring for GraphQL + GraphQL Java ở server, GraphiQL để khám phá local, curl/Postman để tái hiện request và một client phù hợp với caller. Chỉ thêm federation, schema registry, generated code hoặc nhiều lớp cache khi có vấn đề cụ thể, owner cụ thể và tiêu chí đo được.
+</Callout>
+
+## Điểm rút ra thực hành
+
+- **Server/runtime thực thi contract; client chỉ gọi contract.** Spring for GraphQL là lớp tích hợp Spring, còn GraphQL Java là execution engine. Cả hai vẫn cần schema, resolver, data source và policy.
+- **GraphiQL dành cho khám phá, curl/Postman dành cho HTTP workflow.** UI mở được không chứng minh endpoint nghiệp vụ đã chạy.
+- **Apollo/urql giải quyết trải nghiệm frontend.** Java client và WebClient giải quyết service-to-service. Cache hoặc generated code không thay thế auth và error handling ở server.
+- **Gateway/router, federation và schema registry giải quyết bài toán quy mô khác nhau.** Gateway xử lý đường đi/policy runtime, federation hoặc stitching xử lý composition, registry xử lý contract/version. Đừng gom chúng thành một “GraphQL server duy nhất”.
+- **Production cần bằng chứng.** Schema checks, ownership, compatibility, telemetry, auth, cache policy và nhiều lớp test phải đi cùng nhau.
+
+Nói ngắn gọn: chọn công cụ theo vị trí của nó trong flow và theo giai đoạn phát triển. Nếu chưa mô tả được owner, cache key, introspection policy, auth boundary, generated-code pipeline và telemetry cần xem, hãy trì hoãn việc thêm công cụ và làm rõ yêu cầu trước.
 
 ## Bước tiếp theo
 
-Sau khi trang được điền nội dung, đọc bài kế tiếp trong nhóm để tiếp tục lộ trình.
+Để nối bản đồ công cụ với lộ trình học, đọc các trang sau:
+
+<Cards>
+  <Card title="GraphQL là gì?" href="/docs/nen-tang/graphql-la-gi" description="Ôn lại schema, operation, resolver và execution result trước khi chọn tooling." />
+  <Card title="Kiến trúc GraphQL" href="/docs/nen-tang/kien-truc-graphql" description="Đặt client, server, schema, resolver và data source vào cùng một flow." />
+  <Card title="GraphiQL và công cụ khám phá API" href="/docs/bat-dau/graphiql-va-kham-pha-api" description="Dùng explorer, variables và headers để kiểm tra một endpoint thật." />
+  <Card title="Kiểm thử request bằng curl/Postman" href="/docs/bat-dau/kiem-thu-request-curl-postman" description="Chuyển operation đã khám phá thành request và smoke test lặp lại được." />
+  <Card title="Client và tích hợp" href="/docs/client-va-tich-hop" description="Đi sâu vào WebClient, Java client, frontend client và federation." />
+  <Card title="Tích hợp Spring for GraphQL" href="/docs/tich-hop-spring-for-graphql" description="Học cách nối schema với controller, context và request lifecycle trong Spring Boot." />
+</Cards>
