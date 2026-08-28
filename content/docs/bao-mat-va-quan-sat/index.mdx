@@ -1,33 +1,241 @@
 ---
 title: "Bảo mật và quan sát"
-description: "Bảo vệ GraphQL endpoint và tạo tín hiệu quan sát cho hệ thống Spring Boot."
+description: "Lộ trình bảo vệ GraphQL API và xây dựng observability cho ứng dụng Spring Boot."
 ---
 
-Đây là trang khung của nhóm **Bảo mật và quan sát** trong lộ trình học GraphQL với Spring Boot. Nội dung chi tiết sẽ được bổ sung theo từng bài bên dưới.
+Nhóm **Bảo mật và quan sát** là entry point để đưa một GraphQL API từ trạng thái “gọi được” đến trạng thái có thể bảo vệ và điều tra khi vận hành. GraphQL thường gom nhiều query, mutation và subscription vào cùng một endpoint, nên không thể chỉ bảo vệ bằng cách kiểm tra URL. Cần phối hợp identity, quyền, chi phí query, chính sách transport và tín hiệu vận hành.
 
-<Callout type="info" title="Trạng thái nội dung">
-Các bài trong nhóm hiện là placeholder. Hãy đi theo thứ tự sidebar để giữ mạch học đề xuất.
+<Callout type="info" title="Phạm vi và giả định">
+Các SDL, query, JSON, YAML, Java fragment và sơ đồ chữ trong nhóm này đều là ví dụ minh họa tĩnh. Repository hiện là docs-only: không có backend Spring Boot, Spring Security, identity provider, endpoint `/graphql`, Actuator, WebSocket, CORS/CSRF configuration hay log/trace/metric runtime nào được khẳng định là đã cấu hình. Tên route và property chỉ là ví dụ; hãy đối chiếu version Spring Boot/Spring for GraphQL, web stack và security stack của project thật trước khi áp dụng.
 </Callout>
 
 ## Mục lục
 
-- [Phạm vi dự kiến](#phạm-vi-dự-kiến)
-- [Các bài trong nhóm](#các-bài-trong-nhóm)
+- [Nhóm này giải quyết điều gì](#nhóm-này-giải-quyết-điều-gì)
+- [Điều kiện tiên quyết](#điều-kiện-tiên-quyết)
+- [Mục tiêu học tập](#mục-tiêu-học-tập)
+- [Threat model và mục tiêu bảo vệ](#threat-model-và-mục-tiêu-bảo-vệ)
+  - [Threat model](#threat-model)
+  - [Mục tiêu bảo vệ](#mục-tiêu-bảo-vệ)
+- [Protection và observability](#protection-và-observability)
+  - [Protection là các lớp chặn hoặc giảm rủi ro](#protection-là-các-lớp-chặn-hoặc-giảm-rủi-ro)
+  - [Observability là các tín hiệu để điều tra](#observability-là-các-tín-hiệu-để-điều-tra)
+- [Thứ tự đọc và triển khai đề xuất](#thứ-tự-đọc-và-triển-khai-đề-xuất)
+- [Các điểm cần quyết định](#các-điểm-cần-quyết-định)
+- [Checklist trước production](#checklist-trước-production)
+  - [Identity và authorization](#identity-và-authorization)
+  - [Query và resource budget](#query-và-resource-budget)
+  - [HTTP browser và schema exposure](#http-browser-và-schema-exposure)
+  - [Telemetry và response safety](#telemetry-và-response-safety)
+  - [Verification và vận hành](#verification-và-vận-hành)
 - [Bước tiếp theo](#bước-tiếp-theo)
 
-## Phạm vi dự kiến
+## Nhóm này giải quyết điều gì?
 
-Bao phủ authentication, authorization, giới hạn truy vấn, logging, tracing, metrics và các bề mặt tấn công riêng của GraphQL.
+Một request GraphQL cần được nhìn qua nhiều boundary. Header hoặc cookie đi qua transport; GraphQL parse và validate document; resolver gọi service; service truy cập data source hoặc event source. Mỗi boundary có trách nhiệm bảo vệ và tín hiệu riêng.
 
-## Các bài trong nhóm
+```text
+Credential và transport policy
+            │
+            ▼
+Authentication → principal và context server-side
+            │
+            ▼
+Authorization → operation, field, resource và tenant
+            │
+            ▼
+Query guardrail → depth, complexity, page size và timeout
+            │
+            ▼
+Introspection, CORS và CSRF → schema/browser exposure
+            │
+            ▼
+Resolver → service → repository hoặc event source
+            │
+            ▼
+Logs, traces, metrics và health → tín hiệu vận hành
+```
 
-- [Authentication với JWT/OAuth2](/docs/bao-mat-va-quan-sat/authentication-jwt-oauth2) — Xác thực request GraphQL bằng JWT hoặc OAuth2 và truyền principal vào resolver.
-- [Authorization theo field và resolver](/docs/bao-mat-va-quan-sat/authorization-field-resolver) — Áp dụng quyền ở operation, field hoặc service layer mà không làm rò rỉ dữ liệu.
-- [Introspection, CORS và CSRF](/docs/bao-mat-va-quan-sat/introspection-cors-csrf) — Cấu hình các cơ chế bảo vệ endpoint HTTP và quyết định khi nào cho phép introspection.
-- [Giới hạn độ sâu và complexity](/docs/bao-mat-va-quan-sat/depth-va-complexity-limit) — Ngăn query quá sâu hoặc quá đắt bằng depth limit, complexity analysis và timeout.
-- [Logging và tracing](/docs/bao-mat-va-quan-sat/logging-va-tracing) — Ghi nhận operation, variables đã làm sạch và trace xuyên qua resolver đến database.
-- [Metrics và health check](/docs/bao-mat-va-quan-sat/metrics-va-health-check) — Theo dõi latency, error rate, query pattern và trạng thái sẵn sàng của GraphQL service.
+Đây là mental model, không phải kiến trúc đã được bật trong repository. Một query hợp lệ về schema vẫn có thể quá đắt. Một request đã authenticated vẫn có thể không được phép đọc một field. Một dashboard xanh cũng không chứng minh authorization đang đúng. Nhóm này giúp đặt từng câu hỏi vào đúng lớp thay vì dùng một cơ chế để thay thế tất cả cơ chế còn lại.
+
+## Điều kiện tiên quyết
+
+Bạn nên có các nền tảng sau trước khi đi qua lộ trình này:
+
+- Hiểu schema là contract, phân biệt `query`, `mutation` và `subscription`, đồng thời đọc được selection set, nested field, alias, variables và fragments. Có thể ôn [Query, selection set và alias](/docs/query-mutation-subscription/query-selection-set-alias), [Variables, arguments và fragments](/docs/query-mutation-subscription/variables-arguments-fragments) và nhóm [Query, mutation và subscription](/docs/query-mutation-subscription).
+- Biết execution result có thể gồm `data`, `errors`, `path` và `extensions`; không dùng HTTP `200` làm tín hiệu thành công duy nhất. Đọc [Xử lý lỗi trong mutation](/docs/query-mutation-subscription/xu-ly-loi-trong-mutation) và [Mô hình request/response](/docs/nen-tang/mo-hinh-request-response) khi cần ôn lại.
+- Có mental model về Spring for GraphQL: mapping, `DataFetcher`, service, data source và `GraphQLContext`. Hai điểm nối quan trọng là [DataFetcher và GraphQL context](/docs/tich-hop-spring-for-graphql/datafetcher-va-graphql-context) và [Context, interceptor và request lifecycle](/docs/tich-hop-spring-for-graphql/context-interceptor-request-lifecycle).
+- Biết các khái niệm HTTP/security cơ bản: bearer token, cookie, TLS, origin, CORS, CSRF, status code và timeout. Không cần thuộc một property Spring cụ thể; property và hook phải được kiểm tra theo version.
+- Có khái niệm về log, trace, metric, health check, SLO và cardinality. [Monitoring và SLO](/docs/production/monitoring-va-slo) cung cấp bối cảnh production; trang này chỉ định vị các tín hiệu đó trong security flow.
+
+Không cần backend chạy để đọc các khái niệm. Muốn xác nhận endpoint, filter, security context, resolver, WebSocket hoặc Actuator thật sự hoạt động, bạn cần một project Spring Boot tương ứng và test ở runtime.
+
+## Mục tiêu học tập
+
+Sau khi hoàn thành nhóm này, bạn có thể:
+
+- Mô tả threat model của GraphQL endpoint: caller không xác thực, user đã xác thực nhưng thiếu quyền, query độc hại, browser cross-origin và rò rỉ telemetry.
+- Phân biệt authentication với authorization, rồi truyền principal/tenant đã xác minh qua context mà không tin `tenantId`, `userId` hoặc permission flag do client gửi.
+- Chọn điểm áp dụng authorization ở operation, field, service, repository hoặc event source; hiểu vì sao chỉ ẩn field trên GraphiQL không phải là bảo vệ.
+- Đặt depth limit, complexity/cost budget, page-size cap, timeout và rate limit theo rủi ro tài nguyên thay vì chỉ nhìn số field trong query.
+- Quyết định chính sách introspection, CORS và CSRF theo môi trường, browser flow, cookie/bearer strategy và mức độ công khai của schema.
+- Thiết kế log và trace có operation name/query hash, correlation ID, field path và latency mà không ghi token, variables nhạy cảm, PII hoặc metric label cardinality cao.
+- Chọn metric và health signal giúp phát hiện latency, error rate, query bị từ chối, dependency failure và subscription/resource leak; đồng thời biết chúng không thay thế protection.
+- Viết checklist và test negative case để kiểm tra fail closed, tenant isolation, query budget, browser policy và redaction trước production.
+
+## Threat model và mục tiêu bảo vệ
+
+### Threat model
+
+GraphQL làm cho một operation có thể chọn nhiều field, lồng nhiều tầng và gọi nhiều data source phía sau một route chung. Vì vậy, threat model phải xét cả danh tính, hình dạng query, transport và dữ liệu telemetry.
+
+| Actor hoặc điều kiện | Rủi ro cần tính đến | Lớp kiểm soát cần có |
+| --- | --- | --- |
+| Caller không có credential, token sai, hết hạn hoặc bị thu hồi | Đọc hoặc ghi dữ liệu khi chưa xác định được principal | Authentication ở boundary phù hợp; fail closed trước resolver khi không xác minh được identity |
+| User hợp lệ nhưng thiếu quyền hoặc thuộc tenant khác | IDOR, lộ field nhạy cảm, lộ existence qua `null`, count, timing hoặc error | Authorization theo operation/field/resource và service/repository; context do server tạo |
+| Client độc hại hoặc client vô tình tạo query nặng | DoS tài nguyên qua depth, fragments, aliases, list lớn, relation sâu, N+1 hoặc field đắt | Complexity/depth budget, page-size cap, timeout, rate limit và policy từ chối trước công việc tốn kém |
+| Browser gửi cookie từ origin không mong muốn | CSRF cho thao tác có side effect hoặc request cross-origin không được kiểm soát | CORS allowlist, CSRF protection, SameSite/Origin policy và strategy credential rõ ràng |
+| Caller dò schema hoặc công cụ debug bị public ngoài dự kiến | Lộ vocabulary/type/field giúp reconnaissance, dù bản thân schema không phải secret | Chính sách introspection theo môi trường, allowlist/persisted operation khi phù hợp; không dùng việc tắt introspection làm authorization |
+| Người đọc log/trace hoặc hệ thống telemetry bị truy cập sai | Lộ bearer token, cookie, variables, PII, query text hoặc tenant metadata | Allowlist field log, redaction, sampling, retention và metric label cardinality thấp |
+| Downstream chậm, stream bị hủy hoặc instance restart | Không có bằng chứng để phân biệt lỗi auth, lỗi query, lỗi data source và leak resource | Correlation ID, trace, error code/path, latency metric, health/readiness và cleanup signal |
+
+Threat model này là điểm bắt đầu cho một API GraphQL thông thường. Domain có thanh toán, dữ liệu y tế, multi-tenant nghiêm ngặt hoặc compliance sẽ cần thêm asset, actor, retention và audit requirement riêng. Nói ngắn gọn: hãy giả định mọi input client đều không đáng tin, kể cả khi nó có kiểu GraphQL hợp lệ.
+
+### Mục tiêu bảo vệ
+
+Lộ trình tập trung vào năm mục tiêu theo thứ tự phụ thuộc:
+
+1. **Authentication:** biết request hoặc connection thuộc principal nào, credential có hợp lệ và còn hiệu lực không.
+2. **Authorization:** quyết định principal đó có được gọi operation, đọc field, dùng resource, tenant hoặc event hiện tại không.
+3. **Query cost và depth:** giới hạn công việc mà một operation có thể yêu cầu trước khi resolver/data source bị tiêu tốn tài nguyên.
+4. **Introspection, CORS và CSRF:** kiểm soát mức schema được khám phá và cách browser gửi credential tới HTTP endpoint. Các policy này bổ sung cho auth, không thay auth.
+5. **Logging, tracing, metrics và health:** tạo tín hiệu đủ an toàn để biết policy có bị từ chối, request có chậm, dependency có lỗi và resource có được cleanup không.
+
+Ba mục tiêu đầu là protection trực tiếp trên execution path. Mục tiêu thứ tư bảo vệ bề mặt exposure/transport. Mục tiêu cuối là observability; nó giúp phát hiện và điều tra, nhưng không tự chặn một query hay cấp quyền cho một user.
+
+## Protection và observability
+
+### Protection là các lớp chặn hoặc giảm rủi ro
+
+Protection trả lời câu hỏi: **request nào được đi tiếp, với phạm vi nào và ngân sách bao nhiêu?** Một policy protection thường tạo ra hành động như reject, deny, timeout hoặc giới hạn dữ liệu.
+
+| Lớp protection | Ví dụ quyết định | Không nên suy ra |
+| --- | --- | --- |
+| Authentication | Token hợp lệ mới tạo principal; thiếu hoặc sai credential thì dừng | Có principal không có nghĩa là được đọc mọi resource |
+| Authorization | User chỉ đọc field/resource/tenant đã được phép; service kiểm tra lại invariant | Ẩn field khỏi GraphiQL hoặc đổi tên resolver không tạo quyền |
+| Query guardrail | Từ chối query vượt depth/complexity/page-size/timeout budget | Query ngắn về văn bản vẫn có thể tạo nhiều nested fetch hoặc N+1 |
+| Schema và browser exposure | Chọn introspection policy, origin allowlist, CSRF policy và credential mode | CORS không phải authentication; tắt introspection không phải authorization |
+| Data/resource policy | Giới hạn tenant, relation, event source, downstream và retry | GraphQL type hoặc `ID` tự bảo vệ data source |
+
+Protection nên fail closed khi thiếu context hoặc không thể đánh giá quyền. Error public cần an toàn và ổn định; log nội bộ mới giữ chi tiết để điều tra. Đặt rule ở service/repository khi rule phải áp dụng cho cả GraphQL, REST, job hoặc consumer khác, thay vì chỉ đặt trong một resolver.
+
+### Observability là các tín hiệu để điều tra
+
+Observability trả lời câu hỏi: **điều gì đã xảy ra, ở đâu, với chi phí bao nhiêu và có lặp lại không?** Nó thường gồm ba tín hiệu chính cùng health signal:
+
+- **Logging:** ghi event đã chuẩn hóa như `operationName`, query hash, error code/path, principal đã làm mờ, correlation ID và duration. Log không được chứa token, cookie, raw variables hoặc stack trace trong response.
+- **Tracing:** nối span từ gateway/interceptor qua GraphQL execution, resolver, service và downstream. Trace giúp tìm field hoặc dependency chậm; nó không tự áp authorization hay query budget.
+- **Metrics:** đếm latency, error rate, auth failure, query bị reject, active connection/operation, queue/broker lag và cleanup. Dùng label có cardinality thấp; không đưa raw ID, email hoặc query text động vào label.
+- **Health:** biểu diễn liveness/readiness và trạng thái dependency theo policy. Health endpoint có thể xanh trong khi một operation cụ thể bị `FORBIDDEN` hoặc một query shape hiếm đang chậm.
+
+Protection và observability phải được thiết kế cùng nhau. Nếu chỉ có protection, team có thể chặn đúng nhưng không biết vì sao traffic bị từ chối. Nếu chỉ có observability, team có thể thấy tấn công nhưng vẫn để request đi tới database. Telemetry cũng là một asset cần bảo vệ và phải tuân theo redaction, retention và access policy.
+
+<Callout type="warn" title="Các cơ chế này không thay thế nhau">
+Tắt introspection không thay cho authorization. CORS không thay cho authentication hoặc CSRF protection. Ghi log một lỗi `401` không có nghĩa request đã bị chặn đúng ở mọi transport. Metric latency thấp cũng không chứng minh tenant isolation hoặc field authorization đúng. Hãy kiểm tra từng control bằng test và bằng tín hiệu tương ứng.
+</Callout>
+
+## Thứ tự đọc và triển khai đề xuất
+
+Thứ tự dưới đây đi từ danh tính đến quyền, từ quyền đến chi phí execution, rồi mới chốt schema/browser exposure và telemetry. Đây là thứ tự ưu tiên để học và rollout policy; không có nghĩa mọi cấu hình phải được bật trong một release duy nhất. TLS, secret management, dependency update và network baseline vẫn là điều kiện nền của production.
+
+| Bước | Bài con và lớp trách nhiệm | Câu hỏi cần trả lời khi triển khai |
+| ---: | --- | --- |
+| 1 | [Authentication với JWT/OAuth2](/docs/bao-mat-va-quan-sat/authentication-jwt-oauth2) | Credential được xác minh ở đâu? Principal, tenant, expiry/revocation và correlation metadata đi vào context HTTP hoặc WebSocket thế nào? |
+| 2 | [Authorization theo field và resolver](/docs/bao-mat-va-quan-sat/authorization-field-resolver) | Ai được gọi operation, đọc field/resource nào? Policy có được áp dụng lại ở service/repository/event source và không tin input client làm authority không? |
+| 3 | [Giới hạn độ sâu và complexity](/docs/bao-mat-va-quan-sat/depth-va-complexity-limit) | Một query có thể tiêu tốn bao nhiêu depth, node, relation, alias, fragment hoặc database time? Vượt budget thì reject, timeout hay áp policy nào? |
+| 4 | [Introspection, CORS và CSRF](/docs/bao-mat-va-quan-sat/introspection-cors-csrf) | Schema được khám phá ở môi trường nào? Browser dùng cookie hay bearer? Origin, credential, CSRF token và WebSocket/HTTP boundary được kiểm soát ra sao? |
+| 5 | [Logging và tracing](/docs/bao-mat-va-quan-sat/logging-va-tracing) | Có nối được một operation với resolver, downstream và error path bằng correlation ID mà không làm lộ token, variables hoặc PII không? |
+| 6 | [Metrics và health check](/docs/bao-mat-va-quan-sat/metrics-va-health-check) | Dashboard và alert có cho thấy latency, error rate, query reject, dependency health, active subscription và cleanup leak mà không tạo cardinality quá cao không? |
+
+Trong thực tế, có thể triển khai một số edge control song song để giảm rủi ro sớm. Tuy nhiên, đừng xây authorization dựa trên principal chưa xác minh, đừng tối ưu cost khi chưa biết scope quyền và đừng coi telemetry là bằng chứng protection đã hoạt động. Điểm kết thúc của mỗi bước nên là một policy được viết rõ, một negative test và một tín hiệu quan sát được.
+
+## Các điểm cần quyết định
+
+Trước khi sao chép một snippet, hãy ghi lại các quyết định sau trong design hoặc runbook của project:
+
+| Điểm quyết định | Các lựa chọn thường gặp | Trade-off cần chốt |
+| --- | --- | --- |
+| Credential và session | JWT/OAuth2 bearer, session cookie hoặc kết hợp | Cách truyền qua HTTP/WebSocket, expiry, refresh, revoke, token leakage và CSRF khi dùng cookie |
+| Boundary authorization | Root operation, field resolver, service, repository, database policy hoặc nhiều lớp | Độ chi tiết với chi phí kiểm tra; phải bảo vệ cả đường gọi không đi qua GraphQL |
+| Query budget | Depth/complexity động, persisted/allowlisted operation, page cap, timeout, rate limit | Bảo vệ API mở và client linh hoạt khác nhau; role/tenant có thể có budget khác nhau |
+| Introspection | Mở ở local/dev, hạn chế ở production, allowlist theo tool hoặc environment | Developer experience so với schema reconnaissance; không nhầm exposure policy với access control |
+| Browser credential | Cookie với SameSite/CSRF, bearer header hoặc BFF | Khả năng bị CSRF, CORS credentials, refresh token và behavior của client/browser |
+| Telemetry payload | Raw query/variables để debug, hoặc operation name/hash và field allowlist | Debuggability so với rò rỉ secret/PII; sampling và retention phải có owner |
+| Metric dimensions | Operation/query hash, field nhóm, status/code bucket | Chi tiết điều tra so với cardinality, chi phí lưu trữ và dashboard ổn định |
+| Health semantics | Liveness tối giản, readiness gồm dependency, health riêng cho GraphQL | Tránh restart loop hoặc nhận traffic khi dependency bắt buộc chưa sẵn sàng; không lộ chi tiết nội bộ |
+
+Một quyết định tốt luôn nêu **scope**, **owner**, **failure behavior** và **cách đo**. Ví dụ, “giới hạn query nặng” chưa đủ; cần biết giới hạn theo operation hay principal, trả error code nào, log/metric nào ghi nhận và client nên sửa hay retry.
+
+## Checklist trước production
+
+### Identity và authorization
+
+- [ ] Credential được xác minh ở boundary phù hợp; token hết hạn, sai chữ ký, sai audience hoặc bị thu hồi không được chuyển thành anonymous access ngoài chủ ý.
+- [ ] Principal, tenant và authority được server tạo trong context; không dùng `tenantId`, `userId`, `isAdmin` hoặc permission flag từ variables làm nguồn quyền.
+- [ ] Có policy nhất quán cho HTTP, WebSocket/subscription và các đường gọi khác nếu chúng dùng cùng service.
+- [ ] Authorization được kiểm tra ở operation/field/resource khi cần và được defense in depth ở service/repository/event source.
+- [ ] Lỗi `401`/`403` hoặc GraphQL error không làm lộ resource tồn tại ngoài phạm vi caller; message không chứa stack trace, SQL, token hoặc PII.
+- [ ] Test có ít nhất hai principal/tenant, token thiếu/sai/hết hạn, field nhạy cảm và resource không thuộc quyền.
+
+### Query và resource budget
+
+- [ ] Có giới hạn depth và complexity/cost tính đến nested field, fragment, alias, list size, relation, pagination và field đắt.
+- [ ] `first`/`limit`, số nhánh filter, số phần tử `in`, timeout và rate limit có minimum/maximum cùng error behavior rõ ràng.
+- [ ] Query vượt budget bị từ chối hoặc dừng theo policy trước khi tạo công việc downstream không cần thiết; không âm thầm clamp nếu client không biết.
+- [ ] Authorization/tenant filter được áp dụng trước pagination, count, cursor và query data source.
+- [ ] Có test query sâu, query nhiều alias/fragment, page lớn, N+1, timeout và retry; không coi query parse được là query an toàn.
+- [ ] Nếu dùng persisted/allowlisted operation, cache key và policy có tính đến principal/tenant khi response không public.
+
+### HTTP browser và schema exposure
+
+- [ ] Introspection và công cụ khám phá API có policy theo environment; việc hạn chế schema không được dùng để thay authorization.
+- [ ] CORS dùng allowlist origin cụ thể, kiểm tra credentials/headers/methods và không dùng `*` cùng credential nếu policy không cho phép.
+- [ ] Nếu dùng cookie cho request có side effect, CSRF token/Origin/SameSite policy đã được thiết kế và test; CORS một mình không chống CSRF.
+- [ ] Nếu dùng bearer token, token không nằm trong URL hoặc log; TLS, refresh và redaction được kiểm tra ở mọi transport.
+- [ ] HTTP route, WebSocket route, proxy timeout, Upgrade header và protocol được kiểm tra riêng khi có subscription; `@SubscriptionMapping` không tự bật transport.
+- [ ] Status code, GraphQL `errors`, `data`/partial data và retry behavior đã được tài liệu hóa; client không retry mù mutation sau timeout.
+
+### Telemetry và response safety
+
+- [ ] Log có operation name hoặc query hash, duration, outcome, error code/path và correlation ID đã làm sạch; không log nguyên variables, context, token, cookie hoặc source object.
+- [ ] Trace nối được gateway/interceptor, GraphQL execution, resolver, service và downstream; span attributes có sampling, redaction và cardinality phù hợp.
+- [ ] Metric theo dõi latency, error rate, auth denial, query reject, timeout, active connection/operation, queue/consumer và cleanup; không dùng raw ID/email/query text làm label.
+- [ ] Health/liveness/readiness có semantics rõ, timeout dependency và response không tiết lộ secret hoặc topology nhạy cảm.
+- [ ] Error response dùng code/path ổn định khi client cần hành động; message public không phải nơi chứa stack trace hoặc dữ liệu debug.
+- [ ] Retention và access policy của log/trace/metric phù hợp với dữ liệu principal, tenant và PII mà hệ thống có thể xử lý.
+
+### Verification và vận hành
+
+- [ ] Có contract/integration test cho auth, authorization, depth/complexity, introspection, CORS, CSRF, redaction và error mapping trong backend thật.
+- [ ] Có dashboard và alert cho auth failure spike, forbidden spike, query rejection, latency/error SLO, downstream failure và resource leak.
+- [ ] Có runbook nêu cách lấy correlation ID, query hash, error path, trace và version/configuration mà không yêu cầu log secret.
+- [ ] Rollout có canary/feature flag hoặc ngưỡng rollback khi guardrail từ chối nhầm query hợp lệ; policy production không được chỉ tồn tại trong snippet.
+- [ ] Mọi property, interceptor, exception resolver, WebSocket hook và Actuator endpoint đã được đối chiếu với version Spring Boot/Spring for GraphQL thực tế.
+- [ ] Static docs được phân biệt với bằng chứng runtime: chỉ test backend, proxy và telemetry thật mới xác nhận security/observability đã hoạt động.
 
 ## Bước tiếp theo
 
-Bắt đầu từ bài đầu tiên của nhóm hoặc yêu cầu viết chi tiết một trang cụ thể bằng skill `fumadocs-technical-writer`.
+Chọn nhánh tiếp theo theo khoảng trống hiện tại:
+
+- Nếu cần củng cố operation và response trước khi tính cost, đọc [Query, mutation và subscription](/docs/query-mutation-subscription), [Mutation và input/payload](/docs/query-mutation-subscription/mutation-input-payload) và [Subscription và WebSocket](/docs/query-mutation-subscription/subscription-websocket).
+- Nếu cần đặt principal, tenant hoặc correlation ID vào đúng execution boundary, đọc [Context, interceptor và request lifecycle](/docs/tich-hop-spring-for-graphql/context-interceptor-request-lifecycle) và [DataFetcher và GraphQL context](/docs/tich-hop-spring-for-graphql/datafetcher-va-graphql-context).
+- Nếu đang debug request bị từ chối, đối chiếu [Lỗi authentication/authorization](/docs/xu-ly-su-co/loi-authentication-authorization), [Xử lý lỗi tập trung](/docs/tich-hop-spring-for-graphql/xu-ly-loi-tap-trung) và [Mô hình request/response](/docs/nen-tang/mo-hinh-request-response).
+- Nếu query đã đúng quyền nhưng vẫn chậm, xem [Query chậm và N+1](/docs/xu-ly-su-co/query-cham-va-n-plus-1), [Tuning hiệu năng](/docs/production/tuning-hieu-nang) và [Cache và persisted operation](/docs/production/cache-va-persisted-operation).
+- Nếu cần đưa các tín hiệu vào production, đọc [Monitoring và SLO](/docs/production/monitoring-va-slo), [Scale ngang](/docs/production/scale-ngang) và [Subscription qua WebSocket](/docs/trien-khai/subscription-websocket-deployment).
+
+<Cards>
+  <Card title="Context và request lifecycle" href="/docs/tich-hop-spring-for-graphql/context-interceptor-request-lifecycle" description="Tạo context server-side cho principal, tenant và correlation metadata." />
+  <Card title="Lỗi authentication/authorization" href="/docs/xu-ly-su-co/loi-authentication-authorization" description="Khoanh vùng credential, authority, context và field bị từ chối." />
+  <Card title="Monitoring và SLO" href="/docs/production/monitoring-va-slo" description="Đặt dashboard, SLO và tín hiệu vận hành cho client GraphQL." />
+  <Card title="Cache và persisted operation" href="/docs/production/cache-va-persisted-operation" description="Giảm query tự do và thiết kế cache/allowlist có scope an toàn." />
+</Cards>

@@ -1,23 +1,860 @@
 ---
 title: "Introspection, CORS và CSRF"
-description: "Cấu hình các cơ chế bảo vệ endpoint HTTP và quyết định khi nào cho phép introspection."
+description: "Thiết kế policy introspection và bảo vệ GraphQL HTTP bằng CORS, CSRF trong Spring Boot."
 ---
 
-Trang này sẽ trình bày **Introspection, CORS và CSRF** trong bối cảnh xây dựng GraphQL API với Spring Boot.
+Introspection, CORS và CSRF bảo vệ **ba lớp khác nhau** của một GraphQL API. Introspection kiểm soát việc schema được khám phá đến đâu. CORS kiểm soát việc JavaScript trong trình duyệt có được đọc response cross-origin hay không. CSRF chống việc trình duyệt bị lừa gửi request bằng credential cookie đang có.
+
+<Callout type="info" title="Phạm vi và trạng thái ví dụ">
+Các request, response, YAML, Java và policy trong bài là **minh họa tĩnh**. Repository này là docs-only; không có Spring Security chain, GraphQL HTTP runtime, gateway hoặc WebSocket server để chạy xác minh. Tên callback như `WebGraphQlInterceptor`, `WebMvcConfigurer` và `WebSocketGraphQlInterceptor` cần được đối chiếu với version Spring Boot, web stack và Spring for GraphQL thật. Ví dụ dùng `/graphql` làm path minh họa, không khẳng định ứng dụng đã cấu hình endpoint này.
+</Callout>
 
 ## Mục lục
 
-- [Nội dung dự kiến](#nội-dung-dự-kiến)
-- [Bước tiếp theo](#bước-tiếp-theo)
+- [Bức tranh tổng thể](#bức-tranh-tổng-thể)
+  - [Ba lớp bảo vệ khác nhau](#ba-lớp-bảo-vệ-khác-nhau)
+  - [Luồng quyết định](#luồng-quyết-định)
+- [Introspection và schema exposure](#introspection-và-schema-exposure)
+  - [Introspection query khác query nghiệp vụ](#introspection-query-khác-query-nghiệp-vụ)
+  - [Schema exposure và dev tooling](#schema-exposure-và-dev-tooling)
+  - [Chính sách theo environment principal và operation](#chính-sách-theo-environment-principal-và-operation)
+  - [Persisted và allowlisted operations](#persisted-và-allowlisted-operations)
+- [CORS cho GraphQL HTTP](#cors-cho-graphql-http)
+  - [Origin và same origin policy](#origin-và-same-origin-policy)
+  - [Preflight của request JSON](#preflight-của-request-json)
+  - [Credentials methods headers và expose](#credentials-methods-headers-và-expose)
+  - [CORS không phải authentication](#cors-không-phải-authentication)
+  - [Cấu hình pseudo code trong Spring Boot](#cấu-hình-pseudo-code-trong-spring-boot)
+- [CSRF cho một GraphQL endpoint](#csrf-cho-một-graphql-endpoint)
+  - [Cookie credentials tạo rủi ro gì](#cookie-credentials-tạo-rủi-ro-gì)
+  - [SameSite Origin và token](#samesite-origin-và-token)
+  - [Luồng CSRF token](#luồng-csrf-token)
+  - [Cookie khác bearer header](#cookie-khác-bearer-header)
+  - [Query mutation và content type](#query-mutation-và-content-type)
+- [Request response và error behavior](#request-response-và-error-behavior)
+  - [Request GraphQL có cookie](#request-graphql-có-cookie)
+  - [Preflight và response CORS](#preflight-và-response-cors)
+  - [Response khi policy từ chối](#response-khi-policy-từ-chối)
+  - [Phân biệt 401 403 415 và lỗi GraphQL](#phân-biệt-401-403-415-và-lỗi-graphql)
+- [WebSocket handshake và authentication](#websocket-handshake-và-authentication)
+  - [Origin không phải CORS](#origin-không-phải-cors)
+  - [Handshake và connection init](#handshake-và-connection-init)
+  - [Authorization trong subscription](#authorization-trong-subscription)
+  - [Cookie CSRF và WebSocket](#cookie-csrf-và-websocket)
+- [Proxy gateway và observability](#proxy-gateway-và-observability)
+  - [Một owner cho CORS](#một-owner-cho-cors)
+  - [Forward header và cache](#forward-header-và-cache)
+  - [Logging redaction và metrics](#logging-redaction-và-metrics)
+- [Test cases và checklist](#test-cases-và-checklist)
+  - [Ma trận quyết định theo environment](#ma-trận-quyết-định-theo-environment)
+  - [Test cases bắt buộc](#test-cases-bắt-buộc)
+  - [Lệnh curl minh họa](#lệnh-curl-minh-họa)
+  - [Checklist triển khai](#checklist-triển-khai)
+- [Liên kết liên quan](#liên-kết-liên-quan)
 
-## Nội dung dự kiến
+## Bức tranh tổng thể
 
-Nội dung chi tiết sẽ bao gồm khái niệm chính, ví dụ code và các lưu ý thực hành liên quan đến chủ đề này.
+### Ba lớp bảo vệ khác nhau
 
-<Callout type="info" title="Trang placeholder">
-Đây là trang khung. Hãy dùng skill `fumadocs-technical-writer` để viết đầy đủ trang này trong bước tiếp theo.
-</Callout>
+Hãy bắt đầu bằng cách tách đúng mục tiêu của từng cơ chế:
 
-## Bước tiếp theo
+| Cơ chế | Nó bảo vệ điều gì? | Nó không làm gì? |
+| --- | --- | --- |
+| **Introspection policy** | Quyết định principal hoặc environment nào được đọc metadata schema qua `__schema` và `__type`. | Không thay authentication, authorization theo resource/field/tenant, rate limit hoặc query cost. |
+| **CORS** | Quyết định browser origin nào được phép gửi request cross-origin theo policy và đọc response. | Không xác thực user, không phải network firewall, không chặn `curl` hoặc server-to-server client. |
+| **CSRF** | Chặn request giả mạo dùng credential cookie hoặc credential tự động đính kèm trong browser. | Không cấp quyền cho user, không bảo vệ khỏi XSS, không thay authorization. |
 
-Sau khi trang được điền nội dung, đọc bài kế tiếp trong nhóm để tiếp tục lộ trình.
+Một user có thể không đọc được schema nhưng vẫn gửi một field đã biết. Một origin được CORS cho phép vẫn cần `Authorization` hoặc session hợp lệ. Một request có CSRF token hợp lệ vẫn phải qua authorization cho resource mà principal muốn đọc hoặc sửa.
+
+### Luồng quyết định
+
+Với GraphQL HTTP, có thể hình dung các boundary theo thứ tự sau:
+
+```text
+Browser origin
+    │
+    ├─ preflight CORS: method + headers + origin
+    │
+    ▼
+HTTP route + Content-Type + credential
+    │
+    ├─ authentication: principal là ai?
+    ├─ CSRF: request cookie có được gửi hợp lệ không?
+    │
+    ▼
+Parse GraphQL document
+    │
+    ├─ introspection policy: có được đọc schema không?
+    ├─ query guardrail + authorization: được chạy operation nào?
+    │
+    ▼
+GraphQL execution → resolver/service → response
+```
+
+Không phải deployment nào cũng đặt mọi kiểm tra ở đúng cùng một process. Gateway có thể xử lý CORS và authentication sớm; Spring có thể xử lý CSRF, parse và introspection. Dù owner khác nhau, policy phải nhất quán và được áp dụng lại ở application nếu có đường bypass gateway.
+
+## Introspection và schema exposure
+
+### Introspection query khác query nghiệp vụ
+
+**Introspection query** là operation đọc metadata của schema. Nó có thể hỏi tên type, field, argument, description, directive và trạng thái deprecated. Ví dụ sau không đọc sách hay thay đổi dữ liệu:
+
+```graphql title="Introspection query — minh họa tĩnh"
+query SchemaOverview {
+  __schema {
+    queryType {
+      name
+    }
+    types {
+      name
+    }
+  }
+}
+```
+
+**Query nghiệp vụ** đọc dữ liệu mà schema công khai cho domain, chẳng hạn:
+
+```graphql title="Query nghiệp vụ — minh họa tĩnh"
+query BookList {
+  books {
+    id
+    title
+  }
+}
+```
+
+Cả hai đều có loại operation GraphQL là `query`. Vì vậy, không thể chặn introspection chỉ bằng cách cấm operation type `query`. Cũng không nên tin `operationName`: client tự chọn tên `SchemaOverview`, `BookList` hoặc một tên gây nhầm.
+
+Document có thể trộn hai loại field:
+
+```graphql title="Document trộn introspection và nghiệp vụ — minh họa tĩnh"
+query MixedDocument {
+  books {
+    id
+  }
+  __schema {
+    mutationType {
+      name
+    }
+  }
+}
+```
+
+Policy cần quyết định rõ document trộn như trên là bị từ chối toàn bộ hay được phép theo principal. Baseline dễ kiểm soát là coi mọi operation có `__schema` hoặc `__type` là introspection operation và áp policy introspection cho operation đang được chọn.
+
+Một số chi tiết triển khai cần giữ:
+
+- `__schema` và `__type` là các meta-field phục vụ introspection. Alias, fragment và nhiều selection set không làm thay đổi field thật mà AST đang gọi.
+- `__typename` thường là meta-field dùng trong polymorphism, không phải toàn bộ introspection. Nếu product cần cho phép `__typename`, đừng chặn mù mọi tên bắt đầu bằng `__`; hãy định nghĩa allowlist cụ thể.
+- Với document có nhiều operation, phải parse document và chọn operation bằng `operationName` trước khi đánh giá policy. Nếu không có tên hoặc có nhiều operation không chọn được, fail closed.
+- Không dùng regex trên query text để tìm `__schema`. Regex dễ sai với comment, string, fragment và alias. Hãy inspect AST của GraphQL engine hoặc một parser đã được kiểm soát.
+
+Tắt introspection chỉ làm giảm khả năng **khám phá contract**. Nó không ngăn caller gửi `userProfile`, `adminReport` hoặc một field khác mà caller đã biết tên. Authorization vẫn phải kiểm tra principal, object, field và tenant ở resolver/service. Xem [Authentication với JWT/OAuth2](/docs/bao-mat-va-quan-sat/authentication-jwt-oauth2) và [Authorization theo field và resolver](/docs/bao-mat-va-quan-sat/authorization-field-resolver).
+
+### Schema exposure và dev tooling
+
+Schema exposure không chỉ đến từ một request `__schema`. Hãy review cả các bề mặt sau:
+
+| Bề mặt | Tác động khi mở | Cách kiểm soát |
+| --- | --- | --- |
+| Introspection | Lộ type, field, argument, description và deprecated field. | Policy theo environment, principal và operation; rate limit request khám phá. |
+| GraphiQL hoặc Docs explorer | Người dùng có UI, autocomplete và tài liệu trực tiếp. | Chỉ bật ở local hoặc route có authentication/mạng tin cậy; UI không thay endpoint. |
+| Code generation | Client cần schema để sinh type, hook và validation. | Dùng schema snapshot/SDL từ CI hoặc registry nội bộ nếu production deny introspection. |
+| Schema registry và contract check | Pipeline có thể thấy nhiều chi tiết hơn runtime public. | Phân quyền registry, audit access và tách artifact nội bộ khỏi public docs. |
+| Error và validation message | Field không tồn tại hoặc tên type có thể bị suy đoán qua lỗi. | Message ổn định, tối thiểu; không đưa schema nội bộ vào error. |
+| Observability | Query text hoặc response log có thể chứa schema/data nhạy cảm. | Dùng operation name đã chuẩn hóa, hash và summary; redaction trước khi ghi. |
+
+Tắt introspection có thể làm Docs explorer không có nội dung và làm codegen gọi endpoint thất bại. Đó là trade-off vận hành, không phải lý do để bật công khai không giới hạn. Một pipeline thực tế thường lấy SDL hoặc snapshot từ build đã kiểm tra, rồi để client codegen dùng artifact đó thay vì gọi production.
+
+GraphiQL cũng là một client. `/graphiql` và `/graphql` là hai route khác nhau nếu ứng dụng cấu hình như vậy. Bảo vệ hoặc ẩn route UI không bảo vệ query đã biết trên GraphQL endpoint. Ngược lại, tắt introspection không nhất thiết làm trang UI biến mất; UI có thể vẫn tải nhưng không hoàn tất Docs explorer.
+
+### Chính sách theo environment principal và operation
+
+**Principal** là danh tính đã được authentication kiểm tra, cùng authority hoặc scope mà server tin cậy. **Environment** là profile/vùng chạy như development, staging hoặc production. **Operation** ở đây là operation đã parse và được chọn, không phải tên do client tự đặt.
+
+Pseudo-code policy có thể bắt đầu như sau:
+
+```java title="Introspection policy — pseudo-code minh họa tĩnh"
+Decision decideIntrospection(
+        Environment environment,
+        PrincipalSnapshot principal,
+        ParsedOperation operation) {
+
+    boolean asksForSchema = operation.selects(
+            "__schema", "__type");
+
+    if (!asksForSchema) {
+        return Decision.ALLOW_TO_NEXT_POLICY;
+    }
+
+    if (environment.isDevelopment()
+            && principal.isLocalDeveloper()) {
+        return Decision.ALLOW;
+    }
+
+    if (principal.hasAuthority("schema:read")
+            && principal.isOnTrustedNetwork()) {
+        return Decision.ALLOW;
+    }
+
+    return Decision.DENY_WITH_GENERIC_ERROR;
+}
+```
+
+Đây là logic minh họa, không phải API Spring Security hoặc GraphQL Java đã được đăng ký trong repository. `ParsedOperation` phải được tạo từ AST; `schema:read` là authority do ứng dụng tự định nghĩa. Không dùng `operationName`, IP đơn lẻ hoặc một header do client tự gửi làm bằng chứng quyền.
+
+Có ba hướng policy thường gặp:
+
+1. **Mở có điều kiện:** Cho phép local developer hoặc principal nội bộ đã xác thực. Đây là lựa chọn thuận tiện cho GraphiQL, codegen và debug staging.
+2. **Filtered/curated schema:** Public client nhận tài liệu hoặc schema đã chọn lọc; schema runtime đầy đủ chỉ dành cho tool nội bộ. Cách này cần pipeline duy trì hai contract và tránh làm client hiểu nhầm schema công khai là executable schema đầy đủ.
+3. **Từ chối public:** Production từ chối `__schema` và `__type` với caller không đủ authority. Client public dùng tài liệu, schema snapshot hoặc persisted operation đã phát hành.
+
+Không có quy tắc “production luôn phải tắt” hoặc “introspection luôn an toàn”. Nếu API cố ý công khai schema, vẫn cần authorization, query cost, rate limit, error hygiene và quan sát. Nếu tắt, hãy kiểm tra trước tác động lên IDE, codegen, schema diff, support và incident response.
+
+### Persisted và allowlisted operations
+
+**Persisted operation** là operation được đăng ký trước bằng ID hoặc hash. **Allowlist** là danh sách operation mà server chấp nhận, thường gồm tên, hash, document đã review và policy variable. Hai cơ chế này giảm khả năng caller gửi document tùy ý, nhưng không thay authentication, authorization, CORS hoặc CSRF.
+
+Payload dưới đây chỉ minh họa một contract kiểu persisted query; cấu trúc `extensions` không phải chuẩn bắt buộc của mọi server:
+
+```json title="Persisted operation request — minh họa tĩnh"
+{
+  "operationName": "BookList",
+  "variables": {
+    "limit": 20
+  },
+  "extensions": {
+    "persistedQuery": {
+      "version": 1,
+      "sha256Hash": "hash-example"
+    }
+  }
+}
+```
+
+Một policy strict thường làm như sau:
+
+- Tra hash trong allowlist theo environment và schema version.
+- Kiểm tra operation đó có phải introspection hay có fragment dẫn tới `__schema`/`__type` không.
+- Áp authentication, authorization theo principal/tenant và giới hạn variables sau khi lookup thành công.
+- Không tự động nhận full query tùy ý khi hash miss nếu mục tiêu là allowlist. Nếu có chế độ đăng ký hash, chỉ pipeline hoặc principal đăng ký tin cậy được dùng chế độ đó.
+- Giữ schema snapshot cho codegen và review. Không bắt client production khám phá schema bằng cách gửi introspection mỗi lần build.
+
+Hash là định danh của document, không phải quyền. Cùng một hash có thể được gửi bởi nhiều principal có quyền khác nhau; service vẫn phải lọc dữ liệu theo caller. Một persisted mutation có thể được retry sai và tạo side effect; idempotency vẫn là trách nhiệm nghiệp vụ.
+
+## CORS cho GraphQL HTTP
+
+### Origin và same origin policy
+
+**Origin** của browser gồm scheme, host và port. Ví dụ `https://app.example.com` và `https://api.example.com` là hai origin khác nhau dù có thể cùng thuộc một site. Path `/graphql` không nằm trong origin.
+
+Browser áp dụng same-origin policy và không cho JavaScript đọc response cross-origin nếu server không trả header CORS phù hợp. CORS là cơ chế browser đọc header, không phải ACL mạng. Server vẫn có thể nhận request từ client không phải browser.
+
+Trusted origin nên được so khớp chính xác:
+
+```text
+Được phép:  https://app.example.com
+Từ chối:   https://app.example.com.evil.example
+Từ chối:   http://app.example.com
+Từ chối:   https://app.example.com:8443   nếu port này không nằm trong allowlist
+```
+
+Không dùng `*` khi request có credentials. Không phản chiếu mù giá trị `Origin` do client gửi vào `Access-Control-Allow-Origin`. Nếu cần nhiều origin, lấy từ allowlist cấu hình và trả đúng origin đã match. Quyết định cho origin `null` cũng phải rõ; thường nên từ chối hoặc chỉ cho phép trong một môi trường test riêng.
+
+CORS không làm hai origin thành same-origin. Nó chỉ cho phép một số request và response đi qua lớp kiểm soát của browser. Cookie `SameSite`, authentication và CORS dùng các khái niệm khác nhau; đừng dùng một khái niệm thay cho khái niệm còn lại.
+
+### Preflight của request JSON
+
+Browser gửi **preflight** bằng `OPTIONS` trước actual request khi request cross-origin không phải simple request. GraphQL HTTP thường dùng `Content-Type: application/json`, vốn không nằm trong nhóm content type safelisted của simple request. `Authorization` và `X-CSRF-Token` cũng là các header thường làm phát sinh preflight.
+
+Một preflight có thể là:
+
+```http
+OPTIONS /graphql HTTP/1.1
+Host: api.example.com
+Origin: https://app.example.com
+Access-Control-Request-Method: POST
+Access-Control-Request-Headers: authorization, content-type, x-csrf-token
+```
+
+Server hoặc gateway phải trả lời dựa trên allowlist:
+
+```http
+HTTP/1.1 204 No Content
+Access-Control-Allow-Origin: https://app.example.com
+Access-Control-Allow-Credentials: true
+Access-Control-Allow-Methods: POST, OPTIONS
+Access-Control-Allow-Headers: Authorization, Content-Type, X-CSRF-Token
+Access-Control-Max-Age: 600
+Vary: Origin, Access-Control-Request-Method, Access-Control-Request-Headers
+```
+
+Preflight chỉ nói “origin này được dùng method và header này”. Nó không cấp quyền đọc dữ liệu và cũng không thay actual request authentication. Không nên đòi bearer token của user trên preflight như thể đó là request nghiệp vụ; browser thường không gửi credential nghiệp vụ trong bước này. Hãy kiểm tra origin, method và headers ở CORS layer, rồi kiểm tra auth/CSRF trên actual request.
+
+### Credentials methods headers và expose
+
+Bốn nhóm CORS cần được thiết kế cùng nhau:
+
+| Nhóm | Câu hỏi cần trả lời | Khuyến nghị |
+| --- | --- | --- |
+| **Credentials** | Browser có gửi/đọc cookie hoặc response credentialed không? | Chỉ bật khi cần. Nếu bật, dùng origin cụ thể và `Access-Control-Allow-Credentials: true`, không dùng `*`. |
+| **Methods** | GraphQL endpoint nhận method nào? | Chỉ cho `POST` và `OPTIONS` nếu đó là contract. Chỉ thêm `GET` cho query read-only đã review; không cho mutation qua `GET`. |
+| **Headers** | Client cần gửi header nào? | Allowlist `Content-Type`, `Authorization`, `X-CSRF-Token` và `X-Request-Id` chỉ khi thật sự dùng. |
+| **Expose** | JavaScript cần đọc response header nào? | Chỉ expose `X-Request-Id` hoặc `Retry-After` nếu client cần. Response body JSON không cần `Expose` để đọc khi CORS đã pass. |
+
+Frontend cross-origin dùng cookie thường cần `credentials: "include"`:
+
+```javascript title="Fetch GraphQL — pseudo-code minh họa tĩnh"
+fetch("https://api.example.com/graphql", {
+  method: "POST",
+  credentials: "include",
+  headers: {
+    "Content-Type": "application/json",
+    "X-CSRF-Token": csrfToken
+  },
+  body: JSON.stringify({
+    operationName: "UpdateProfile",
+    query: "mutation UpdateProfile($input: ProfileInput!) { updateProfile(input: $input) { id } }",
+    variables: { input: { displayName: "An" } }
+  })
+});
+```
+
+`credentials: "include"` không tự tạo session, không bypass SameSite và không chứng minh user có quyền. Cookie còn phải phù hợp domain, `Secure`, `SameSite` và policy của browser. Nếu dùng bearer header thay cookie, CORS vẫn cần cho phép origin/header để browser gửi và đọc response, nhưng CSRF model sẽ khác ở phần sau.
+
+Không allow mọi method/header chỉ để làm preflight “dễ chạy”. Allowlist nhỏ giúp phát hiện client đang gửi credential hoặc header ngoài contract. `Access-Control-Allow-Headers: *` cũng không nên dùng như wildcard tiện lợi trong flow credentialed; trả danh sách cụ thể.
+
+### CORS không phải authentication
+
+Ba tình huống sau thường bị nhầm:
+
+1. **Origin được allow nhưng token sai:** Browser có thể đọc response lỗi, nhưng server vẫn phải trả `401` hoặc lỗi auth theo policy.
+2. **Origin không được allow nhưng credential đúng:** Server có thể vẫn nhận request; browser chỉ chặn JavaScript đọc response. Không dùng CORS để suy ra request chưa tới server.
+3. **`curl`, Postman hoặc service nội bộ:** Các client này không bị same-origin policy. CORS không chặn chúng. Hãy dùng authentication, authorization, network policy, mTLS hoặc gateway ACL cho caller không phải browser.
+
+Nếu một server trả CORS header dựa trên bất kỳ `Origin` nào mà không xác thực allowlist, attacker có thể chạy JavaScript từ origin của họ và đọc response nếu credential được gửi. CORS đúng vẫn không thay thế kiểm tra bearer token/session hoặc authorization field.
+
+### Cấu hình pseudo code trong Spring Boot
+
+Cấu hình endpoint HTTP phải dùng property đúng version:
+
+```yaml title="GraphQL HTTP path — minh họa tĩnh"
+spring:
+  graphql:
+    http:
+      path: /graphql # Spring Boot 3.5+
+
+# Spring Boot <= 3.4 dùng key sau thay cho block ở trên:
+# spring:
+#   graphql:
+#     path: /graphql
+```
+
+Không cấu hình đồng thời `spring.graphql.http.path` và `spring.graphql.path` cho cùng project. `/graphql` chỉ là ví dụ; context path và public prefix của proxy có thể làm URL thực tế khác.
+
+Với Spring MVC, một cấu hình CORS có thể có hình dạng sau:
+
+```java title="CORS config — pseudo-code minh họa tĩnh"
+@Configuration
+class GraphQlCorsPseudoConfig implements WebMvcConfigurer {
+
+    @Override
+    public void addCorsMappings(CorsRegistry registry) {
+        registry.addMapping("/graphql") // thay bằng HTTP path thật
+                .allowedOrigins("https://app.example.com")
+                .allowedMethods("POST", "OPTIONS")
+                .allowedHeaders(
+                        "Content-Type",
+                        "Authorization",
+                        "X-CSRF-Token",
+                        "X-Request-Id")
+                .exposedHeaders("X-Request-Id", "Retry-After")
+                .allowCredentials(true)
+                .maxAge(600);
+    }
+}
+```
+
+Đoạn Java trên chỉ mô tả shape cấu hình. Origin production nên được externalize theo profile hoặc secret/config management, không hard-code một danh sách local vào mọi môi trường. WebFlux, Spring Security và gateway có boundary CORS khác; hãy chọn một owner rõ ràng và kiểm tra thứ tự filter. Nếu security chain được dùng, preflight phải đi qua CORS handling trước khi bị CSRF hoặc authentication của request nghiệp vụ từ chối. Repository này không khẳng định chain đó đã tồn tại hoặc đã được đăng ký.
+
+## CSRF cho một GraphQL endpoint
+
+### Cookie credentials tạo rủi ro gì
+
+**CSRF** xảy ra khi attacker khiến browser của nạn nhân gửi request đến server mà browser tự đính kèm credential, thường là session cookie. Attacker không nhất thiết đọc được response; chỉ cần request tạo side effect là đủ.
+
+Ví dụ user đã đăng nhập tại `https://api.example.com`. Nếu API nhận mutation bằng `POST /graphql` và chỉ dựa vào cookie session, một trang độc hại có thể cố làm browser gửi request thay đổi dữ liệu. GraphQL dùng một endpoint nên không thể bảo vệ mutation chỉ bằng cách chặn một URL `/mutations`; server phải bảo vệ endpoint và policy theo nội dung request.
+
+Chỉ kiểm tra HTTP method cũng chưa đủ. Cả query và mutation đều có thể đi qua `POST /graphql`. Nếu implementation cho phép query resolver tạo side effect trái với contract, việc miễn CSRF cho mọi operation có loại `query` còn nguy hiểm hơn. Baseline đơn giản là yêu cầu CSRF token cho **mọi request POST có cookie credential**, kể cả query.
+
+CORS không giải quyết trường hợp này. CORS có thể ngăn attacker đọc response, nhưng không phải mọi kiểu request đều cần quyền đọc response để gây side effect. `Content-Type: application/json` làm các form đơn giản khó gửi đúng body, nhưng không nên dùng content type làm lớp CSRF duy nhất. Hãy kiểm tra token và origin độc lập.
+
+### SameSite Origin và token
+
+Ba tín hiệu bổ sung cho nhau:
+
+- **SameSite cookie:** `Strict` hoặc `Lax` có thể giảm cookie được gửi trong ngữ cảnh cross-site. `SameSite=None` cần `Secure` và thường dành cho trường hợp cross-site có chủ đích. Same-site không đồng nghĩa same-origin; hai subdomain có thể cùng site nhưng vẫn khác origin.
+- **Origin hoặc Referer check:** Với request state-changing, so sánh `Origin` với allowlist exact. Nếu policy dùng `Referer` làm fallback, phải kiểm tra URL và cách xử lý header thiếu. Không tin `Origin` như danh tính; nó chỉ là tín hiệu nguồn browser.
+- **CSRF token:** Token phải gắn với session hoặc được ký/bind đúng context. Server so sánh token trong header với token synchronizer lưu server-side hoặc cookie double-submit theo thiết kế đã review.
+
+Session cookie nên dùng `Secure` và `HttpOnly` khi phù hợp. CSRF token không nhất thiết có cùng thuộc tính với session cookie: synchronizer token có thể được đưa qua HTML/bootstrap hoặc endpoint token; double-submit cookie cần cơ chế client đọc để copy sang header. Không đặt token trong URL vì URL có thể đi vào history, proxy log hoặc referrer.
+
+### Luồng CSRF token
+
+Một flow synchronizer token có thể là:
+
+1. Server tạo session và token ngẫu nhiên gắn với session. Cách phát token có thể là HTML bootstrap hoặc endpoint token riêng; tên route chỉ là contract minh họa, không phải endpoint Spring mặc định.
+2. Browser giữ token trong memory hoặc nơi phù hợp với threat model. Session cookie vẫn do browser quản lý.
+3. Mỗi `POST /graphql` gửi `Content-Type: application/json` và header `X-CSRF-Token`.
+4. CORS layer chỉ cho phép trusted origin và header đã allowlist. CSRF layer kiểm tra origin, session và token trước GraphQL execution.
+5. Nếu token thiếu, sai hoặc session không khớp, server trả lỗi generic và không gọi resolver.
+6. Khi logout, rotate session hoặc phát hiện reuse, server vô hiệu hóa token theo policy.
+
+Request phía browser có thể có shape sau:
+
+```http
+POST /graphql HTTP/1.1
+Host: api.example.com
+Origin: https://app.example.com
+Content-Type: application/json
+Accept: application/json
+Cookie: SESSION=<session-cookie>
+X-CSRF-Token: <csrf-token>
+
+{"operationName":"UpdateProfile","query":"mutation UpdateProfile($input: ProfileInput!) { updateProfile(input: $input) { id } }","variables":{"input":{"displayName":"An"}}}
+```
+
+Pseudo-code interceptor minh họa boundary trước execution:
+
+```java title="CSRF interceptor — pseudo-code minh họa tĩnh"
+final class GraphQlCsrfPseudoInterceptor
+        implements WebGraphQlInterceptor {
+
+    private final OriginPolicy originPolicy;
+    private final CsrfVerifier csrfVerifier;
+
+    @Override
+    public Mono<WebGraphQlResponse> intercept(
+            WebGraphQlRequest request,
+            Chain chain) {
+
+        // Preflight OPTIONS thường được xử lý ở CORS layer trước đây.
+        if (request.isPreflight()) {
+            return chain.next(request);
+        }
+
+        if (request.hasCookieCredential("SESSION")) {
+            originPolicy.requireExact(
+                    request.header("Origin"));
+            csrfVerifier.requireValid(
+                    request.cookie("SESSION"),
+                    request.header("X-CSRF-Token"));
+        }
+
+        return chain.next(request);
+    }
+}
+```
+
+`isPreflight`, `hasCookieCredential`, `header` và `cookie` trong đoạn trên là tên pseudo-code để làm rõ ý tưởng; không phải API đã kiểm chứng. Khi dùng Spring Security, có thể giao việc CSRF cho security filter/token repository phù hợp thay vì tự viết interceptor. Dù chọn boundary nào, kiểm tra phải xảy ra trước resolver và không được ghi token vào log.
+
+Double-submit token có thể dùng một cookie CSRF không `HttpOnly` và yêu cầu client copy giá trị sang header. Cookie/header phải so sánh an toàn; token nên được bind hoặc ký với session để chống cookie injection. Không chọn double-submit chỉ vì nó ngắn hơn mà bỏ qua mô hình domain, subdomain và proxy.
+
+### Cookie khác bearer header
+
+Bearer token trong `Authorization` header thường **giảm** rủi ro CSRF kiểu ambient cookie vì browser không tự thêm header tùy ý vào form cross-site. Tuy nhiên, đây không phải miễn trừ cho mọi security policy:
+
+| Cách giữ credential | CSRF model | Việc cần làm |
+| --- | --- | --- |
+| Session cookie | Browser tự gửi cookie theo cookie policy. | Origin/SameSite, CSRF token cho request cookie và authorization. |
+| Bearer trong `Authorization` header do app gắn | Attacker cross-site thường không biết token và không tự gắn custom header bằng form. | CORS exact, TLS, authentication, authorization; bảo vệ token khỏi XSS và không log token. |
+| Bearer được lưu trong cookie | Vẫn là ambient cookie credential. | Xử lý như cookie auth: CSRF token và Origin/SameSite. |
+| Session cookie cho refresh/logout, bearer cho GraphQL | Endpoint cookie vẫn có CSRF risk dù GraphQL request dùng bearer. | Bảo vệ cả refresh/logout/bootstrap theo policy, không chỉ `/graphql`. |
+
+CORS vẫn cần cho browser dùng bearer header. CORS không ngăn token bị đánh cắp bởi XSS hoặc được dùng bởi client server-side. Nếu ứng dụng cho phép trusted origin bị compromise, origin allowlist cũng không cứu được token đã lộ.
+
+### Query mutation và content type
+
+Vì một URL phục vụ nhiều loại operation, policy HTTP nên rõ:
+
+- Chỉ nhận `POST` với `Content-Type: application/json` nếu đó là contract đã chọn. Từ chối `text/plain`, `application/x-www-form-urlencoded` và content type khác nếu không có parser/policy tương ứng.
+- Yêu cầu CSRF token cho mọi POST credentialed là lựa chọn dễ audit nhất. Nếu muốn miễn query read-only, phải parse operation và fragments, xác định operation được chọn, rồi chứng minh resolver read-only; đây là policy khó hơn và dễ lỗi.
+- Nếu hỗ trợ `GET`, chỉ cho query không side effect theo contract. Không cho mutation qua `GET`, kể cả khi client gửi `operationName` nói rằng đó là query.
+- Upload multipart hoặc transport khác cần CORS/CSRF policy riêng. Không mặc định rằng quy tắc JSON bảo vệ được multipart parser.
+- CSRF token là transport metadata. Không đặt token trong `variables` hoặc query document vì các giá trị đó dễ đi vào log, cache và tracing.
+
+CSRF chỉ chứng minh request đến từ flow browser đã có token phù hợp. Nó không chứng minh principal được sửa profile của tenant nào. Service vẫn phải kiểm tra authorization sau khi CSRF pass.
+
+## Request response và error behavior
+
+### Request GraphQL có cookie
+
+Một request mutation đầy đủ có thể có dạng:
+
+```http
+POST /graphql HTTP/1.1
+Host: api.example.com
+Origin: https://app.example.com
+Content-Type: application/json
+Accept: application/json
+Cookie: SESSION=<redacted-session-cookie>
+X-CSRF-Token: <redacted-csrf-token>
+X-Request-Id: req-example-123
+
+{
+  "operationName": "UpdateProfile",
+  "query": "mutation UpdateProfile($input: ProfileInput!) { updateProfile(input: $input) { id displayName } }",
+  "variables": {
+    "input": {
+      "displayName": "An"
+    }
+  }
+}
+```
+
+Các thành phần thuộc các lớp khác nhau:
+
+- `Origin` phục vụ browser CORS và Origin policy.
+- `Cookie` mang session credential; nó không tự cấp authority.
+- `X-CSRF-Token` chứng minh request cookie đi qua flow token đã chọn.
+- `Authorization` nếu có là header authentication riêng; không đặt trong JSON body.
+- `query`, `variables` và `operationName` là GraphQL envelope. `operationName` vẫn là input do client gửi và không tự tạo quyền.
+
+Một response thành công minh họa có thể là:
+
+```http
+HTTP/1.1 200 OK
+Content-Type: application/json
+Access-Control-Allow-Origin: https://app.example.com
+Access-Control-Allow-Credentials: true
+Access-Control-Expose-Headers: X-Request-Id
+Vary: Origin
+X-Request-Id: req-example-123
+
+{"data":{"updateProfile":{"id":"user-1","displayName":"An"}}}
+```
+
+`200` chỉ là ví dụ mapping. Client vẫn phải đọc `data` và `errors` theo contract GraphQL. Header CORS không thay authentication; nó chỉ giúp browser xử lý response theo origin policy.
+
+### Preflight và response CORS
+
+Một browser client có thể tạo preflight như sau:
+
+```http
+OPTIONS /graphql HTTP/1.1
+Host: api.example.com
+Origin: https://app.example.com
+Access-Control-Request-Method: POST
+Access-Control-Request-Headers: content-type, x-csrf-token
+```
+
+Response hợp lệ cho allowlist có thể là:
+
+```http
+HTTP/1.1 204 No Content
+Access-Control-Allow-Origin: https://app.example.com
+Access-Control-Allow-Credentials: true
+Access-Control-Allow-Methods: POST, OPTIONS
+Access-Control-Allow-Headers: Content-Type, X-CSRF-Token
+Access-Control-Max-Age: 600
+Vary: Origin, Access-Control-Request-Method, Access-Control-Request-Headers
+```
+
+Nếu origin hoặc header không hợp lệ, server có thể trả `403`, `400` hoặc response không có CORS header tùy owner. Browser sẽ báo lỗi CORS và không cho JavaScript đọc actual response. Đó không phải bằng chứng rằng request nghiệp vụ đã chạy; với preflight bị từ chối, browser thường không gửi actual request.
+
+`Access-Control-Expose-Headers` chỉ cần cho header response không nằm trong nhóm browser cho phép đọc mặc định. Không expose `Set-Cookie`, token, stack trace hoặc header nội bộ. Nếu response được cache ở proxy, `Vary: Origin` và cache key phù hợp là bắt buộc để response của origin A không bị dùng nhầm cho origin B.
+
+### Response khi policy từ chối
+
+Mỗi boundary có thể từ chối với status khác nhau. API nên thống nhất code/message an toàn nhưng không nên giả định mọi server hoặc gateway dùng cùng mapping:
+
+| Tình huống | Resolver đã chạy? | Response nên thể hiện |
+| --- | --- | --- |
+| Origin không allow hoặc preflight sai | Không | Không có CORS header phù hợp; có thể là `403`, `400` hoặc `204` không cho actual. Không leak policy chi tiết cho origin lạ. |
+| Content type không hỗ trợ | Không | `415 Unsupported Media Type`, không parse body như GraphQL. |
+| CSRF thiếu/sai token hoặc Origin sai | Không | `403` với body generic; có thể là JSON GraphQL `errors` hoặc JSON transport tùy boundary. |
+| Không có credential hoặc credential invalid | Không hoặc chưa vào execution | `401` theo auth policy. Không trả stack trace/token detail. |
+| Principal có nhưng không đủ quyền | Có thể bị chặn trước resolver hoặc trong resolver/service | `403` hoặc GraphQL error `FORBIDDEN` theo contract. Không tiết lộ resource ngoài quyền. |
+| Introspection bị cấm | Không thực thi operation đó | `403` hoặc GraphQL error code như `INTROSPECTION_NOT_ALLOWED`; không nói type/field nội bộ. |
+| GraphQL parse/validation fail | Chưa gọi resolver của field sai | Top-level `errors`, thường không có `data`; status tùy implementation. |
+| Resolver/service lỗi | Có thể đã chạy | `data` một phần và `errors.path`, hoặc lỗi toàn root theo nullability. HTTP có thể vẫn là `200`. |
+
+Không biến lỗi CORS thành “authentication failed” trong log nếu server chưa nhận actual request. Cũng không trả khác biệt quá tinh vi giữa “field không tồn tại” và “introspection bị cấm” nếu khác biệt đó giúp caller dò schema.
+
+### Phân biệt 401 403 415 và lỗi GraphQL
+
+Bốn tín hiệu cần được đọc cùng nhau:
+
+- `401` thường nói request chưa chứng minh được danh tính. Client có thể cần đăng nhập hoặc refresh credential theo policy.
+- `403` thường nói policy đã từ chối request đã biết hoặc principal không có quyền. CSRF sai và introspection bị cấm cũng có thể dùng `403`, nhưng code nội bộ nên phân biệt để quan sát.
+- `415` nói content type không nằm trong contract HTTP. Đây là transport error, chưa phải validation của query.
+- HTTP `200` cùng `errors` nói GraphQL đã tạo execution result có lỗi. Nó không đồng nghĩa operation thành công hoàn toàn.
+
+Code như `CSRF_REJECTED`, `INTROSPECTION_NOT_ALLOWED`, `UNAUTHENTICATED` và `FORBIDDEN` là vocabulary minh họa của API. GraphQL không bắt buộc những code này. Message gửi client nên generic và ổn định; chi tiết nguyên nhân, stack trace, SQL, cookie, token và schema nội bộ chỉ nằm trong log/trace có kiểm soát.
+
+## WebSocket handshake và authentication
+
+### Origin không phải CORS
+
+CORS headers của HTTP không bảo vệ WebSocket handshake. Browser WebSocket không dùng `Access-Control-Allow-Origin` như một HTTP fetch. Tuy vậy, browser thường gửi `Origin` trong Upgrade request; server hoặc proxy phải kiểm tra `Origin` bằng allowlist exact trước khi chấp nhận connection.
+
+WebSocket handshake là một ranh giới riêng:
+
+```http
+GET /graphql-ws HTTP/1.1
+Host: api.example.com
+Upgrade: websocket
+Connection: Upgrade
+Sec-WebSocket-Version: 13
+Sec-WebSocket-Key: <random-key>
+Sec-WebSocket-Protocol: graphql-transport-ws
+Origin: https://app.example.com
+Cookie: SESSION=<redacted-session-cookie>
+```
+
+Không suy ra WebSocket path từ `spring.graphql.http.path` hoặc từ việc schema có `Subscription`. `/graphql-ws` chỉ là path minh họa; dependency, web stack, mapping và path phải được kiểm tra theo version. `@SubscriptionMapping` cũng không tự bật transport.
+
+### Handshake và connection init
+
+`101 Switching Protocols` chỉ chứng minh HTTP Upgrade đã thành công. Nó chưa chứng minh authentication, authorization hoặc schema access. Với protocol hiện đại `graphql-transport-ws`, flow có thể là:
+
+```json title="connection_init — minh họa tĩnh"
+{
+  "type": "connection_init",
+  "payload": {
+    "authorization": "Bearer <redacted-token>"
+  }
+}
+```
+
+```json title="connection_ack — minh họa tĩnh"
+{
+  "type": "connection_ack"
+}
+```
+
+Server chỉ nên gửi `connection_ack` sau khi kiểm tra credential và policy Origin. Với browser, custom `Authorization` header lúc Upgrade không phải lúc nào cũng tiện; gửi credential trong `connection_init.payload` là một contract thường gặp. Không đặt token trong query string của WebSocket URL vì URL dễ xuất hiện trong log, history và proxy telemetry.
+
+Connection có thể mang nhiều operation. Mỗi message `subscribe` vẫn cần parse, validation, authorization và context phù hợp. Token ở connection init không nên được coi là giấy phép vĩnh viễn: xử lý expiry, revocation, timeout init và cleanup theo policy. `WebSocketGraphQlInterceptor` hoặc interceptor authentication cụ thể là capability phụ thuộc version; repository này không khẳng định bean đã được đăng ký.
+
+### Authorization trong subscription
+
+Subscription thường là read stream, nhưng nó vẫn cần authorization. Kiểm tra ít nhất ở:
+
+1. **Lúc subscribe:** principal có được dùng field, argument và selection nhạy cảm không? `tenantId` do client gửi chỉ là input, không phải authority.
+2. **Lúc phát event:** record hiện tại còn thuộc tenant và scope của principal không? Membership có thể bị thu hồi trong lúc socket vẫn sống.
+3. **Lúc credential thay đổi:** token hết hạn hoặc bị revoke phải làm operation bị hủy hoặc connection bị đóng theo mức độ rủi ro.
+
+Một message subscribe minh họa:
+
+```json title="subscribe — minh họa tĩnh"
+{
+  "id": "sub-42",
+  "type": "subscribe",
+  "payload": {
+    "operationName": "OnBookAdded",
+    "query": "subscription OnBookAdded($tenantId: ID!) { bookAdded(tenantId: $tenantId) { id title } }",
+    "variables": {
+      "tenantId": "tenant-7"
+    }
+  }
+}
+```
+
+`sub-42` là protocol operation ID; `OnBookAdded` là operation name; `tenant-7` là input cần kiểm tra. Không giá trị nào trong ba giá trị này tự cấp quyền. Hãy đọc [Subscription và WebSocket](/docs/query-mutation-subscription/subscription-websocket) để phân biệt handshake, `subscribe`, `next`, `error`, `complete` và cleanup.
+
+### Cookie CSRF và WebSocket
+
+Nếu WebSocket handshake dùng cookie, browser có thể tự gửi cookie theo cookie policy. Vì vậy, Origin check exact và session authentication vẫn cần thiết. CORS header không ngăn cross-site WebSocket connect.
+
+CSRF token của HTTP không tự xuất hiện trong Upgrade request. Nếu threat model và protocol cần token ràng buộc connection, thiết kế cơ chế riêng như token trong `connection_init`, token handshake hoặc session binding. Không tự coi `connection_init` là an toàn chỉ vì nó đến sau `101`.
+
+Nếu WebSocket cho phép query hoặc mutation bên cạnh subscription, áp dụng authorization và policy side effect cho từng operation. Không gọi transport WebSocket là “CSRF-free” theo mặc định. Với subscription chỉ đọc, mục tiêu chính vẫn là ngăn origin không tin cậy mở connection bằng cookie và nhận event ngoài quyền.
+
+## Proxy gateway và observability
+
+### Một owner cho CORS
+
+Chọn một nơi làm source of truth cho CORS:
+
+- Nếu gateway xử lý preflight và thêm CORS header, application phải biết cùng allowlist và vẫn bảo vệ actual request. Direct route hoặc internal bypass không được trở thành đường mở.
+- Nếu application xử lý CORS, gateway phải chuyển tiếp `Origin`, preflight header và response header mà không ghi đè bằng wildcard.
+- Không để gateway và app cùng thêm hai giá trị `Access-Control-Allow-Origin`. Header trùng hoặc khác nhau có thể làm browser từ chối response.
+- Configuration theo environment phải được review cùng route public. Local origin không được vô tình đi vào production.
+
+CORS chỉ là browser policy. Gateway vẫn cần TLS termination đúng, authentication, authorization/ACL, rate limit, body size limit và audit cho caller không phải browser. Đọc [Reverse proxy và gateway](/docs/trien-khai/reverse-proxy-va-gateway) khi đặt GraphQL sau hạ tầng biên.
+
+### Forward header và cache
+
+Proxy/gateway cần kiểm tra tối thiểu:
+
+- Forward `Origin`, `Access-Control-Request-Method` và `Access-Control-Request-Headers` tới owner CORS.
+- Forward `Authorization`, `Cookie`, `X-CSRF-Token` và `Content-Type` theo contract. Không log hoặc tự thêm credential.
+- Giữ `Vary: Origin` và các preflight vary header khi response được cache.
+- Không cache response credentialed theo URL đơn thuần. GraphQL một endpoint có thể trả data khác nhau theo principal, cookie, header và variables.
+- Không tin mù `X-Forwarded-Host`, `X-Forwarded-Proto` hoặc `X-Forwarded-Origin` do client tự gửi. Chỉ dùng forwarded header từ proxy nằm trong trusted proxy configuration.
+- Route `OPTIONS` tới handler CORS đúng. Đừng để authentication của actual request làm preflight fail ngoài ý muốn.
+- Nếu gateway inspect body để deny introspection, vẫn enforce ở application vì direct/internal route, config drift hoặc parser khác có thể bypass edge.
+- Với WebSocket, forward `Upgrade`, `Connection`, `Sec-WebSocket-Protocol` và `Origin`; đặt timeout, frame limit và drain policy phù hợp.
+
+`Access-Control-Allow-Origin` không phải header để gateway “tin” từ client. Gateway phải tự chọn giá trị từ allowlist. Server-to-server client không cần CORS; hãy dùng credential và network policy dành cho machine caller thay vì mở origin wildcard.
+
+### Logging redaction và metrics
+
+Vì mọi operation dùng chung `/graphql`, log chỉ route và status không đủ. Có thể ghi các trường đã chuẩn hóa sau:
+
+| Sự kiện | Nên ghi | Không ghi |
+| --- | --- | --- |
+| Introspection | Environment, operation kind, query hash, `hasIntrospection`, allow/deny, authority class, request ID. | Toàn bộ SDL, token, variables hoặc query text nhạy cảm. |
+| CORS/preflight | Origin đã normalize, method, danh sách requested headers đã normalize, outcome, request ID. | Cookie, bearer token, CSRF token. |
+| CSRF | Auth scheme, origin decision, token present/match dưới dạng boolean, outcome, request ID. | Giá trị token, session cookie hoặc raw Referer có query secret. |
+| Authentication/authorization | Principal opaque hoặc hash, authority class, outcome, operation hash. | Access token, claim nguyên bản, PII không cần thiết. |
+| WebSocket | Origin decision, subprotocol, connection generation, auth outcome, active operation count. | Nguyên `connection_init.payload`, URL có token, event nhạy cảm. |
+
+`operationName` là input do client gửi và có thể có cardinality cao. Normalize tên, dùng query hash hoặc allowlist tên trước khi đưa vào metric label. Query hash giúp gom traffic nhưng không phải authorization. Correlation ID nên là ID opaque; validate ID do client gửi hoặc tạo ID mới ở server.
+
+Một log event an toàn hơn có thể là:
+
+```json title="Security policy log — minh họa tĩnh"
+{
+  "requestId": "req-example-123",
+  "operationName": "UpdateProfile",
+  "queryHash": "hash-example",
+  "operationKind": "mutation",
+  "hasIntrospection": false,
+  "originDecision": "allowed",
+  "csrfDecision": "valid",
+  "authOutcome": "authenticated",
+  "httpStatus": 200,
+  "resolverInvoked": true
+}
+```
+
+Metric nên theo dõi ít nhất `introspection_allowed_total`, `introspection_denied_total`, preflight allowed/denied, CSRF rejection theo nhóm nguyên nhân, authentication failure, authorization denial, GraphQL error và WebSocket handshake failure. Giới hạn cardinality của labels và sampling trace; không đưa user ID, tenant ID raw, resource ID hoặc full query vào metric.
+
+Đếm request introspection bị từ chối giúp phát hiện tool bị cấu hình sai hoặc hành vi dò schema. Đếm CSRF failure giúp phát hiện frontend thiếu token, nhưng không nên coi mọi failure là tấn công; phân loại `missing`, `mismatch`, `origin` và `session` ở log nội bộ mà không ghi secret.
+
+## Test cases và checklist
+
+### Ma trận quyết định theo environment
+
+Bảng dưới đây là baseline cần review cùng product contract. Production public schema có thể chọn allow introspection, nhưng phải ghi rõ lý do và scope thay vì bật theo default.
+
+| Environment | Introspection và tooling | CORS và credentials | CSRF và operation policy | Quan sát |
+| --- | --- | --- | --- | --- |
+| **Development** | Cho phép `__schema`/`__type` cho local developer hoặc origin local đã xác định. GraphiQL có thể bật để học và codegen. | Origin local cụ thể như `http://localhost:3000`; chỉ `allowCredentials` khi cần cookie. Không dùng `*` trong flow cookie để “cho nhanh”. | Nếu dùng session cookie, vẫn thử token flow. Nếu chỉ bearer header, vẫn kiểm tra CORS và authentication. | Ghi query hash/operation, nhưng redact token và variables ngay từ local để tránh thói quen xấu. |
+| **Staging** | Chỉ cho principal `schema:read`, mạng nội bộ hoặc pipeline codegen đã xác thực. GraphiQL phải được bảo vệ. | Origin test/staging exact; allow method/header tối thiểu; kiểm thử preflight qua gateway thật. | Cookie phải có SameSite/Origin/CSRF token; persisted/allowlisted operations nên được chạy thử như production. | Theo dõi allow/deny introspection, CORS, CSRF, auth và WebSocket; dùng request ID để điều tra. |
+| **Production** | Mặc định deny public caller không có scope; có thể cho internal break-glass hoặc public schema nếu product chấp thuận. Không bật GraphiQL công khai tùy tiện. | Trusted origins exact; credentials chỉ bật cho origin cần thiết; không wildcard; `Vary` và cache policy đúng. | Bảo vệ mọi POST cookie credential bằng token/origin policy; không cho mutation GET; allowlist operation nếu chọn strict mode. | Alert policy denial bất thường, theo dõi codegen dùng snapshot/registry và không log query/secret nguyên bản. |
+
+Ở mọi môi trường, tắt introspection không thay authorization. Một business query đã biết tên vẫn phải bị từ chối nếu principal không có quyền.
+
+### Test cases bắt buộc
+
+| ID | Case | Kỳ vọng |
+| --- | --- | --- |
+| I-01 | Introspection từ local developer trong development | Được phép theo policy; Docs explorer/codegen nhận schema nếu contract cho phép. |
+| I-02 | `__schema` hoặc `__type` từ principal không có `schema:read` ở staging/production | Bị từ chối generic; không lộ type, field hoặc stack trace. |
+| I-03 | Query nghiệp vụ đã biết tên khi introspection bị tắt | Vẫn đi qua authentication và authorization bình thường; không coi deny introspection là deny toàn API. |
+| I-04 | Introspection qua alias, fragment, document mixed và nhiều operation | Policy đọc AST của operation được chọn, không dựa regex hoặc `operationName` tự khai. |
+| I-05 | `__typename` theo contract | Kết quả khớp allowlist meta-field; không vô tình mở `__schema`/`__type`. |
+| I-06 | Persisted operation hợp lệ không chứa introspection | Chạy được khi principal có quyền; hash không thay authorization. |
+| I-07 | Hash miss trong strict allowlist | Không fallback sang query tùy ý nếu policy không cho đăng ký động. |
+| C-01 | Preflight từ trusted origin với `POST`, `Content-Type`, `X-CSRF-Token` | Trả origin exact, method/header explicit, credentials nếu cần và `Vary` phù hợp. |
+| C-02 | Preflight từ origin lạ hoặc header lạ | Không cho actual request theo policy; browser không đọc response. |
+| C-03 | Cấu hình credentials | Không bao giờ trả `Access-Control-Allow-Origin: *` cùng credential. |
+| C-04 | Actual request từ `curl` với `Origin` lạ | Nhớ rằng `curl` không bị browser CORS; server phải tự auth/CSRF/authorization, không dựa browser để chặn. |
+| C-05 | `Expose-Headers` | Chỉ header đã chọn như `X-Request-Id` được expose; không expose secret. |
+| S-01 | Cookie request thiếu CSRF header | `403` hoặc error policy tương đương; resolver chưa chạy. |
+| S-02 | Cookie và CSRF token không khớp | Từ chối generic; không log giá trị token. |
+| S-03 | Origin không nằm allowlist dù token đúng | Từ chối theo Origin policy; token đúng không override trusted origin. |
+| S-04 | Cookie + token + origin hợp lệ | Request qua CSRF layer rồi mới xét authz và execution. |
+| S-05 | `Content-Type` không hỗ trợ hoặc form body | `415`/từ chối trước GraphQL nếu contract chỉ nhận JSON. |
+| S-06 | Mutation gửi qua `GET` | Bị từ chối; chỉ cho GET query read-only nếu endpoint có contract đó. |
+| S-07 | Bearer header không kèm cookie | Kiểm tra auth/CORS theo header; không suy ra mọi flow đều được miễn CSRF, nhất là refresh cookie. |
+| W-01 | WebSocket Origin lạ | Từ chối trước `101` nếu có thể; không dựa `Access-Control-Allow-Origin`. |
+| W-02 | `connection_init` thiếu hoặc token sai | Không gửi `connection_ack`; đóng hoặc báo lỗi theo protocol policy. |
+| W-03 | Subscribe đúng auth nhưng tenant không thuộc principal | Từ chối operation; argument không cấp quyền. |
+| W-04 | Token hết hạn hoặc bị revoke khi stream sống | Hủy operation/connection và cleanup theo policy; không tiếp tục phát event. |
+| L-01 | Kiểm tra log/trace của mọi case deny | Không có `Authorization`, cookie, CSRF token, full variables, SDL hoặc `connection_init` nguyên bản. |
+
+Test integration cần chạy qua route public và route nội bộ nếu có. Một unit test policy không chứng minh gateway đã forward đúng header hoặc browser thật đã xử lý preflight.
+
+### Lệnh curl minh họa
+
+`curl` giúp kiểm tra header và response server trả về, nhưng không mô phỏng việc browser che response vì CORS. Không dùng credential thật trong shell history hoặc CI log.
+
+Kiểm tra preflight:
+
+```bash
+curl -i -X OPTIONS 'https://api.example.com/graphql' \
+  -H 'Origin: https://app.example.com' \
+  -H 'Access-Control-Request-Method: POST' \
+  -H 'Access-Control-Request-Headers: content-type,x-csrf-token'
+```
+
+Kiểm tra request cookie + CSRF token:
+
+```bash
+curl -i 'https://api.example.com/graphql' \
+  -X POST \
+  -H 'Origin: https://app.example.com' \
+  -H 'Content-Type: application/json' \
+  -H 'Cookie: SESSION=<test-cookie>' \
+  -H 'X-CSRF-Token: <test-token>' \
+  -H 'X-Request-Id: curl-security-test' \
+  --data '{"operationName":"UpdateProfile","query":"mutation UpdateProfile($input: ProfileInput!) { updateProfile(input: $input) { id } }","variables":{"input":{"displayName":"An"}}}'
+```
+
+Kiểm tra introspection với principal được cấp quyền trong một environment test:
+
+```bash
+curl -i 'https://api.example.com/graphql' \
+  -X POST \
+  -H 'Content-Type: application/json' \
+  -H 'Authorization: Bearer <test-access-token>' \
+  --data '{"operationName":"SchemaOverview","query":"query SchemaOverview { __schema { queryType { name } } }"}'
+```
+
+Khi kiểm tra production-like deny, thay token bằng credential test không có scope `schema:read`. Đọc cả status, response header, body `data`/`errors` và log server. Một response CORS có thể bị `curl` nhìn thấy nhưng JavaScript browser không đọc được.
+
+### Checklist triển khai
+
+- [ ] Introspection policy phân biệt `__schema`/`__type` với query nghiệp vụ và `__typename` theo contract.
+- [ ] Policy introspection inspect AST, xử lý fragment/multi-operation và không tin `operationName`, IP hoặc header tự khai làm authority.
+- [ ] Development, staging và production có quyết định explicit cho environment, principal, GraphiQL, codegen và schema snapshot.
+- [ ] Tắt introspection không được dùng thay authentication, authorization, tenant filter, rate limit hoặc query complexity.
+- [ ] Persisted/allowlisted operation không có fallback arbitrary query ngoài registration flow đã review.
+- [ ] HTTP path dùng `spring.graphql.http.path` cho Spring Boot 3.5+ và `spring.graphql.path` cho Spring Boot 3.4 trở xuống (`<=3.4`); không cấu hình hai key cùng lúc.
+- [ ] CORS dùng trusted origins exact; không trả wildcard khi credentials; methods, headers và expose được allowlist tối thiểu.
+- [ ] Preflight `OPTIONS`, `Vary`, cache và proxy route đã được test qua public URL.
+- [ ] CORS không bị dùng như authentication hoặc network ACL; `curl`/server-to-server có policy auth riêng.
+- [ ] Cookie auth có `Secure`, SameSite phù hợp, Origin check và CSRF token; token nằm ở header, không nằm trong query/variables/URL.
+- [ ] Mọi POST cookie credential được bảo vệ hoặc có lý do document rõ ràng cho ngoại lệ read-only.
+- [ ] Chỉ nhận `application/json` nếu đó là contract; GET không được thực thi mutation; multipart có policy riêng.
+- [ ] Error behavior phân biệt transport, `401`, `403`, `415`, GraphQL `errors`, partial data và không leak chi tiết.
+- [ ] WebSocket có Origin/auth boundary riêng; `101` không được coi là authentication; `connection_ack` chỉ sau kiểm tra credential.
+- [ ] Subscription kiểm tra authorization lúc subscribe và khi event/credential thay đổi; cleanup khi close/revoke.
+- [ ] Gateway/app thống nhất owner CORS, forward header đúng và không tạo duplicate CORS header.
+- [ ] Log/trace có query hash, outcome, request ID và policy decision; không có token, cookie, CSRF value, PII hoặc payload nguyên bản.
+- [ ] Integration test bao phủ allow/deny introspection, preflight, wildcard credentials, CSRF, authz, error response, WebSocket và proxy.
+
+## Liên kết liên quan
+
+- [Mô hình request/response](/docs/nen-tang/mo-hinh-request-response) — đọc request envelope, HTTP headers, `data`, `errors` và partial data.
+- [GraphiQL và công cụ khám phá API](/docs/bat-dau/graphiql-va-kham-pha-api) — hiểu Docs explorer, endpoint và tác động khi introspection không đọc được.
+- [Authentication với JWT/OAuth2](/docs/bao-mat-va-quan-sat/authentication-jwt-oauth2) — đặt authentication và principal vào request context.
+- [Authorization theo field và resolver](/docs/bao-mat-va-quan-sat/authorization-field-resolver) — bảo vệ field, resource và tenant; không dựa vào việc ẩn schema.
+- [Context, interceptor và request lifecycle](/docs/tich-hop-spring-for-graphql/context-interceptor-request-lifecycle) — chọn boundary interceptor và truyền metadata vào execution.
+- [Subscription và WebSocket](/docs/query-mutation-subscription/subscription-websocket) — đi sâu handshake, protocol, authz per event và cleanup.
+- [Persisted query](/docs/client-va-tich-hop/persisted-query) — nối persisted query với client và schema contract.
+- [Cache và persisted operation](/docs/production/cache-va-persisted-operation) — review allowlist operation ở production.
+- [Reverse proxy và gateway](/docs/trien-khai/reverse-proxy-va-gateway) — kiểm tra routing, header, timeout và boundary hạ tầng.
+- [Xử lý lỗi tập trung](/docs/tich-hop-spring-for-graphql/xu-ly-loi-tap-trung) — thiết kế GraphQL error và exception mapping an toàn.
+- [Lỗi authentication/authorization](/docs/xu-ly-su-co/loi-authentication-authorization) — chẩn đoán `401`, `403`, context và field bị từ chối.
+
+<Cards>
+  <Card title="Request và response GraphQL" href="/docs/nen-tang/mo-hinh-request-response" description="Phân biệt transport với execution result và errors." />
+  <Card title="Subscription và WebSocket" href="/docs/query-mutation-subscription/subscription-websocket" description="Bảo vệ handshake, subscription và event stream." />
+  <Card title="Reverse proxy và gateway" href="/docs/trien-khai/reverse-proxy-va-gateway" description="Giữ header, route và policy nhất quán qua proxy." />
+  <Card title="Authorization theo field" href="/docs/bao-mat-va-quan-sat/authorization-field-resolver" description="Không dùng việc tắt introspection để thay authorization." />
+</Cards>

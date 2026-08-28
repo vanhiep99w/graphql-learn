@@ -1,23 +1,1387 @@
 ---
 title: "Authentication với JWT/OAuth2"
-description: "Xác thực request GraphQL bằng JWT hoặc OAuth2 và truyền principal vào resolver."
+description: "Xác thực bearer token cho GraphQL HTTP và WebSocket trong Spring Boot, từ validation đến principal, context và vận hành."
 ---
 
-Trang này sẽ trình bày **Authentication với JWT/OAuth2** trong bối cảnh xây dựng GraphQL API với Spring Boot.
+Authentication (xác thực) trả lời câu hỏi **ai đang gọi**. Authorization (ủy quyền) trả lời câu hỏi **caller đó được làm gì**. Với GraphQL, hai lớp này cần được thiết kế cùng nhau vì nhiều operation và field thường đi qua một HTTP endpoint duy nhất.
+
+<Callout type="info" title="Phạm vi và giả định">
+  Các HTTP, JSON, Java và YAML trong bài là **ví dụ tĩnh** để giải thích boundary. Repository này là docs-only: không có backend Spring Boot, Identity Provider (IdP), JWK endpoint, database hoặc WebSocket server để chạy kiểm chứng. Tên bean, method, property và error mapping phải được đối chiếu với version Spring Boot, Spring Security và Spring for GraphQL thật trước khi áp dụng. Bài dùng sơ đồ text, không phụ thuộc plugin sơ đồ.
+</Callout>
 
 ## Mục lục
 
-- [Nội dung dự kiến](#nội-dung-dự-kiến)
+- [Bức tranh tổng thể](#bức-tranh-tổng-thể)
+  - [Authentication và authorization không giống nhau](#authentication-và-authorization-không-giống-nhau)
+  - [Flow từ HTTP đến resolver](#flow-từ-http-đến-resolver)
+  - [Phạm vi của access token](#phạm-vi-của-access-token)
+- [HTTP GraphQL request và security boundary](#http-graphql-request-và-security-boundary)
+  - [Headers và JSON envelope](#headers-và-json-envelope)
+  - [Lớp filter interceptor context](#lớp-filter-interceptor-context)
+  - [Ví dụ flow đầy đủ](#ví-dụ-flow-đầy-đủ)
+  - [Endpoint và version Spring Boot](#endpoint-và-version-spring-boot)
+- [Bearer token và JWT](#bearer-token-và-jwt)
+  - [Bearer token là gì](#bearer-token-là-gì)
+  - [JWT không phải dữ liệu bí mật](#jwt-không-phải-dữ-liệu-bí-mật)
+  - [Các bước validation](#các-bước-validation)
+  - [Issuer audience và subject](#issuer-audience-và-subject)
+  - [Expiry not before và clock skew](#expiry-not-before-và-clock-skew)
+  - [JWK key rotation và outage](#jwk-key-rotation-và-outage)
+- [OAuth2 resource server JWT và opaque token](#oauth2-resource-server-jwt-và-opaque-token)
+  - [Resource server làm gì](#resource-server-làm-gì)
+  - [JWT local validation](#jwt-local-validation)
+  - [Opaque token introspection](#opaque-token-introspection)
+  - [Chọn mode theo version và trade off](#chọn-mode-theo-version-và-trade-off)
+- [Cấu hình Spring Security](#cấu-hình-spring-security)
+  - [Dependencies và issuer](#dependencies-và-issuer)
+  - [SecurityFilterChain minh họa](#securityfilterchain-minh-họa)
+  - [Audience và authorities](#audience-và-authorities)
+  - [Không tự viết crypto](#không-tự-viết-crypto)
+- [Principal GraphQLContext và request context](#principal-graphqlcontext-và-request-context)
+  - [Security filter khác GraphQL interceptor](#security-filter-khác-graphql-interceptor)
+  - [Tạo context từ authentication đã xác minh](#tạo-context-từ-authentication-đã-xác-minh)
+  - [Resolver gọi service](#resolver-gọi-service)
+  - [Async và request scope](#async-và-request-scope)
+- [Authorization và tenant binding](#authorization-và-tenant-binding)
+  - [Authentication không thay authorization](#authentication-không-thay-authorization)
+  - [Không lấy authority từ variables](#không-lấy-authority-từ-variables)
+  - [Tenant hiệu lực](#tenant-hiệu-lực)
+  - [Defense in depth](#defense-in-depth)
+- [Lỗi và error behavior](#lỗi-và-error-behavior)
+  - [401 và 403 ở HTTP](#401-và-403-ở-http)
+  - [GraphQL errors trong execution](#graphql-errors-trong-execution)
+  - [Map exception an toàn](#map-exception-an-toàn)
+  - [Fail closed](#fail-closed)
+- [WebSocket subscription](#websocket-subscription)
+  - [Auth ở handshake và connection init](#auth-ở-handshake-và-connection-init)
+  - [Connection params](#connection-params)
+  - [Authorization trong subscription](#authorization-trong-subscription)
+  - [Reconnect và token expiry](#reconnect-và-token-expiry)
+  - [Lỗi và cleanup của WebSocket](#lỗi-và-cleanup-của-websocket)
+- [CORS và CSRF theo transport](#cors-và-csrf-theo-transport)
+  - [CORS bảo vệ browser boundary](#cors-bảo-vệ-browser-boundary)
+  - [CSRF và cookie](#csrf-và-cookie)
+  - [Bearer header và lựa chọn lưu token](#bearer-header-và-lựa-chọn-lưu-token)
+  - [WebSocket không dùng CORS HTTP](#websocket-không-dùng-cors-http)
+- [Service to service](#service-to-service)
+  - [Client credentials](#client-credentials)
+  - [Delegation và on behalf of](#delegation-và-on-behalf-of)
+  - [Audience và least privilege](#audience-và-least-privilege)
+- [Refresh logout và revocation](#refresh-logout-và-revocation)
+  - [Access token và refresh token](#access-token-và-refresh-token)
+  - [Logout không đồng nghĩa JWT bị xóa](#logout-không-đồng-nghĩa-jwt-bị-xóa)
+  - [Revocation và replay](#revocation-và-replay)
+- [JWK introspection cache và availability](#jwk-introspection-cache-và-availability)
+  - [Cache JWK an toàn](#cache-jwk-an-toàn)
+  - [Introspection timeout và cache](#introspection-timeout-và-cache)
+  - [Fail closed khi IdP không sẵn sàng](#fail-closed-khi-idp-không-sẵn-sàng)
+- [Token leakage và observability](#token-leakage-và-observability)
+  - [Những nơi không được log](#những-nơi-không-được-log)
+  - [Redaction và fingerprint](#redaction-và-fingerprint)
+  - [Error message và PII](#error-message-và-pii)
+- [Quy trình triển khai production](#quy-trình-triển-khai-production)
+  - [Cấu hình mẫu cần kiểm tra](#cấu-hình-mẫu-cần-kiểm-tra)
+  - [Ma trận test](#ma-trận-test)
+  - [Checklist review](#checklist-review)
 - [Bước tiếp theo](#bước-tiếp-theo)
 
-## Nội dung dự kiến
+## Bức tranh tổng thể
 
-Nội dung chi tiết sẽ bao gồm khái niệm chính, ví dụ code và các lưu ý thực hành liên quan đến chủ đề này.
+### Authentication và authorization không giống nhau
 
-<Callout type="info" title="Trang placeholder">
-Đây là trang khung. Hãy dùng skill `fumadocs-technical-writer` để viết đầy đủ trang này trong bước tiếp theo.
-</Callout>
+**Authentication** kiểm tra credential có hợp lệ và thuộc về principal nào. Credential có thể là bearer access token, cookie phiên, mTLS identity hoặc một cơ chế khác đã được hệ thống chọn.
+
+**Authorization** quyết định principal đã xác thực được phép thực hiện hành động nào trên resource nào. Quyết định này có thể phụ thuộc vào scope, role, tenant, trạng thái resource, quan hệ sở hữu và policy hiện tại.
+
+| Câu hỏi | Lớp trả lời | Ví dụ |
+| --- | --- | --- |
+| Token có chữ ký hợp lệ không? `iss`, `aud`, `exp` có đúng không? | Authentication/token validation | Access token được IdP cấp cho GraphQL API và còn hạn. |
+| Principal có được đọc `Book` của tenant này không? | Authorization | Scope `catalog.read` **và** membership của tenant đều hợp lệ. |
+| Request có đến đúng GraphQL route không? | Transport/security boundary | Security filter chain bảo vệ path đã cấu hình. |
+| Field `adminNotes` có được trả không? | Field/resource authorization | Policy của field kiểm tra authority và resource context. |
+
+Một token hợp lệ không làm mọi operation trở nên hợp lệ. Ngược lại, một policy authorization tốt không thể cứu token có chữ ký sai. Hãy xác thực trước, rồi mới ủy quyền.
+
+### Flow từ HTTP đến resolver
+
+Một GraphQL request production thường đi qua các boundary sau:
+
+```text
+Client
+  │ TLS + Authorization: Bearer <access-token>
+  ▼
+Reverse proxy / gateway
+  │ routing, size limit, rate limit, không tin header identity tùy ý
+  ▼
+Spring Security filter chain
+  │ trích bearer token → validate → tạo Authentication
+  │ lỗi credential thường dừng ở đây với 401
+  ▼
+GraphQL HTTP handler
+  │ parse envelope và tạo GraphQL execution
+  ▼
+WebGraphQlInterceptor / request context
+  │ copy principal đã xác minh, tenant đã bind, correlation ID
+  ▼
+GraphQLContext / request context
+  │ scope của một execution, không phải global state
+  ▼
+Resolver / DataFetcher
+  │ bind arguments; không tự parse token
+  ▼
+Authorization policy → application service → repository/downstream
+  │ kiểm tra quyền trên operation/resource/tenant
+  ▼
+GraphQL response: data + errors
+```
+
+Security filter là nơi phù hợp để xử lý bearer token ở HTTP. GraphQL interceptor là nơi phù hợp để chuyển metadata đã xác minh vào execution context. Resolver và service vẫn phải làm authorization; việc filter tạo `Authentication` không tự bảo vệ từng field.
+
+### Phạm vi của access token
+
+Access token là credential dành cho **resource server**. GraphQL API nên nhận access token có `aud` dành cho chính API đó. Không dùng ID token của client dành cho UI để thay access token, trừ khi contract của hệ thống đã định nghĩa và validate một cách rõ ràng.
+
+Một access token thường mang subject, scope/authority, issuer, audience và thời hạn. Các claim này chỉ là dữ liệu đáng tin sau khi token vượt qua toàn bộ validation. Token được decode thành công chưa phải là token đã được xác thực.
+
+OAuth2 authorization server/IdP cấp token. Client giữ token và gọi GraphQL. Resource server (GraphQL API) kiểm tra token rồi áp dụng authorization. Ba vai trò này có thể nằm ở ba process khác nhau; không nên gộp chúng thành một “JWT login” duy nhất.
+
+## HTTP GraphQL request và security boundary
+
+### Headers và JSON envelope
+
+GraphQL thường dùng một endpoint HTTP chung. Credential nằm ở HTTP header, còn operation nằm trong JSON envelope. Ví dụ tĩnh:
+
+```http
+POST /graphql HTTP/1.1
+Host: api.example.com
+Content-Type: application/json
+Accept: application/json
+Authorization: Bearer <access-token>
+Origin: https://app.example.com
+X-Request-Id: req-example-123
+
+{
+  "query": "query Viewer { viewer { id displayName } }",
+  "variables": {},
+  "operationName": "Viewer"
+}
+```
+
+`Authorization` không được đặt trong `query` hoặc `variables`. `userId`, `tenantId`, `role` trong variables chỉ là input client gửi, không phải bằng chứng về danh tính hay authority.
+
+Không đặt bearer token trong query string. URL thường xuất hiện trong access log, proxy metric, browser history, tracing hoặc `Referer`. TLS bảo vệ token trên đường truyền, nhưng không sửa được việc token bị ghi vào log.
+
+Một response thành công chỉ là ví dụ về shape:
+
+```http
+HTTP/1.1 200 OK
+Content-Type: application/json
+X-Request-Id: req-example-123
+
+{
+  "data": {
+    "viewer": {
+      "id": "user-42",
+      "displayName": "Example User"
+    }
+  }
+}
+```
+
+Response trên không chứng minh backend của repository đã chạy. Nó minh họa việc client đọc execution result sau khi security và resolver cùng thành công. [Mô hình request/response](/docs/nen-tang/mo-hinh-request-response) giải thích thêm sự khác nhau giữa envelope, `data`, `errors` và HTTP status.
+
+### Lớp filter interceptor context
+
+Ba lớp dưới đây có trách nhiệm khác nhau:
+
+| Lớp | Việc nên làm | Việc không nên làm |
+| --- | --- | --- |
+| Spring Security filter chain | Đọc bearer credential, validate chữ ký/issuer/audience/thời gian, tạo `Authentication`, áp dụng policy route thô. | Đọc `userId` từ GraphQL variables để quyết định principal. |
+| `WebGraphQlInterceptor` | Đọc metadata transport cần thiết, tạo request context nhỏ và gắn vào GraphQL execution. | Tự triển khai JWT crypto hoặc coi header client là role đã xác minh. |
+| Resolver/service/policy | Kiểm tra quyền trên operation, field, resource và tenant; áp dụng filter dữ liệu. | Giả định `.authenticated()` ở `/graphql` đã bảo vệ mọi field. |
+
+Nếu filter đã từ chối token, GraphQL handler thường chưa được gọi. Nếu request đã qua filter nhưng resolver thiếu context, đó là lỗi cấu hình hoặc lỗi security boundary và phải **fail closed**, không chuyển sang anonymous rộng quyền hơn.
+
+### Ví dụ flow đầy đủ
+
+Một request có thể được diễn giải theo thứ tự này:
+
+1. Proxy kết thúc TLS hoặc chuyển tiếp TLS theo kiến trúc đã chọn. Proxy không được giữ lại header identity do client tự gửi nếu header đó không nằm trong trust boundary.
+2. Spring Security tìm `Authorization: Bearer ...`. Token thiếu, sai scheme, hết hạn, sai chữ ký, sai `iss` hoặc sai `aud` thường bị từ chối ở lớp security.
+3. Với token hợp lệ, Spring Security tạo `Authentication` và đặt nó vào security context theo web stack. Resolver không cần biết token được parse ra sao.
+4. GraphQL interceptor lấy principal snapshot, correlation ID và tenant đã được bind bởi policy. Interceptor không lấy quyền từ variables chưa kiểm tra.
+5. `GraphQLContext` được gắn vào execution. Mọi `DataFetcher` của operation đọc cùng một context request-scoped.
+6. Resolver bind argument GraphQL rồi gọi policy/service. `id` hoặc `userId` từ client chỉ định resource mục tiêu; service vẫn kiểm tra principal có quyền đọc resource đó không.
+7. Lỗi ở transport có thể là HTTP `401`/`403`. Lỗi ở execution có thể nằm trong `errors` cùng `data` một phần, tùy error contract.
+
+### Endpoint và version Spring Boot
+
+Path HTTP phải khớp cả cấu hình GraphQL lẫn security matcher. Với Spring Boot **3.5+**, property HTTP được tài liệu hóa là:
+
+```properties
+spring.graphql.http.path=/graphql
+```
+
+Với Spring Boot **3.4 trở xuống**, dùng property cũ:
+
+```properties
+spring.graphql.path=/graphql
+```
+
+Không cấu hình đồng thời hai key cho cùng một ứng dụng. `server.servlet.context-path`, reverse proxy prefix và path trailing slash có thể làm matcher thực tế khác ví dụ `/graphql`.
+
+`/graphiql` là UI phát triển, không phải GraphQL API. Nếu bật GraphiQL, hãy bảo vệ hoặc chỉ expose trong local/development. Tắt UI không làm endpoint `/graphql` an toàn hơn. [Kiểm thử request bằng curl/Postman](/docs/bat-dau/kiem-thu-request-curl-postman) có thêm ví dụ endpoint, envelope và header.
+
+## Bearer token và JWT
+
+### Bearer token là gì
+
+**Bearer token** là credential mà bất kỳ bên nào sở hữu nó đều có thể dùng như người mang token. Server không nên giả định người gửi token là chủ thể hợp pháp ngoài việc token được cấp theo policy của IdP.
+
+Vì tính chất “ai cầm được thì dùng được”:
+
+- luôn dùng TLS cho HTTP, WebSocket và các call tới introspection/JWK endpoint;
+- đặt access token trong header hoặc cơ chế transport đã được thiết kế, không đặt trong URL;
+- giữ access token ngắn hạn theo rủi ro và khả năng refresh;
+- không ghi token vào log, exception, tracing attribute, analytics hoặc GraphQL `extensions`;
+- coi token bị lộ là credential có thể bị replay cho đến khi hết hạn hoặc bị revoke.
+
+JWT là **một định dạng token**, không phải một chính sách authorization. Opaque token cũng có thể là OAuth2 access token; resource server cần chọn cơ chế validation phù hợp với IdP.
+
+### JWT không phải dữ liệu bí mật
+
+JWT thường có ba phần ngăn bằng dấu chấm:
+
+```text
+base64url(header).base64url(payload).base64url(signature)
+```
+
+Header và payload chỉ được mã hóa dạng biểu diễn `base64url`, không được mã hóa để giữ bí mật. Bất kỳ ai có token đều có thể đọc claim như `sub`, `scope` hoặc `tenant` bằng cách decode. Không đặt password, refresh token, secret hoặc PII không cần thiết vào JWT.
+
+Decode payload để hiển thị debug không có nghĩa là đã xác thực token. Một kẻ tấn công có thể tự tạo payload với `role=ADMIN`; chỉ chữ ký được kiểm tra bằng trusted key mới cho biết token do issuer tin cậy phát hành. Không dùng thư viện decode JSON ở controller như một bước authorization.
+
+### Các bước validation
+
+Một resource server nên coi token là không hợp lệ cho đến khi tất cả điều kiện cần thiết đều đạt:
+
+| Bước | Điều cần kiểm tra | Nếu không đạt |
+| --- | --- | --- |
+| Parse | Token có đúng format và kích thước cho phép không? | Từ chối; parse được không đồng nghĩa trusted. |
+| Algorithm | `alg` có nằm trong allowlist mà server chọn không? | Từ chối; không chấp nhận `none` hoặc algorithm ngoài policy. |
+| Signature | Chữ ký có verify bằng public key thuộc issuer đã cấu hình không? | Từ chối; không tự tìm key từ token. |
+| Issuer | `iss` có khớp chính xác issuer tin cậy không? | Từ chối token của issuer khác. |
+| Audience | `aud` có chứa identifier chính xác của GraphQL API không? | Từ chối token dành cho resource khác. |
+| Expiry | `exp` có tồn tại và chưa qua thời điểm hiện tại không? | Từ chối token hết hạn hoặc thiếu thời hạn theo policy. |
+| Not-before | `nbf` nếu có có cho phép dùng ở thời điểm hiện tại không? | Từ chối token chưa có hiệu lực. |
+| Token use | Token có phải access token đúng loại cho resource server không? | Không dùng ID token hoặc token của flow khác. |
+| Subject | `sub` có hiện diện và có format mà domain chấp nhận không? | Từ chối hoặc đưa vào policy xử lý anonymous rõ ràng. |
+| Authority | Scope/role chỉ được map sau các bước trên và theo allowlist. | Không cấp quyền từ claim chưa verify hoặc claim tùy ý. |
+| Tenant | Claim tenant, selector và membership có nhất quán không? | Từ chối; không fallback sang tenant mặc định. |
+
+Không phải claim nào cũng bắt buộc trong mọi profile OAuth2. Quyết định claim bắt buộc phải đến từ contract IdP và policy của API. Riêng việc signature, issuer, audience và thời gian phải được xem là các kiểm tra độc lập, không thay thế cho nhau.
+
+### Issuer audience và subject
+
+`iss` định danh issuer. So sánh issuer theo giá trị cấu hình chính xác, gồm scheme, host và path theo quy ước của IdP. Không lấy `iss` từ token rồi dùng chính giá trị đó để tìm JWK endpoint; như vậy token có thể điều khiển trust anchor.
+
+`aud` định danh resource server hoặc nhóm resource mà token hướng đến. GraphQL API phải kiểm tra audience của chính mình. Một token có chữ ký đúng nhưng chỉ dành cho `other-api` vẫn không hợp lệ với GraphQL.
+
+`sub` là định danh principal theo issuer. Nó không nhất thiết là database `userId`. Nếu domain cần map `sub` sang user nội bộ, service phải xử lý mapping đó sau authentication và theo tenant/policy. Không cho client ghi đè subject bằng `userId` trong variables hoặc header.
+
+Scope và role cũng có semantics provider-specific. Một issuer có thể dùng claim `scope` dạng chuỗi, issuer khác dùng `scp` dạng mảng hoặc claim role riêng. Chỉ map các claim đã được quy định bằng `JwtAuthenticationConverter`/authority mapper; không quét mọi claim có chữ “role” rồi cấp quyền.
+
+### Expiry not before và clock skew
+
+`exp` là thời điểm token hết hạn. `nbf` là thời điểm token bắt đầu có hiệu lực. Server cần so sánh cả hai với đồng hồ hệ thống của nó. Token được ký hợp lệ nhưng có `nbf` trong tương lai vẫn phải bị từ chối.
+
+**Clock skew** là sai lệch đồng hồ giữa IdP, resource server và máy client. Có thể cho phép một cửa sổ nhỏ, có giới hạn, để tránh lỗi sát biên. Cửa sổ quá lớn lại kéo dài thời gian chấp nhận token hết hạn.
+
+```java
+// Java/pseudo-code tĩnh: API cụ thể cần đối chiếu Spring Security version.
+JwtTimestampValidator timestamps = new JwtTimestampValidator();
+timestamps.setClockSkew(Duration.ofSeconds(60));
+
+// 60 giây chỉ là giá trị minh họa. Chọn theo NTP, latency và risk budget.
+OAuth2TokenValidator<Jwt> issuer =
+        new JwtIssuerValidator("https://idp.example.com/issuer");
+OAuth2TokenValidator<Jwt> audience =
+        new AudienceValidator("graphql-api"); // validator do ứng dụng định nghĩa
+
+OAuth2TokenValidator<Jwt> validators =
+        new DelegatingOAuth2TokenValidator<>(issuer, timestamps, audience);
+```
+
+Snippet trên không tự tạo decoder và không khẳng định method đã chạy trong repository. Nó minh họa rằng timestamp, issuer và audience là các validator riêng. NTP và monotonic clock ở hạ tầng cũng cần được theo dõi; đừng chữa đồng hồ sai bằng cách tăng skew lên vài phút hoặc vài giờ.
+
+### JWK key rotation và outage
+
+**JWK** (JSON Web Key) là biểu diễn public key mà resource server dùng để kiểm tra chữ ký JWT. `kid` trong header giúp chọn key trong JWK Set, nhưng `kid` không tự làm key trở nên đáng tin.
+
+Một rotation an toàn thường có các bước:
+
+1. IdP phát hành public key mới trong JWK Set trước khi token mới xuất hiện.
+2. Trong thời gian overlap, key cũ vẫn được publish để token cũ còn hạn được verify.
+3. Resource server refresh JWK Set theo cache policy. Khi gặp `kid` mới, chỉ refresh có kiểm soát một lần thay vì mỗi request cùng gọi IdP.
+4. Sau khi mọi token dùng key cũ hết hạn, IdP mới loại key cũ theo retention đã định.
+
+Không lấy JWK URL từ `iss`, `kid` hoặc payload do client gửi. Cấu hình issuer/JWK endpoint phải là trust configuration được deploy và bảo vệ bằng TLS. Không chấp nhận key mới chỉ vì endpoint trả về một key có cùng `kid` nếu endpoint đó không thuộc issuer tin cậy.
+
+Nếu JWK endpoint tạm thời không sẵn sàng, key đã cache vẫn có thể dùng để verify token còn hạn theo policy. Nhưng token có `kid` chưa biết mà không fetch được key phải bị từ chối. Không chuyển sang chấp nhận token không chữ ký, key tự sinh, algorithm khác hoặc claim “đã verified” do gateway gửi.
+
+## OAuth2 resource server JWT và opaque token
+
+### Resource server làm gì
+
+OAuth2 resource server là API nhận access token và bảo vệ resource. Nó không tự là authorization server, không tự cung cấp login UI và không tự quyết định mọi rule field của GraphQL.
+
+Với GraphQL, route-level security thường chỉ có thể nói “phải authenticated”. Một request đến `/graphql` có thể chứa `viewer`, `adminReport` và `updateBook` trong các operation khác nhau. Scope, role, tenant và resource policy cần được kiểm tra sâu hơn ở operation/resolver/service.
+
+Trong Spring Boot 3.x, resource server thường được cấu hình qua Spring Security 6.x. Spring Boot BOM nên quản lý version tương thích; không tự ghép một `graphql-java`, `spring-security` hoặc `spring-graphql` version khác để “sửa” auth.
+
+### JWT local validation
+
+Với JWT access token, resource server có thể verify chữ ký và claim tại chỗ sau khi đã có JWK. Luồng khái quát:
+
+```text
+Request bearer token
+      │
+      ▼
+JWT decoder + trusted JWK cache
+      │ signature, issuer, audience, exp, nbf
+      ▼
+Authentication + authorities
+      │
+      ▼
+GraphQL context → authorization policy
+```
+
+Ưu điểm là không cần gọi IdP cho mỗi request. Đổi lại, revocation ở IdP không tự lan ngay vào mọi resource server. Token đã phát hành có thể tiếp tục được chấp nhận đến `exp`, trừ khi API có denylist/introspection hoặc cơ chế revoke riêng.
+
+Cấu hình `issuer-uri` thường cho phép framework lấy metadata issuer và JWK theo discovery. Nếu dùng `jwk-set-uri` tường minh để tránh phụ thuộc startup vào IdP, vẫn cần cấu hình issuer validator và audience validator; chỉ biết JWK URL không chứng minh `iss` đúng.
+
+### Opaque token introspection
+
+**Opaque token** không mang payload JWT để resource server tự đọc. Resource server gửi token đến introspection endpoint của IdP bằng client credential của chính resource server. IdP trả trạng thái `active` và các metadata như subject, scope, client hoặc audience theo contract.
+
+```http
+POST /oauth2/introspect HTTP/1.1
+Host: idp.example.com
+Content-Type: application/x-www-form-urlencoded
+Authorization: Basic <resource-server-client-credentials>
+
+token=<access-token>
+```
+
+Request trên là minh họa cho call nội bộ giữa resource server và IdP. Không log body hoặc header thật. Introspection endpoint phải được gọi qua TLS và client credential phải nằm trong secret manager.
+
+Opaque mode có lợi khi cần trung tâm revoke gần real-time hoặc không muốn resource server giữ claim trong token. Đổi lại, mỗi request có thêm dependency mạng, timeout và tải lên IdP. Cache kết quả có thể giảm tải nhưng kéo dài thời gian chấp nhận token đã bị revoke.
+
+Spring Security cần một `OpaqueTokenIntrospector` phù hợp. Response `active`, scope và subject phải được validate theo contract của IdP; không coi bất kỳ JSON có `active: true` từ endpoint không tin cậy là authentication.
+
+### Chọn mode theo version và trade off
+
+| Tiêu chí | JWT resource server | Opaque token introspection |
+| --- | --- | --- |
+| Validation thường ngày | Local sau khi có JWK | Gọi IdP cho mỗi token hoặc cache theo policy |
+| Phụ thuộc runtime vào IdP | Chủ yếu khi discovery/refresh key | Thường trực tiếp hơn |
+| Revocation gần real-time | Không mặc định | Tự nhiên hơn nếu không cache dài |
+| Chi phí latency | Thấp hơn | Cao hơn và có timeout/circuit breaker |
+| Dữ liệu authority | Claims đã ký | Metadata từ introspection response |
+| Rủi ro vận hành | JWK rotation/cache sai | Introspection outage hoặc IdP quá tải |
+
+Không có lựa chọn “an toàn tuyệt đối” độc lập với policy. JWT phù hợp khi access token ngắn hạn, key rotation và revoke delay chấp nhận được. Opaque phù hợp khi revoke tức thời quan trọng hơn latency và dependency mạng được vận hành tốt.
+
+API cấu hình cụ thể thay đổi theo Spring Boot/Spring Security minor version. Hãy kiểm tra reference đúng version cho `issuer-uri`, `jwk-set-uri`, opaque token, converter và exception handler. [Thêm dependency và cấu hình](/docs/bat-dau/them-dependency-va-cau-hinh) có nguyên tắc giữ BOM và version nhất quán.
+
+## Cấu hình Spring Security
+
+### Dependencies và issuer
+
+Một resource server Spring Boot thường cần starter do BOM quản lý version:
+
+```xml title="pom.xml — tọa độ minh họa"
+<dependency>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-oauth2-resource-server</artifactId>
+</dependency>
+```
+
+Starter GraphQL và web stack là các dependency khác của ứng dụng. Không thêm version riêng vào starter khi parent/BOM đã quản lý. Nếu project dùng Gradle, dùng cùng tọa độ dependency qua `implementation` theo convention của project.
+
+Cấu hình JWT bằng issuer là ví dụ phổ biến:
+
+```yaml title="application.yml — JWT, ví dụ tĩnh"
+spring:
+  security:
+    oauth2:
+      resourceserver:
+        jwt:
+          issuer-uri: https://idp.example.com/issuer
+```
+
+Issuer, audience và JWK endpoint trong ví dụ là giá trị giả. Không đưa client secret vào Markdown. Nếu cần explicit JWK URL:
+
+```yaml title="application.yml — explicit JWK, ví dụ tĩnh"
+spring:
+  security:
+    oauth2:
+      resourceserver:
+        jwt:
+          jwk-set-uri: https://idp.example.com/.well-known/jwks.json
+```
+
+Trong trường hợp thứ hai, application vẫn cần validator `iss`/`aud` tường minh theo contract. `jwk-set-uri` chỉ nói nơi lấy public key; nó không thay cho issuer discovery hoặc audience validation.
+
+Opaque token dùng nhóm property khác:
+
+```yaml title="application.yml — opaque token, ví dụ tĩnh"
+spring:
+  security:
+    oauth2:
+      resourceserver:
+        opaquetoken:
+          introspection-uri: https://idp.example.com/oauth2/introspect
+          client-id: graphql-resource-server
+          client-secret: ${OAUTH2_INTROSPECTION_CLIENT_SECRET}
+```
+
+Secret nên đến từ secret manager hoặc binding bảo mật của môi trường. Không commit `.env`, Postman environment export hoặc config có secret thật.
+
+### SecurityFilterChain minh họa
+
+Spring Security 6.x khuyến nghị cấu hình bean `SecurityFilterChain` thay vì các tutorial cũ dùng `WebSecurityConfigurerAdapter`. Đoạn sau là Java/pseudo-code tĩnh:
+
+```java
+@Bean
+SecurityFilterChain graphqlSecurity(HttpSecurity http) throws Exception {
+    http
+        .cors(Customizer.withDefaults())
+        // Không copy csrf().disable() nếu chưa review cookie/session threat model.
+        .authorizeHttpRequests(authorize -> authorize
+            // Chỉ permit preflight hợp lệ; CORS config vẫn phải kiểm tra Origin.
+            .requestMatchers(HttpMethod.OPTIONS, "/graphql").permitAll()
+            .requestMatchers("/graphql").authenticated()
+            // GraphiQL chỉ nên có ở local/dev hoặc có policy riêng.
+            .requestMatchers("/graphiql/**")
+                .hasAuthority("SCOPE_devtools")
+            .anyRequest().denyAll())
+        .oauth2ResourceServer(oauth2 -> oauth2
+            .jwt(Customizer.withDefaults()));
+
+    return http.build();
+}
+```
+
+`/graphql` phải được thay bằng path thực tế, gồm context path nếu matcher của application yêu cầu. `OPTIONS` được permit ở đây chỉ là hình minh họa cho preflight; không mở rộng thành `permitAll()` cho mọi method hoặc mọi origin.
+
+Nếu chọn opaque token, phần resource server thường được thay bằng API opaque tương ứng của version:
+
+```java
+http.oauth2ResourceServer(oauth2 ->
+        oauth2.opaqueToken(Customizer.withDefaults()));
+```
+
+Tên method DSL và hành vi auto-configuration phải được kiểm tra theo Spring Security version. `.authenticated()` chỉ bảo vệ việc có principal; nó không thay cho kiểm tra `catalog.read`, `tenant-a` hoặc quyền trên từng `Book`.
+
+### Audience và authorities
+
+Audience validator nên là một phần bắt buộc của token policy. Ví dụ Java tĩnh dưới đây dùng `NimbusJwtDecoder`, là concrete decoder có `setJwtValidator`. `JwtDecoders.fromIssuerLocation` được gán vào kiểu concrete này; API generic và cách khởi tạo cần được kiểm tra theo Spring Security version đang dùng:
+
+```java
+@Bean
+JwtDecoder jwtDecoder() {
+    String issuer = "https://idp.example.com/issuer";
+    NimbusJwtDecoder decoder = JwtDecoders.fromIssuerLocation(issuer);
+
+    OAuth2TokenValidator<Jwt> defaultWithIssuer =
+            JwtValidators.createDefaultWithIssuer(issuer);
+    OAuth2TokenValidator<Jwt> audienceValidator =
+            new AudienceValidator("graphql-api");
+    OAuth2TokenValidator<Jwt> validators =
+            new DelegatingOAuth2TokenValidator<>(
+                    defaultWithIssuer, audienceValidator);
+
+    decoder.setJwtValidator(validators);
+    return decoder;
+}
+```
+
+`JwtValidators.createDefaultWithIssuer` ghép các validator mặc định của JWT cùng issuer; các validator mặc định bao gồm kiểm tra timestamp theo policy của version. Nếu cần clock skew tường minh, dùng `JwtTimestampValidator` với giá trị đã chọn và API composition tương ứng, như ví dụ ở phần [Expiry not before và clock skew](#expiry-not-before-và-clock-skew). Không thêm hai timestamp validator mà không có chủ đích.
+
+`AudienceValidator` trong block là type minh họa của application, không phải implementation có sẵn trong repository. Validator thật cần trả kết quả theo API Spring Security và phải kiểm tra audience chính xác, không so sánh substring tùy ý. Với `issuer-uri`, không loại bỏ validator issuer chỉ vì discovery đã tìm thấy JWK.
+
+Authority converter cũng cần allowlist. Ví dụ, Spring Security thường biểu diễn scope thành authority có prefix `SCOPE_` theo converter mặc định; đây là convention cần kiểm tra chứ không phải quy tắc chung cho mọi IdP:
+
+```java
+JwtAuthenticationConverter converter = new JwtAuthenticationConverter();
+// Cấu hình claim scope/scp và prefix theo contract IdP.
+converter.setJwtGrantedAuthoritiesConverter(authoritiesConverter);
+
+http.oauth2ResourceServer(oauth2 -> oauth2
+        .jwt(jwt -> jwt.jwtAuthenticationConverter(converter)));
+```
+
+Không map chuỗi `role` từ variables vào `GrantedAuthority`. Không cấp `ROLE_ADMIN` chỉ vì một claim chưa được signature/issuer/audience validator bảo đảm. Nếu role là claim custom, tài liệu hóa nguồn claim, format, prefix và test negative cho token thiếu hoặc sai claim.
+
+### Không tự viết crypto
+
+Không tự triển khai các phần sau trong controller, interceptor hoặc resolver:
+
+- parse base64 rồi tự so sánh signature;
+- tự chọn thuật toán dựa trên `alg` của token;
+- tải public key từ URL được lấy từ token;
+- chấp nhận `alg=none`, đổi RSA/ECDSA thành HMAC hoặc tắt verification để “debug”;
+- tự xử lý thời gian, JWK cache và rotation bằng một map singleton;
+- tự coi claim `verified`, `isAdmin` hoặc header từ gateway là bằng chứng.
+
+Dùng decoder, validator, `AuthenticationProvider`, `OpaqueTokenIntrospector` và key management của Spring Security/ thư viện được bảo trì. Custom code chỉ nên bổ sung policy như audience, tenant hoặc authority mapping sau khi framework đã verify token. Nếu cần thay decoder/introspector, viết test chống algorithm confusion, wrong issuer, wrong audience, expiry, unknown key và outage.
+
+## Principal GraphQLContext và request context
+
+### Security filter khác GraphQL interceptor
+
+`SecurityContext` và `GraphQLContext` có scope khác nhau:
+
+| Đối tượng | Scope | Nguồn | Mục đích |
+| --- | --- | --- | --- |
+| `Authentication`/`Principal` | HTTP request hoặc reactive security context | Spring Security sau token validation | Nhận diện caller và authorities đã map. |
+| `GraphQLContext` | Một GraphQL execution | GraphQL handler/interceptor | Truyền metadata execution đến DataFetcher. |
+| `RequestContext` | Holder nhỏ do application định nghĩa | Interceptor/service policy | Principal snapshot, tenant, correlation ID và deadline đã chuẩn hóa. |
+
+Security filter không nên biết từng field GraphQL. GraphQL interceptor không nên verify crypto lần thứ hai một cách không nhất quán. Hãy có một security service/policy chung nếu nhiều transport cần tạo principal context.
+
+Trong WebFlux, security context có thể nằm trong Reactor context thay vì `ThreadLocal`. Trong async resolver, đừng giả định `SecurityContextHolder` luôn có giá trị trên worker thread. API để đọc context và interceptor cụ thể cần đối chiếu web stack/version.
+
+### Tạo context từ authentication đã xác minh
+
+Request context nên nhỏ, immutable và không chứa raw credential:
+
+```java
+public record RequestContext(
+        String subject,
+        Set<String> authorities,
+        String tenantId,
+        String issuer,
+        String correlationId,
+        Instant authenticatedAt) {
+
+    public RequestContext {
+        authorities = Set.copyOf(authorities);
+    }
+}
+```
+
+`RequestContext` là type của application. `issuer`, `subject` và authorities trong record chỉ được điền từ `Authentication` đã verify. Không đưa `Jwt` nguyên bản, access token, refresh token, raw headers hoặc toàn bộ `WebGraphQlRequest` vào context.
+
+Một interceptor HTTP GraphQL có thể được tổ chức như sau:
+
+```java
+final class AuthenticationGraphQlInterceptor
+        implements WebGraphQlInterceptor {
+
+    private static final String REQUEST_CONTEXT = "requestContext";
+
+    private final TenantBinding tenantBinding;
+
+    AuthenticationGraphQlInterceptor(TenantBinding tenantBinding) {
+        this.tenantBinding = tenantBinding;
+    }
+
+    @Override
+    public Mono<WebGraphQlResponse> intercept(
+            WebGraphQlRequest request,
+            Chain chain) {
+
+        Authentication authentication = currentAuthentication();
+        if (authentication == null
+                || !authentication.isAuthenticated()
+                || isAnonymous(authentication)) {
+            throw new UnauthenticatedException();
+        }
+
+        String tenantId = tenantBinding.resolve(
+                authentication, request);
+
+        RequestContext context = new RequestContext(
+                authentication.getName(),
+                authentication.getAuthorities().stream()
+                        .map(GrantedAuthority::getAuthority)
+                        .collect(Collectors.toUnmodifiableSet()),
+                tenantId,
+                issuerOf(authentication),
+                safeCorrelationId(request),
+                Instant.now());
+
+        request.configureExecutionInput((input, builder) ->
+                builder.graphQLContext(GraphQLContext.newContext()
+                        .of(REQUEST_CONTEXT, context)
+                        .build())
+                        .build());
+
+        return chain.next(request);
+    }
+}
+```
+
+Đây là pseudo-code tĩnh. `currentAuthentication()`, `isAnonymous`, `issuerOf`, `safeCorrelationId`, exception và import phụ thuộc ứng dụng; WebFlux cần dùng cơ chế reactive context phù hợp thay vì đọc `ThreadLocal` một cách tình cờ. Filter resource server vẫn là nơi nên bắt bearer credential. Interceptor chỉ tiếp tục với authentication đã được framework xác minh và tenant binding thành công.
+
+Nếu endpoint có public field, policy phải mô tả anonymous một cách explicit. Đừng dùng một `RequestContext` giả với `subject="anonymous"` rồi vô tình cho phép code nhầm nó là principal thật.
+
+### Resolver gọi service
+
+Resolver chỉ nên đọc context và gọi application service. Nó không tự decode token:
+
+```java
+@Controller
+public class ViewerQueryController {
+
+    private final AccountService accountService;
+
+    public ViewerQueryController(AccountService accountService) {
+        this.accountService = accountService;
+    }
+
+    @QueryMapping
+    public Account viewer(DataFetchingEnvironment environment) {
+        RequestContext context = environment
+                .getGraphQlContext()
+                .get("requestContext");
+
+        if (context == null) {
+            throw new UnauthenticatedException();
+        }
+
+        return accountService.findVisibleAccount(
+                context.subject(), context.tenantId());
+    }
+}
+```
+
+`AccountService`, `Account` và exception là type giả định. `DataFetchingEnvironment` lấy `GraphQLContext` của execution hiện tại, không lấy dữ liệu do client gửi. Có thể dùng `@ContextValue`, `Authentication` hoặc một accessor typed khác nếu version Spring for GraphQL đã chuẩn hóa cơ chế đó; điểm bảo mật không đổi. Với opaque token, `Authentication` không nhất thiết là `JwtAuthenticationToken`; không cast để đọc claim JWT khi principal được tạo từ introspection.
+
+Service phải kiểm tra policy ở boundary mà mọi đường vào đều dùng. REST, message consumer, batch job và GraphQL không nên có các bản sao policy khác nhau nếu cùng truy cập resource. Bài [DataFetcher và GraphQL context](/docs/tich-hop-spring-for-graphql/datafetcher-va-graphql-context) và [Context, interceptor và request lifecycle](/docs/tich-hop-spring-for-graphql/context-interceptor-request-lifecycle) giải thích thêm scope của context, source object và interceptor.
+
+### Async và request scope
+
+Không lưu “current user” hoặc “current tenant” vào static field. Hai request đồng thời có thể thuộc hai tenant khác nhau. Context nên được capture như một value immutable trước khi chạy async:
+
+```java
+@QueryMapping
+public CompletableFuture<List<Book>> books(
+        @Argument("limit") Integer limit,
+        DataFetchingEnvironment environment) {
+
+    RequestContext context = environment
+            .getGraphQlContext()
+            .get("requestContext");
+
+    return CompletableFuture.supplyAsync(
+            () -> bookService.findVisibleBooks(
+                    context.subject(), context.tenantId(), limit),
+            boundedExecutor);
+}
+```
+
+Đoạn code là minh họa tĩnh. `boundedExecutor` phải có giới hạn queue/thread và downstream phải có timeout/cancellation thật. Không truyền `DataFetchingEnvironment`, `HttpServletRequest` hoặc bearer token vào task chỉ để đọc muộn. Cách bind argument và đọc `GraphQLContext` chi tiết nằm ở [Binding arguments và input](/docs/tich-hop-spring-for-graphql/binding-arguments-input) và [Query, mutation và subscription mapping](/docs/tich-hop-spring-for-graphql/query-mutation-subscription-mapping).
+
+Subscription có thể giữ context lâu hơn HTTP query. Khi token hết hạn, membership đổi hoặc credential bị revoke, stream cần policy re-check/terminate. Context ban đầu không biến quyền thành bất biến trong suốt vòng đời socket.
+
+## Authorization và tenant binding
+
+### Authentication không thay authorization
+
+Một endpoint GraphQL có thể áp dụng `.authenticated()` để yêu cầu có principal. Đây chỉ là guard ở route. Authorization cần đặt ở các lớp phù hợp:
+
+1. **Operation:** caller có được gọi mutation hoặc query này không?
+2. **Field:** caller có được xem field nhạy cảm như `adminNotes` không?
+3. **Resource:** caller có được đọc object có `id` do client chọn không?
+4. **Tenant:** object và downstream query có thuộc tenant hiệu lực không?
+5. **Business state:** resource có trạng thái cho phép hành động không?
+
+Có thể dùng method security như `@PreAuthorize`, policy service hoặc directive/instrumentation tùy kiến trúc. Nhưng policy cuối cùng vẫn phải được enforce ở service/data boundary, không chỉ ẩn field trong GraphiQL. [Authorization theo field và resolver](/docs/bao-mat-va-quan-sat/authorization-field-resolver) là bài nối tiếp cho operation, field và service authorization.
+
+### Không lấy authority từ variables
+
+Đoạn sau là anti-pattern:
+
+```java
+// SAI: mọi giá trị dưới đây đều do client gửi.
+@QueryMapping
+public User user(
+        @Argument("userId") String userId,
+        @Argument("tenantId") String tenantId,
+        @Argument("role") String role) {
+
+    if ("ADMIN".equals(role)) {
+        return userRepository.findByTenantAndId(tenantId, userId);
+    }
+    return null;
+}
+```
+
+`userId` và `tenantId` có thể là target mà client muốn truy cập. `role` có thể là dữ liệu UI, không phải authority. Không dùng chúng để xác định caller.
+
+Cách đúng là lấy principal/context từ security boundary rồi authorize target:
+
+```java
+@QueryMapping
+public User user(
+        @Argument("userId") String userId,
+        DataFetchingEnvironment environment) {
+
+    RequestContext context = requireRequestContext(environment);
+    authorization.assertCanReadUser(context, userId);
+    return userService.findVisibleUser(
+            context.tenantId(), userId);
+}
+```
+
+`requireRequestContext` và `authorization` là type giả định. Nếu use case quản trị cho phép chọn tenant, `tenantId` vẫn phải được kiểm tra membership/permission trước khi trở thành tenant hiệu lực. Không đổi context sang tenant do client gửi rồi mới authorize; thứ tự đó đã quá muộn.
+
+### Tenant hiệu lực
+
+Tenant binding cần một quy ước rõ. Một số mô hình thường gặp:
+
+| Mô hình | Cách bind | Điều kiện bắt buộc |
+| --- | --- | --- |
+| Token một tenant | Claim tenant do issuer tin cậy cấp | Validate claim format, audience, subject membership và trạng thái hiện tại. |
+| User nhiều tenant | Client gửi selector ở header/variable | Selector chỉ là yêu cầu; server kiểm tra membership rồi mới tạo effective tenant. |
+| Service-to-service | Client credential có tenant scope hoặc policy service | Xác định service identity và quyền trên tenant, không dùng header tự do. |
+| Gateway đã bind tenant | Gateway gửi context đã ký hoặc token phù hợp | Backend phải xác thực trust boundary; strip header giả từ client. |
+
+Token claim tenant không tự chứng minh membership hiện tại. Nếu membership có thể bị thu hồi trước khi token hết hạn, service cần kiểm tra policy hiện tại, cache có invalidation hoặc revoke token theo risk.
+
+Khi token nói `tenant-a` nhưng variable/header yêu cầu `tenant-b`, lựa chọn an toàn mặc định là từ chối. Không chọn giá trị “ưu tiên hơn” một cách ngầm định. Không dùng tenant mặc định khi claim bị thiếu, malformed hoặc membership lookup thất bại.
+
+### Defense in depth
+
+Một truy vấn có dữ liệu tenant nên được bảo vệ nhiều lớp:
+
+1. Filter chain xác thực access token và các claim nền tảng.
+2. Interceptor tạo principal snapshot và effective tenant đã bind.
+3. Resolver/policy kiểm tra scope hoặc operation authority.
+4. Service kiểm tra resource ownership, membership và business rule.
+5. Repository/downstream luôn thêm tenant predicate hoặc truyền tenant context đã kiểm soát.
+6. DataLoader/batch loader cũng batch theo tenant/security scope, không tải tất cả rồi lọc ở client.
+7. Log, metric và error không làm lộ resource của tenant khác.
+
+Defense in depth không có nghĩa copy cùng một đoạn code ở mọi nơi. Mỗi lớp nên có invariant rõ. Nếu một lớp bị bỏ qua, lớp kế tiếp vẫn không được trả dữ liệu trái quyền.
+
+## Lỗi và error behavior
+
+### 401 và 403 ở HTTP
+
+Phân biệt hai status ở transport:
+
+| Status | Ý nghĩa thường gặp | Ví dụ |
+| --- | --- | --- |
+| `401 Unauthorized` | Chưa có authentication hợp lệ | Thiếu bearer token, token malformed, signature sai, issuer/audience sai, hết hạn. |
+| `403 Forbidden` | Đã xác thực nhưng không đủ quyền ở boundary đang xét | Scope thiếu, route policy từ chối, policy gateway không cho phép. |
+
+Một response `401` có thể có `WWW-Authenticate`:
+
+```http
+HTTP/1.1 401 Unauthorized
+WWW-Authenticate: Bearer
+Content-Type: application/json
+
+{
+  "error": "unauthorized",
+  "message": "Authentication is required.",
+  "requestId": "req-example-123"
+}
+```
+
+Body, message và HTTP status chính xác phụ thuộc Spring Security, gateway và error handler. Không trả lý do chi tiết như “signature lệch ở byte nào” cho client. Log server có thể phân loại nguyên nhân ở mức an toàn.
+
+Một `403` có thể dùng challenge mở rộng theo OAuth2 khi thiếu scope:
+
+```http
+HTTP/1.1 403 Forbidden
+WWW-Authenticate: Bearer error="insufficient_scope", scope="catalog.read"
+Content-Type: application/json
+```
+
+Không phải mọi GraphQL server đều map lỗi resolver thành HTTP `403`. Nếu filter đã xác thực request nhưng một field bị cấm trong execution, application có thể trả HTTP `200` cùng GraphQL `errors`. Hãy công bố một error contract nhất quán thay vì để client đoán.
+
+### GraphQL errors trong execution
+
+Khi authentication bị chặn ở filter, GraphQL thường chưa tạo execution result. Khi authorization xảy ra trong resolver/service, error có thể nằm trong body GraphQL:
+
+```http
+HTTP/1.1 200 OK
+Content-Type: application/json
+
+{
+  "data": {
+    "viewer": null
+  },
+  "errors": [
+    {
+      "message": "Yêu cầu xác thực.",
+      "path": ["viewer"],
+      "extensions": {
+        "code": "UNAUTHENTICATED",
+        "requestId": "req-example-123"
+      }
+    }
+  ]
+}
+```
+
+`UNAUTHENTICATED` và `FORBIDDEN` ở đây là mã ứng dụng minh họa, không phải giá trị bắt buộc của GraphQL. Không đặt access token, raw claims, stack trace hoặc SQL vào `message`/`extensions`.
+
+Một lỗi authorization có thể làm field thành `null`. Nếu field đó là non-null, GraphQL có thể lan `null` lên parent hoặc toàn bộ `data`. Vì vậy client phải đọc cả HTTP status, `data`, `errors`, `path` và nullability. [Xử lý lỗi tập trung](/docs/tich-hop-spring-for-graphql/xu-ly-loi-tap-trung) mô tả thêm `DataFetcherExceptionResolver` và error response.
+
+### Map exception an toàn
+
+Ứng dụng có thể map exception nghiệp vụ thành `GraphQLError` ở execution boundary. Đây là pseudo-code tĩnh, không phải bean đã chạy:
+
+```java
+@Component
+final class GraphQlAuthExceptionResolver
+        implements DataFetcherExceptionResolver {
+
+    @Override
+    public Mono<List<GraphQLError>> resolveException(
+            Throwable exception,
+            DataFetchingEnvironment environment) {
+
+        if (exception instanceof UnauthenticatedException) {
+            return Mono.just(List.of(GraphqlErrorBuilder
+                    .newError(environment)
+                    .message("Yêu cầu xác thực.")
+                    .extensions(Map.of("code", "UNAUTHENTICATED"))
+                    .build()));
+        }
+
+        if (exception instanceof ForbiddenException) {
+            return Mono.just(List.of(GraphqlErrorBuilder
+                    .newError(environment)
+                    .message("Không có quyền truy cập.")
+                    .extensions(Map.of("code", "FORBIDDEN"))
+                    .build()));
+        }
+
+        return Mono.empty();
+    }
+}
+```
+
+Tên interface, return type và cách đăng ký resolver có thể khác theo Spring for GraphQL version. Lỗi ở filter resource server phải được xử lý bởi authentication entry point/access denied handler phù hợp, không cố biến mọi lỗi HTTP thành GraphQL error sau khi filter đã dừng request.
+
+Nếu subscription `Publisher` phát lỗi sau khi method mapping đã trả về, lỗi đó có thể đi qua subscription-specific resolver/transport policy khác. Đối chiếu `SubscriptionExceptionResolver` hoặc API tương ứng của version thật; `DataFetcherExceptionResolver` không nhất thiết bắt mọi signal phát ra về sau.
+
+### Fail closed
+
+**Fail closed** nghĩa là khi không đủ bằng chứng về authentication/authorization thì từ chối, không tự cấp quyền thấp hay chọn giá trị mặc định dễ gây rò dữ liệu. Các tình huống phải fail closed gồm:
+
+- thiếu `Authentication` hoặc chỉ có anonymous token;
+- signature không verify, `alg` không allowlist hoặc `kid` không tìm thấy;
+- `iss`, `aud`, `exp` hoặc `nbf` không hợp lệ;
+- JWK/introspection không sẵn sàng và policy không cho phép dùng cache hiện tại;
+- tenant claim malformed, tenant selector không thuộc membership hoặc lookup policy lỗi;
+- context bị thiếu do interceptor/configuration;
+- authority mapping không nhận diện claim theo contract;
+- downstream trả kết quả không chứng minh được tenant/resource scope.
+
+Không catch một exception validation rồi tiếp tục với `userId`/tenant từ variables. Không chuyển lỗi IdP thành “anonymous read all”. Nếu một field thật sự public, đánh dấu public trong schema/policy và test riêng; đó không phải fallback của authentication thất bại.
+
+## WebSocket subscription
+
+### Auth ở handshake và connection init
+
+Subscription WebSocket có hai handshake cần tách:
+
+1. HTTP Upgrade mở socket. Server có thể kiểm tra cookie, Origin, mTLS hoặc header mà client/runtime gửi được.
+2. GraphQL WebSocket protocol nhận `connection_init`. Client thường gửi credential trong payload, server chỉ ACK sau khi xác minh.
+
+Một Upgrade request minh họa:
+
+```http
+GET /graphql-ws HTTP/1.1
+Host: api.example.com
+Upgrade: websocket
+Connection: Upgrade
+Sec-WebSocket-Protocol: graphql-transport-ws
+Origin: https://app.example.com
+```
+
+`101 Switching Protocols` chỉ nói transport đã được nâng cấp. Nó chưa nói token hoặc subscription đã được xác thực.
+
+Protocol hiện đại thường dùng `graphql-transport-ws` với các message `connection_init`, `connection_ack`, `subscribe`, `next`, `error` và `complete`. Đừng trộn nó với protocol legacy `subscriptions-transport-ws`; tên package/client có thể gây nhầm.
+
+### Connection params
+
+Browser WebSocket API không thuận tiện khi đặt mọi custom header. Nhiều client dùng `connectionParams` để tạo payload `connection_init`:
+
+```json title="connection_init — ví dụ tĩnh"
+{
+  "type": "connection_init",
+  "payload": {
+    "authorization": "Bearer <access-token>",
+    "tenantId": "tenant-7"
+  }
+}
+```
+
+Tên key (`authorization`, `Authorization`, `token` hoặc object lồng) là contract riêng của server/client. Payload này là **untrusted input**. `tenantId` chỉ là selector; server phải bind tenant sau khi kiểm tra membership. Không đặt access token trong URL WebSocket.
+
+Server nên:
+
+- đặt timeout chờ `connection_init`;
+- verify credential trước `connection_ack`;
+- không log nguyên payload;
+- giới hạn số lần init và không cho đổi principal giữa chừng bằng cách gửi lại init tùy ý;
+- tạo context gắn với connection/operation nhưng không giữ token raw;
+- re-check authorization ở mỗi `subscribe` và theo event nếu membership có thể thay đổi.
+
+Spring for GraphQL có các interceptor WebSocket như `WebSocketGraphQlInterceptor` hoặc integration authentication tương ứng theo version. Một pseudo-flow:
+
+```java
+// Pseudo-code: tên callback phụ thuộc Spring for GraphQL/web stack version.
+final class GraphQlWebSocketAuthInterceptor
+        implements WebSocketGraphQlInterceptor {
+
+    Mono<Object> onConnectionInit(
+            WebSocketSessionInfo session,
+            Map<String, Object> payload) {
+
+        String authorization = readAuthorization(payload);
+        Authentication authentication =
+                tokenAuthenticationService.authenticate(authorization);
+
+        if (authentication == null) {
+            return Mono.error(new UnauthenticatedException());
+        }
+
+        // Chỉ lưu principal snapshot/context nhỏ, không lưu token.
+        return Mono.just(principalSnapshot(authentication));
+    }
+
+    Mono<WebGraphQlResponse> intercept(
+            WebGraphQlRequest request,
+            Chain chain) {
+        // Kiểm tra operation/tenant rồi gắn GraphQLContext tương tự HTTP.
+        return chain.next(request);
+    }
+}
+```
+
+Không coi đoạn code là API compile-ready. Đối chiếu method lifecycle của version thật và test cả handshake, `subscribe`, cancel, token expiry và connection close. [Subscription và WebSocket](/docs/query-mutation-subscription/subscription-websocket) trình bày protocol, proxy, cleanup và backpressure rộng hơn.
+
+### Authorization trong subscription
+
+Connection đã ACK có thể mang nhiều operation. Vì vậy cần ít nhất ba lớp kiểm tra:
+
+| Thời điểm | Cần kiểm tra |
+| --- | --- |
+| HTTP Upgrade | TLS, route, Origin/cookie/mTLS boundary và giới hạn connection. |
+| `connection_init`/`connection_ack` | Access token, issuer, audience, thời gian và principal. |
+| `subscribe` | Schema/variables, scope, tenant, field selection và resource policy. |
+| Mỗi event | Membership/revocation thay đổi, event tenant, field nhạy cảm và filter trước khi phát. |
+
+Không phát event của mọi tenant vào một stream chung rồi hy vọng nested resolver che được dữ liệu sau đó. Event source hoặc service phải filter theo effective tenant/principal trước khi gửi đến subscriber.
+
+Nếu quyền bị thu hồi trong lúc stream sống, policy có thể bỏ qua event, kết thúc operation hoặc đóng connection. Lựa chọn phụ thuộc việc im lặng có làm lộ sự tồn tại của resource hay không. Điểm bắt buộc là không tiếp tục phát dữ liệu sau khi authorization không còn hợp lệ.
+
+### Reconnect và token expiry
+
+WebSocket reconnect không phải retry vô hại. Khi socket mất ngay sau `subscribe`, client không biết server đã tạo stream hay chưa. Quy trình an toàn:
+
+1. Đánh dấu connection cũ không còn dùng và server cleanup operation cũ.
+2. Lấy access token mới từ flow refresh phù hợp; không gửi refresh token cho GraphQL resource server.
+3. Mở `wss://` mới, đề xuất đúng subprotocol và gửi `connection_init` mới.
+4. Chờ `connection_ack` rồi mới gửi lại các `subscribe` cần thiết.
+5. Dùng exponential backoff + jitter và giới hạn retry.
+6. Dùng `eventId`, sequence/cursor hoặc query catch-up nếu domain không chấp nhận mất event.
+
+Không retry vô hạn khi lỗi là credential hết hạn, issuer/audience sai, protocol không tương thích hoặc authorization bị từ chối. Token hết hạn trong connection có thể được xử lý bằng đóng socket/re-auth/reconnect hoặc cơ chế re-auth explicit; `connection_init` không mặc định là message refresh token.
+
+Nếu delivery là at-least-once, client phải deduplicate event ổn định. WebSocket không tự tạo exactly-once delivery. [Subscription WebSocket khi deploy](/docs/trien-khai/subscription-websocket-deployment) nối reconnect với rollout, proxy và scale ngang.
+
+### Lỗi và cleanup của WebSocket
+
+Một operation subscription có thể kết thúc qua `error`, `complete`, cancel hoặc socket close. Server phải truyền cleanup xuống `Publisher`, broker consumer, timer, queue và registry. Không chỉ cleanup khi nhận message `complete` đẹp từ client.
+
+Message lỗi theo protocol có thể có shape:
+
+```json title="error — ví dụ tĩnh"
+{
+  "id": "sub-42",
+  "type": "error",
+  "payload": [
+    {
+      "message": "Không có quyền đăng ký stream này.",
+      "extensions": {
+        "code": "FORBIDDEN",
+        "requestId": "req-example-123"
+      }
+    }
+  ]
+}
+```
+
+Shape và close code phụ thuộc protocol/implementation. Không ghi token hoặc nguyên `connection_init` vào close reason/log. Test ít nhất các trường hợp client gửi `complete`, socket mất, Publisher error, token hết hạn, membership revoke và server shutdown. Cùng một operation ID không nên được dùng cho hai subscription đồng thời trên một connection.
+
+## CORS và CSRF theo transport
+
+### CORS bảo vệ browser boundary
+
+**CORS** là policy để browser quyết định JavaScript từ origin nào được đọc response. CORS không xác thực JWT, không cấp authority và không bảo vệ service-to-service call.
+
+Cấu hình cần allowlist origin cụ thể, method và header cần thiết:
+
+```java
+@Bean
+CorsConfigurationSource corsConfigurationSource() {
+    CorsConfiguration configuration = new CorsConfiguration();
+    configuration.setAllowedOrigins(List.of(
+            "https://app.example.com"));
+    configuration.setAllowedMethods(List.of("POST", "OPTIONS"));
+    configuration.setAllowedHeaders(List.of(
+            "Authorization", "Content-Type", "X-Request-Id"));
+    configuration.setAllowCredentials(false); // bearer header, không dùng cookie
+
+    UrlBasedCorsConfigurationSource source =
+            new UrlBasedCorsConfigurationSource();
+    source.registerCorsConfiguration("/graphql", configuration);
+    return source;
+}
+```
+
+Đây là Java/pseudo-code tĩnh. Với cookie authentication, `allowCredentials` có thể cần `true`, nhưng khi đó origin phải là danh sách cụ thể; không dùng `*` cùng credentials. Chỉ permit preflight sau khi CORS policy kiểm tra origin. Không mở `Access-Control-Allow-Origin` cho mọi origin để “sửa” lỗi browser.
+
+CORS không ngăn một native client hoặc server khác gọi API. Authentication và authorization vẫn phải chạy khi request không đi qua browser.
+
+### CSRF và cookie
+
+**CSRF** xảy ra khi browser tự gửi credential (thường là cookie) theo một request do origin khác kích hoạt. GraphQL thường dùng một `POST /graphql` cho cả query và mutation, nên một endpoint duy nhất cũng có thể là bề mặt ghi dữ liệu.
+
+Nếu dùng session/cookie:
+
+- giữ CSRF protection của Spring Security trừ khi có threat model và boundary thay thế rõ;
+- kiểm tra `Origin`/`Referer` theo policy, `SameSite`, Secure và HttpOnly cookie;
+- dùng CSRF token cho các mutation theo cơ chế frontend/backend đã thống nhất;
+- không coi CORS allowlist là CSRF token;
+- kiểm thử preflight, same-site và cross-site POST thật.
+
+Nếu API chỉ nhận bearer token trong `Authorization` header và không có cookie tự động gửi cho endpoint đó, CSRF truyền thống giảm đáng kể vì form cross-site không tự thêm header tùy ý. Tuy nhiên, XSS, token theft, CORS misconfiguration và endpoint cookie khác vẫn là rủi ro. Không tắt CSRF toàn cục chỉ vì GraphQL dùng bearer token; quyết định phải xét toàn bộ ứng dụng.
+
+### Bearer header và lựa chọn lưu token
+
+Client web có nhiều lựa chọn lưu access token: memory, BFF với cookie HttpOnly, hoặc storage do sản phẩm chọn. Không có lựa chọn nào loại bỏ XSS và replay hoàn toàn.
+
+Nguyên tắc tối thiểu:
+
+- không lưu refresh token trong nơi script không tin cậy nếu kiến trúc có thể tránh;
+- không in token vào console, network debug export hoặc analytics;
+- không để token trong URL, GraphQL variables hoặc persisted query key;
+- giới hạn lifetime và scope của access token;
+- dùng CSP/XSS defense và dependency hygiene;
+- nếu dùng cookie cho browser, thiết kế CSRF/Origin/SameSite cùng authentication.
+
+Authorization header làm browser có thể phát sinh preflight vì đây là header không đơn giản. Đó là lý do phải cấu hình CORS đúng, không phải lý do bỏ authentication.
+
+### WebSocket không dùng CORS HTTP
+
+CORS HTTP không bảo vệ WebSocket handshake theo cùng cơ chế. WebSocket server/proxy cần kiểm tra `Origin` allowlist, TLS, route, subprotocol và authentication riêng. Cookie trên WebSocket vẫn có thể tạo CSRF-like cross-site connection nếu server chỉ tin cookie mà không kiểm tra Origin/CSRF policy.
+
+Bearer token trong `connection_init` không làm Origin đáng tin. Origin chỉ là một tín hiệu browser policy; principal vẫn phải đến từ token/cookie/mTLS đã verify. Với WebSocket, giới hạn số connection, frame size, idle timeout và reconnect cũng là một phần security boundary.
+
+## Service to service
+
+### Client credentials
+
+Một service gọi GraphQL nên dùng OAuth2 client credentials hoặc cơ chế workload identity đã được tổ chức chọn. Token có `sub` là service identity, `aud` là GraphQL API và scope hẹp:
+
+```text
+orders-service
+  └── client credentials → access token
+                              iss = https://idp.example.com/issuer
+                              sub = orders-service
+                              aud = graphql-api
+                              scope = orders.read
+                                  │
+                                  ▼
+                         POST /graphql
+                         Authorization: Bearer <service-token>
+```
+
+GraphQL vẫn validate token như request user. Service identity không tự có quyền admin. Mỗi mutation/service scope cần được allowlist và policy riêng.
+
+Nếu client credentials dùng secret, lưu secret trong vault/secret manager và rotate. Có thể dùng certificate/mTLS hoặc workload identity để giảm secret tĩnh, nhưng transport identity không thay cho audience, scope và resource authorization.
+
+### Delegation và on behalf of
+
+Khi service A gọi GraphQL thay mặt user, không nên tùy ý forward token của user đến mọi downstream. Hãy dùng token exchange, delegated token hoặc một cơ chế on-behalf-of được IdP hỗ trợ.
+
+Token delegated cần làm rõ ít nhất:
+
+- user principal là ai;
+- calling service là ai;
+- audience hiện tại là GraphQL API;
+- scope là giao của user policy và service policy;
+- tenant nào được phép;
+- chain delegation có hợp lệ không.
+
+Một số provider dùng claim `act`/actor hoặc tên khác. Đây là claim provider-specific và phải được verify như các claim khác. Không tin `X-User-Id`, `X-Tenant-Id`, `X-Roles` từ internet. Nếu gateway đặt header trusted, backend phải xác thực mTLS/signature/trust boundary, strip bản header client gửi và kiểm tra gateway policy.
+
+### Audience và least privilege
+
+Token dành cho service A không tự dùng được cho service B. Mỗi resource server nên có audience riêng hoặc contract audience rõ. Không forward một token `aud=orders-api` đến `graphql-api` chỉ vì cả hai dùng cùng IdP.
+
+Áp dụng least privilege:
+
+- scope chỉ chứa hành động cần (`catalog.read`, không phải `admin.*`);
+- client credential riêng cho workload và môi trường;
+- tenant scope giới hạn theo workload;
+- token ngắn hạn và rotation credential;
+- outbound HTTP client không log token và không forward đến host ngoài allowlist;
+- downstream GraphQL vẫn kiểm tra resource/tenant, không tin caller đã authorize ở service trước.
+
+## Refresh logout và revocation
+
+### Access token và refresh token
+
+Access token dùng gọi GraphQL. Refresh token dùng với authorization server để xin access token mới. Resource server GraphQL thường không cần và không nên nhận refresh token.
+
+Một vòng đời khái quát:
+
+```text
+Client ── refresh credential ──► Authorization Server
+Client ◄─ access token ngắn hạn ──
+Client ── Bearer access token ───► GraphQL Resource Server
+```
+
+Refresh token có giá trị cao hơn và cần bảo vệ chặt hơn access token. Khi dùng refresh token rotation, authorization server nên phát hiện reuse theo contract của provider. Client cần xử lý refresh failure bằng logout/re-auth, không gửi refresh token vào `Authorization: Bearer` đến GraphQL.
+
+GraphQL API không nên tự làm authorization server trừ khi đó là sản phẩm OAuth2 riêng đã được thiết kế và kiểm toán. Đừng thêm mutation `refreshToken` tùy tiện mà bỏ qua cookie, CSRF, rotation và client authentication.
+
+### Logout không đồng nghĩa JWT bị xóa
+
+JWT đã phát hành là dữ liệu có chữ ký, không có thao tác “xóa” ở resource server. Logout thường cần:
+
+1. client xóa access token khỏi nơi lưu;
+2. client/authorization server revoke refresh token hoặc session;
+3. cookie phiên bị clear nếu dùng cookie;
+4. access token đang sống được chấp nhận đến `exp`, hoặc bị chặn sớm bằng denylist/revocation policy nếu risk yêu cầu;
+5. subscription WebSocket bị re-auth/đóng khi credential không còn hợp lệ.
+
+Với opaque token và introspection không cache dài, trạng thái `active=false` có thể được nhìn thấy gần real-time hơn. Nhưng revoke endpoint, cache và network failure vẫn cần policy.
+
+Không tuyên bố “logout tức thời” nếu resource server chỉ validate JWT local và không có revoke check. Nói rõ access token lifetime, revoke delay và behavior của subscription.
+
+### Revocation và replay
+
+Revocation strategy là trade-off giữa latency, availability, chi phí và risk:
+
+| Strategy | Lợi ích | Chi phí/rủi ro |
+| --- | --- | --- |
+| Access token ngắn hạn | Đơn giản, không cần denylist lớn | Cửa sổ replay đến khi token hết hạn. |
+| Opaque introspection | Revoke trung tâm gần real-time | Dependency mạng và tải IdP. |
+| JWT `jti` denylist | Chặn sớm token cụ thể | State phân tán, memory, lookup và cleanup. |
+| Token family/refresh rotation | Giảm reuse refresh token | Cần state và xử lý race/incident. |
+| Sender-constrained token | Giảm giá trị token bị copy | Cần client/proxy/provider hỗ trợ, phức tạp hơn. |
+
+Denylist key không nên lưu raw token nếu có thể dùng fingerprint/HMAC. TTL entry không nên dài hơn lifetime token trừ khi incident policy yêu cầu. Khi revoke vì tenant membership, cần quyết định có revoke mọi token của subject/tenant, đóng subscription và invalidate cache policy hay không.
+
+## JWK introspection cache và availability
+
+### Cache JWK an toàn
+
+JWK cache nên có policy rõ ràng:
+
+- cache theo issuer/configured JWK set, không theo URL token gửi;
+- tôn trọng TTL/HTTP cache header ở mức phù hợp nhưng đặt giới hạn nội bộ;
+- làm mới khi `kid` chưa biết, có single-flight để tránh stampede;
+- giữ overlap key cũ trong thời gian token còn hạn;
+- giới hạn số key/issuer và metric refresh/error/unknown-kid;
+- không chấp nhận JWK thiếu algorithm/key type phù hợp với allowlist;
+- không coi cache hit là bỏ qua `iss`, `aud`, `exp` hoặc `nbf`.
+
+JWK là public key, nhưng endpoint và issuer discovery vẫn là dependency availability và trust configuration. Theo dõi latency, HTTP status, parse error, key count và thời điểm refresh cuối. Đừng “fix” outage bằng cách tắt signature validation.
+
+### Introspection timeout và cache
+
+Opaque introspection đặt IdP trên đường đi của request. Cần:
+
+- connect/read timeout hữu hạn;
+- connection pool và giới hạn concurrency;
+- metric latency/error/active=false;
+- circuit breaker hoặc bulkhead không làm thread GraphQL bị treo vô hạn;
+- cache positive với TTL ngắn nếu chấp nhận revoke delay;
+- cache negative rất thận trọng để tránh token hợp lệ bị giữ trạng thái xấu quá lâu;
+- không cache raw token trong log hoặc key dễ lộ.
+
+Nếu cache introspection, có thể dùng fingerprint mật mã của token làm cache key và bảo vệ cache như credential-derived data. TTL phải nhỏ hơn access token lifetime và phù hợp revoke SLA. Cache `active=true` không được biến thành quyền vĩnh viễn.
+
+### Fail closed khi IdP không sẵn sàng
+
+Khi IdP/JWK/introspection gặp outage, behavior phụ thuộc mode:
+
+- JWT với **known trusted key** có thể tiếp tục verify token còn hạn tại chỗ, nếu policy availability cho phép. Điều này không phát hiện revoke mới ở IdP.
+- JWT với `kid` mới hoặc key cache đã bị loại phải từ chối nếu không lấy được key. Không bỏ qua signature.
+- Opaque token cần kết quả introspection mới, trừ khi cache trong cửa sổ đã được phê duyệt. Cache hết hạn mà không introspect được phải từ chối.
+- Nếu tenant membership/revocation bắt buộc real-time, không dùng stale cache chỉ để giữ traffic xanh.
+- Health check readiness nên phản ánh dependency cần cho mode đã chọn, nhưng không để liveness/health endpoint vô tình yêu cầu bearer token như GraphQL.
+
+Log outage bằng request ID, issuer/key fingerprint, mode và error category; không log token. Runbook cần nói rõ khi nào giảm traffic, chuyển provider, tăng cache trong giới hạn đã phê duyệt hoặc đóng route.
+
+## Token leakage và observability
+
+### Những nơi không được log
+
+Không ghi raw access token, refresh token hoặc cookie session vào:
+
+- access log của reverse proxy và load balancer;
+- log request/response của Spring, HTTP client, WebSocket hoặc debug middleware;
+- `connection_init.payload` và close reason;
+- GraphQL variables, `extensions`, exception message hoặc stack trace;
+- tracing span attribute, metric label, analytics event;
+- URL, query string, `Referer`, browser history hoặc Postman collection;
+- heap dump, thread dump, support bundle không được kiểm soát.
+
+`Authorization` header cần được redact không phân biệt hoa thường. Redact trước khi serialize, không chỉ xóa trong một formatter cuối pipeline. Kiểm tra cả proxy log và APM vendor vì mỗi lớp có thể tự capture HTTP body/header.
+
+### Redaction và fingerprint
+
+Log nên dùng dữ liệu tối thiểu và ổn định:
+
+```json title="Log event an toàn hơn — ví dụ tĩnh"
+{
+  "requestId": "req-example-123",
+  "operationName": "Viewer",
+  "queryHash": "hash-example",
+  "authState": "authenticated",
+  "subjectFingerprint": "hmac-sub-7f31",
+  "tenantFingerprint": "hmac-tenant-a1c2",
+  "authorityCount": 2,
+  "graphqlErrorCodes": [],
+  "durationMs": 18
+}
+```
+
+Nếu cần correlate một token cho incident, dùng HMAC với log key được bảo vệ và chỉ giữ prefix ngắn. Không dùng hash trần như một “ẩn danh tuyệt đối”; token có entropy/format và log key vẫn cần kiểm soát. Thường chỉ cần request ID, operation name, query hash, error code và subject/tenant đã pseudonymize.
+
+Variables nên được redact theo allowlist field, truncate kích thước và loại bỏ PII. Không log toàn bộ `GraphQLContext` hoặc object `Authentication`; chúng có thể chứa claims và credential-derived metadata mà policy log không dự kiến.
+
+### Error message và PII
+
+JWT payload có thể chứa email, tên, tenant hoặc claim riêng tư. Vì vậy, decode token để debug trong production cũng là một hành vi xử lý PII. Chỉ log claim đã allowlist, cần thiết và đã pseudonymize.
+
+GraphQL error gửi client nên:
+
+- dùng code ổn định như `UNAUTHENTICATED`, `FORBIDDEN`, `TOKEN_EXPIRED` theo contract của API;
+- không phân biệt quá chi tiết giữa “user không tồn tại” và “user tồn tại nhưng không có quyền” nếu điều đó làm lộ resource;
+- không trả raw exception, JWK URL, issuer nội bộ, SQL hoặc stack trace;
+- chứa request/correlation ID không nhạy cảm để hỗ trợ tra cứu;
+- giữ `path` cần thiết cho client nhưng tránh thêm resource ID nhạy cảm vào message.
+
+[Logging và tracing](/docs/bao-mat-va-quan-sat/logging-va-tracing) sẽ nối các nguyên tắc redaction này với query hash, field trace và metric cardinality.
+
+## Quy trình triển khai production
+
+### Cấu hình mẫu cần kiểm tra
+
+Một bộ cấu hình tối thiểu cần được review như một contract, không phải chỉ copy snippet. Với Boot 3.5+, phần HTTP dùng `spring.graphql.http.path`; các policy audience, clock skew, CORS/CSRF, authority mapping, WebSocket interceptor và JWK/introspection cần được cấu hình riêng:
+
+```yaml title="application.yml — checklist cấu hình tĩnh"
+spring:
+  graphql:
+    http:
+      path: /graphql
+  security:
+    oauth2:
+      resourceserver:
+        jwt:
+          issuer-uri: https://idp.example.com/issuer
+```
+
+Với Boot `<= 3.4`, phần HTTP tương ứng là:
+
+```yaml title="application.yml — Boot <= 3.4"
+spring:
+  graphql:
+    path: /graphql
+```
+
+Các snippet không chứng minh endpoint hoặc security runtime đã chạy. Khi triển khai thật, đối chiếu:
+
+- Spring Boot/Spring Security/Spring for GraphQL version và BOM;
+- issuer, audience, JWK set hoặc introspection endpoint của môi trường;
+- algorithm/key type được IdP dùng và rotation overlap;
+- mapping scope/role thành authority;
+- `SecurityFilterChain` matcher với context path/proxy;
+- CORS origin/header/method và cookie/CSRF policy;
+- HTTP `WebGraphQlInterceptor` và WebSocket auth hook;
+- timeout, cache, failover và revoke SLA;
+- error contract cho filter, resolver và subscription;
+- log/trace redaction ở mọi proxy và APM.
+
+### Ma trận test
+
+Không chỉ test một token hợp lệ. Ma trận tối thiểu nên có các nhóm sau:
+
+| Nhóm | Case nên có | Kỳ vọng |
+| --- | --- | --- |
+| Token format | Thiếu header, sai scheme, malformed JWT, quá lớn | `401`/error transport an toàn; GraphQL resolver chưa chạy. |
+| Signature | Signature sai, key sai, algorithm ngoài allowlist, `none` | Từ chối; không dùng fallback claim. |
+| Trust claims | Sai `iss`, sai `aud`, thiếu `sub`, ID token dùng nhầm | Từ chối. |
+| Time | `exp` quá hạn, `nbf` tương lai, sát clock skew | Kết quả đúng policy và đồng hồ test cố định. |
+| Key availability | Rotation `kid` mới, JWK cache miss, JWK endpoint timeout | Refresh có kiểm soát; unknown key/outage fail closed. |
+| Opaque | `active=false`, introspection timeout, response thiếu scope | Từ chối hoặc error theo policy; không treo vô hạn. |
+| Authorization | Thiếu scope, role sai, field admin, resource khác owner | `403` hoặc GraphQL `FORBIDDEN` theo contract. |
+| Tenant | Tenant claim/selector mismatch, membership revoke, tenant default missing | Không trả dữ liệu chéo tenant. |
+| Variables | `userId`/`tenantId`/`role` giả trong variables | Không thay đổi principal hoặc authority. |
+| Context | Context thiếu, hai request khác tenant chạy song song, async đổi thread | Fail closed và không cross-talk. |
+| HTTP | Preflight hợp lệ/không hợp lệ, CORS origin lạ, cookie CSRF | Chỉ origin/method/header được allow mới đi tiếp. |
+| WebSocket | Init thiếu/sai token, ACK sớm, subscribe sai tenant, token expiry | Không ACK sớm; operation bị từ chối/cleanup đúng. |
+| Lifecycle | Reconnect, duplicate event, `complete`, socket close, shutdown | Không leak consumer/queue; delivery semantics được tôn trọng. |
+| Logout/revoke | Revoke refresh, JWT access còn hạn, opaque active false | Behavior đúng với revoke SLA đã công bố. |
+| Leakage | Proxy/APM/error/log/heap snapshot | Không xuất hiện raw token, cookie, variables nhạy cảm hoặc claims ngoài allowlist. |
+
+Test integration với `MockMvc`/WebTestClient, `GraphQlTester`, Spring Security test support và WebSocket client theo stack thật. Đây là hướng kiểm thử, không phải test đã chạy trong repository hiện tại.
+
+### Checklist review
+
+- [ ] Authentication và authorization được mô tả thành hai policy riêng.
+- [ ] Resource server kiểm tra signature bằng trusted key và algorithm allowlist.
+- [ ] `iss`, `aud`, `exp`, `nbf` và token use được validate theo contract IdP.
+- [ ] Authority chỉ được map sau validation, với claim/prefix allowlist.
+- [ ] JWT không được decode thủ công trong resolver; không có crypto tự viết.
+- [ ] JWK discovery/URL là cấu hình tin cậy; rotation có overlap, cache và unknown-`kid` policy.
+- [ ] Opaque introspection có timeout, credential bảo mật, cache/revoke trade-off và fail-closed behavior.
+- [ ] `SecurityFilterChain` bảo vệ đúng GraphQL path; không nhầm `/graphql` với `/graphiql`.
+- [ ] Boot 3.5+ dùng `spring.graphql.http.path`; Boot `<= 3.4` dùng `spring.graphql.path`.
+- [ ] Filter tạo `Authentication`; interceptor tạo context nhỏ; resolver/service không parse header.
+- [ ] Không lấy `userId`, `tenantId`, `role`, `isAdmin` hoặc permission flag từ variables làm authority.
+- [ ] Effective tenant chỉ được tạo sau membership/policy check; mismatch và thiếu tenant fail closed.
+- [ ] Authorization có operation/field/resource/service hoặc repository defense in depth.
+- [ ] HTTP `401`/`403` và GraphQL `errors` có contract rõ, không lộ token/claim/stack trace.
+- [ ] CORS allowlist origin cụ thể; cookie có CSRF/Origin/SameSite policy; không wildcard credentials.
+- [ ] WebSocket `connection_init` được verify trước ACK; `Origin`, protocol, reconnect và token expiry đã test.
+- [ ] Subscription được authorize lúc subscribe và re-check/filter theo event khi cần.
+- [ ] Access/refresh/logout/revocation semantics và cửa sổ replay được công bố.
+- [ ] Async/reactive path không dựa vào `ThreadLocal` tình cờ; context request-scoped và immutable.
+- [ ] Proxy, APM, GraphQL variables, WebSocket payload và exception log đều redact credential.
+- [ ] Test negative bao phủ wrong issuer/audience/key/time, JWK/introspection outage, tenant và reconnect.
 
 ## Bước tiếp theo
 
-Sau khi trang được điền nội dung, đọc bài kế tiếp trong nhóm để tiếp tục lộ trình.
+Authentication là nền tảng, không phải toàn bộ security boundary. Sau khi xác nhận token validation và context, đọc tiếp:
+
+- [Authorization theo field và resolver](/docs/bao-mat-va-quan-sat/authorization-field-resolver) để đặt policy ở operation, field, resource và service.
+- [Context, interceptor và request lifecycle](/docs/tich-hop-spring-for-graphql/context-interceptor-request-lifecycle) để hiểu hook tạo context trong vòng đời Spring.
+- [DataFetcher và GraphQL context](/docs/tich-hop-spring-for-graphql/datafetcher-va-graphql-context) để phân biệt `GraphQLContext`, source và local context.
+- [Query, mutation và subscription mapping](/docs/tich-hop-spring-for-graphql/query-mutation-subscription-mapping) để nối context với controller mapping.
+- [Subscription và WebSocket](/docs/query-mutation-subscription/subscription-websocket) để triển khai protocol, reconnect, backpressure và cleanup.
+- [Introspection, CORS và CSRF](/docs/bao-mat-va-quan-sat/introspection-cors-csrf) để review browser và schema discovery boundary.
+- [Lỗi authentication/authorization](/docs/xu-ly-su-co/loi-authentication-authorization) khi xây runbook chẩn đoán.
+
+<Cards>
+  <Card title="Authorization theo field và resolver" href="/docs/bao-mat-va-quan-sat/authorization-field-resolver" description="Tách authentication khỏi policy quyền trên operation, field và resource." />
+  <Card title="Context và request lifecycle" href="/docs/tich-hop-spring-for-graphql/context-interceptor-request-lifecycle" description="Đưa principal đã xác minh vào GraphQL execution đúng scope." />
+  <Card title="Subscription và WebSocket" href="/docs/query-mutation-subscription/subscription-websocket" description="Bảo vệ connection, reconnect, event stream và cleanup." />
+  <Card title="Mô hình request/response" href="/docs/nen-tang/mo-hinh-request-response" description="Đọc HTTP status, envelope, data và GraphQL errors cùng nhau." />
+</Cards>

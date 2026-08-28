@@ -1,23 +1,1327 @@
 ---
 title: "Authorization theo field và resolver"
-description: "Áp dụng quyền ở operation, field hoặc service layer mà không làm rò rỉ dữ liệu."
+description: "Thiết kế authorization nhiều lớp cho operation, field, resolver và service trong GraphQL Spring Boot mà không làm rò rỉ dữ liệu."
 ---
 
-Trang này sẽ trình bày **Authorization theo field và resolver** trong bối cảnh xây dựng GraphQL API với Spring Boot.
+GraphQL thường dùng một endpoint cho nhiều operation và nhiều field. Vì vậy, bảo vệ URL hoặc kiểm tra một lần ở root field chưa đủ để bảo vệ mọi dữ liệu mà client có thể chọn. Một query có thể đọc đồng thời field công khai và field chứa bí mật; mỗi field cần đi qua policy phù hợp.
+
+<Callout type="info" title="Phạm vi và giả định">
+Các SDL, query, variables, JSON, Java và pseudo-code trong bài là **minh họa tĩnh**. Repository này là docs-only, không có backend Spring Boot, database, identity provider hoặc event broker để chạy kiểm chứng. Ví dụ không phải runtime response đã được xác nhận. Khi áp dụng, đối chiếu API của Spring Boot, Spring for GraphQL, Spring Security và GraphQL Java đúng version của ứng dụng.
+</Callout>
 
 ## Mục lục
 
-- [Nội dung dự kiến](#nội-dung-dự-kiến)
+- [Bức tranh tổng thể](#bức-tranh-tổng-thể)
+  - [Authentication khác authorization](#authentication-khác-authorization)
+  - [Một request có nhiều điểm quyết định](#một-request-có-nhiều-điểm-quyết-định)
+- [Nguồn dữ liệu cho quyết định policy](#nguồn-dữ-liệu-cho-quyết-định-policy)
+  - [Principal đã được xác minh](#principal-đã-được-xác-minh)
+  - [Tenant resource ownership roles scopes và attributes](#tenant-resource-ownership-roles-scopes-và-attributes)
+  - [Những thứ không phải authority](#những-thứ-không-phải-authority)
+- [Defense in depth cho GraphQL](#defense-in-depth-cho-graphql)
+  - [Authorization ở operation](#authorization-ở-operation)
+  - [Authorization ở field](#authorization-ở-field)
+  - [Resolver không thay service domain](#resolver-không-thay-service-domain)
+  - [Context boundary trong Spring for GraphQL](#context-boundary-trong-spring-for-graphql)
+- [Ví dụ xuyên suốt secret theo tenant](#ví-dụ-xuyên-suốt-secret-theo-tenant)
+  - [SDL query variables và response](#sdl-query-variables-và-response)
+  - [Field resolver Java minh họa](#field-resolver-java-minh-họa)
+  - [Response forbidden minh họa](#response-forbidden-minh-họa)
+- [Unauthorized forbidden và hide hay error](#unauthorized-forbidden-và-hide-hay-error)
+  - [Phân biệt unauthenticated và forbidden](#phân-biệt-unauthenticated-và-forbidden)
+  - [Khi nên ẩn như không tồn tại](#khi-nên-ẩn-như-không-tồn-tại)
+  - [Khi nên trả lỗi field](#khi-nên-trả-lỗi-field)
+- [Nullability errors path và partial data](#nullability-errors-path-và-partial-data)
+  - [Secret non null và Secret nullable](#secret-non-null-và-secret-nullable)
+  - [List phần tử và partial data](#list-phần-tử-và-partial-data)
+  - [Chọn contract theo semantics](#chọn-contract-theo-semantics)
+- [Nested field DataLoader và batching](#nested-field-dataloader-và-batching)
+  - [Policy theo source object](#policy-theo-source-object)
+  - [Batch authorization trước khi đọc dữ liệu](#batch-authorization-trước-khi-đọc-dữ-liệu)
+  - [N plus 1 và ordering](#n-plus-1-và-ordering)
+  - [Cache và cách ly cache key](#cache-và-cách-ly-cache-key)
+- [Mutation transaction và idempotency](#mutation-transaction-và-idempotency)
+  - [Quyền trước khi ghi](#quyền-trước-khi-ghi)
+  - [Transaction và trạng thái không xác định](#transaction-và-trạng-thái-không-xác-định)
+  - [Idempotency key gắn với authority](#idempotency-key-gắn-với-authority)
+- [Subscription và lọc event](#subscription-và-lọc-event)
+  - [Authorization lúc subscribe](#authorization-lúc-subscribe)
+  - [Lọc từng event và revoke](#lọc-từng-event-và-revoke)
+  - [Cleanup và delivery guarantee](#cleanup-và-delivery-guarantee)
+- [Method security policy service và interceptor](#method-security-policy-service-và-interceptor)
+  - [PreAuthorize và service boundary](#preauthorize-và-service-boundary)
+  - [Policy service tập trung](#policy-service-tập-trung)
+  - [Interceptor và context boundary](#interceptor-và-context-boundary)
+- [Logging redaction và audit](#logging-redaction-và-audit)
+  - [Log đủ để điều tra](#log-đủ-để-điều-tra)
+  - [Audit khác debug log](#audit-khác-debug-log)
+- [Fail closed timing và data leakage](#fail-closed-timing-và-data-leakage)
+  - [Fail closed khi thiếu context](#fail-closed-khi-thiếu-context)
+  - [Giảm timing và data leakage](#giảm-timing-và-data-leakage)
+- [Ma trận kiểm thử authorization](#ma-trận-kiểm-thử-authorization)
+  - [Matrix principal tenant resource và field](#matrix-principal-tenant-resource-và-field)
+  - [Unit integration và transport test](#unit-integration-và-transport-test)
+- [Version endpoint và checklist](#version-endpoint-và-checklist)
+  - [Endpoint HTTP theo Spring Boot](#endpoint-http-theo-spring-boot)
+  - [Checklist trước khi merge](#checklist-trước-khi-merge)
 - [Bước tiếp theo](#bước-tiếp-theo)
 
-## Nội dung dự kiến
+## Bức tranh tổng thể
 
-Nội dung chi tiết sẽ bao gồm khái niệm chính, ví dụ code và các lưu ý thực hành liên quan đến chủ đề này.
+### Authentication khác authorization
 
-<Callout type="info" title="Trang placeholder">
-Đây là trang khung. Hãy dùng skill `fumadocs-technical-writer` để viết đầy đủ trang này trong bước tiếp theo.
+**Authentication** (xác thực) trả lời: “Request này thuộc principal nào?” Principal là danh tính đã được hệ thống xác minh, chẳng hạn `subject` trong JWT hoặc danh tính của session. Authentication kiểm tra credential, chữ ký, thời hạn và các điều kiện của identity provider.
+
+**Authorization** (phân quyền) trả lời: “Principal này có được thực hiện hành động nào trên resource nào, tenant nào và field nào không?” Một access token hợp lệ chỉ chứng minh danh tính. Nó không tự cấp quyền đọc mọi object mà client có thể đoán được ID.
+
+| Lớp | Câu hỏi | Ví dụ tín hiệu | Kết quả khi thất bại |
+| --- | --- | --- | --- |
+| Authentication | Ai đang gọi? | JWT đã verify, session hợp lệ | Thường là `401` hoặc lỗi `UNAUTHENTICATED`; không tạo principal giả. |
+| Authorization | Có được làm việc này không? | Tenant membership, ownership, role, scope, attribute | Thường là `403` hoặc lỗi `FORBIDDEN`; semantics hide có thể phù hợp hơn. |
+| Resource policy | Có được đọc resource cụ thể không? | `document.tenantId`, `ownerId`, classification | Cho phép, ẩn như không tồn tại hoặc từ chối theo contract. |
+| Field policy | Có được thấy field đang chọn không? | `Document.secret`, `AuditLog.ipAddress` | Giữ field nullable, trả lỗi an toàn hoặc không expose giá trị. |
+
+HTTP security có thể chặn request trước GraphQL execution. Nhưng HTTP URL không biết client đang chọn `Document.title` hay `Document.secret`. Do đó authentication và authorization là hai bước liên quan nhưng không thể thay thế cho nhau.
+
+### Một request có nhiều điểm quyết định
+
+Một flow bảo vệ nhiều lớp có thể được đọc như sau:
+
+```text
+HTTP hoặc WebSocket boundary
+        │  kiểm tra credential và tạo Authentication
+        ▼
+GraphQL context theo execution
+        │  principal đã verify, tenant hiệu lực, correlation ID
+        ▼
+Parse và validate operation
+        │
+        ├── operation policy: có được gọi use case này không?
+        ▼
+Root resolver
+        │
+        ├── field policy: field nhạy cảm có được chọn không?
+        ▼
+Nested resolver hoặc DataLoader
+        │  kiểm tra source/resource và lọc theo tenant
+        ▼
+Service/domain/repository
+        │  invariant và predicate phòng thủ cuối cùng
+        ▼
+GraphQL result: data, errors và null bubbling
+```
+
+Có thể kiểm tra operation ở root để loại sớm request không có quyền. Tuy nhiên, một operation được phép không có nghĩa mọi field trong selection set đều được phép. Service vẫn phải bảo vệ invariant nếu cùng use case được gọi từ REST, batch job, message consumer hoặc một resolver khác.
+
+## Nguồn dữ liệu cho quyết định policy
+
+Một policy decision tốt dựa trên dữ liệu do server xác minh, resource đã được tải từ data source đáng tin cậy và rule được sở hữu rõ ràng. Đừng xây decision từ một flag mà client gửi lên.
+
+### Principal đã được xác minh
+
+Principal nên là một snapshot nhỏ, bất biến của authentication đã qua kiểm tra. Ví dụ sau chỉ mô tả dữ liệu tối thiểu mà policy có thể cần:
+
+```java title="PrincipalSnapshot.java — minh họa tĩnh"
+public record PrincipalSnapshot(
+        String subject,
+        java.util.Set<String> roles,
+        java.util.Set<String> scopes,
+        java.util.Map<String, String> attributes) {
+}
+
+public record RequestContext(
+        PrincipalSnapshot principal,
+        String tenantId,
+        String correlationId) {
+}
+```
+
+`subject` là identity đã xác minh. `roles`, `scopes` và `attributes` là thông tin đã được authentication/policy layer chuẩn hóa. `tenantId` trong `RequestContext` phải là tenant hiệu lực sau khi server kiểm tra membership hoặc claim đáng tin cậy. Nó không nên là bản sao chưa kiểm tra của argument GraphQL.
+
+Context này thường được đặt trong `GraphQLContext` của một execution. Resolver đọc context hiện tại, sau đó truyền holder nhỏ hoặc các giá trị typed vào service. Không đặt access token, raw `HttpServletRequest`, entity graph lớn hay `DataFetchingEnvironment` vào domain service.
+
+Principal cũng không phải giấy phép vạn năng. `roles` và `scopes` chỉ là tín hiệu đầu vào cho policy. Quyết định cuối cùng còn phụ thuộc tenant, resource, field, trạng thái resource và các thuộc tính của request.
+
+### Tenant resource ownership roles scopes và attributes
+
+Một quyết định có thể kết hợp nhiều chiều. Không phải API nào cũng cần đủ tất cả, nhưng mỗi chiều được dùng phải có nguồn dữ liệu và test riêng.
+
+| Chiều policy | Câu hỏi cần trả lời | Ví dụ kiểm tra |
+| --- | --- | --- |
+| Tenant | Principal có membership ở tenant hiệu lực không? Resource có thuộc tenant đó không? | `request.tenantId().equals(document.tenantId())`. |
+| Resource ownership | Principal có sở hữu resource hoặc có quan hệ được ủy quyền không? | `document.ownerId().equals(principal.subject())`. |
+| Role | Vai trò có cho phép hành động ở phạm vi nào? | `ROLE_EDITOR` có thể sửa document trong tenant của mình. |
+| Scope | Token có capability cụ thể không? | `document:secret:read` cho phép đọc secret, nhưng chưa bỏ qua tenant check. |
+| Attribute | Thuộc tính của principal/resource/request có thỏa ABAC không? | Classification, region, channel hoặc thời gian truy cập. |
+| Trạng thái | Resource có đang bị khóa, archive hoặc revoked không? | Document đã archive không cho mutation dù role hợp lệ. |
+
+**Role-based access control** (RBAC) nhóm quyền theo role. **Scope** thường mô tả capability do token cấp. **Attribute-based access control** (ABAC) quyết định dựa trên thuộc tính của principal, resource và môi trường. Role hoặc scope đơn lẻ thường quá thô cho field-level authorization.
+
+Policy nên kiểm tra tenant và resource trước khi đọc dữ liệu nhạy cảm. Nếu cần load metadata để quyết định ownership, hãy dùng projection không chứa secret. Repository cũng nên có điều kiện tenant/resource tương ứng để giảm rủi ro nếu một lớp phía trên bị gọi sai.
+
+### Những thứ không phải authority
+
+Các giá trị sau có thể là input hoặc hint, nhưng không tự cấp quyền:
+
+- `tenantId`, `userId`, `documentId`, `ownerId` hoặc `role` trong GraphQL variables;
+- header như `X-Tenant-ID`, `X-User-Role` hoặc `X-Internal-Request` do client gửi;
+- `isAdmin: true` trong input, cookie hoặc local storage;
+- tên operation, alias, tên method Java hoặc việc field không xuất hiện trong GraphiQL;
+- kết quả UI đã ẩn button, tắt introspection hoặc một allowlist phía client;
+- cache hit, DataLoader key hoặc một object mà client tự gửi trong mutation.
+
+Một header chỉ có thể là nguồn tin cậy nếu hạ tầng tin cậy đã xác thực nguồn, loại bỏ header do client đặt, ký hoặc thay thế giá trị, rồi backend kiểm tra provenance theo contract. Không mặc định tin `X-Tenant-ID` chỉ vì gateway nằm trước ứng dụng.
+
+Client có thể gửi `documentId` để yêu cầu đọc một resource. Server phải tự load resource và đối chiếu với `RequestContext`. Client không thể biến `documentId` thành bằng chứng ownership bằng cách gửi thêm `ownerId`.
+
+<Callout type="warn" title="Không bảo vệ bằng UI hoặc root field duy nhất">
+Ẩn field khỏi UI không ngăn client viết query thủ công. Kiểm tra quyền ở `Query.document` nhưng để property data fetcher tự đọc `Document.secret` cũng không đủ. Field nhạy cảm cần một policy server-side, và service/domain phải là lớp phòng thủ cuối cùng.
 </Callout>
+
+## Defense in depth cho GraphQL
+
+### Authorization ở operation
+
+Operation-level authorization kiểm tra capability rộng của root use case. Ví dụ, `Query.documents` có thể yêu cầu `document:read`, còn `Mutation.updateSecret` có thể yêu cầu `document:secret:write` trước khi bind vào service.
+
+Operation guard có ích vì nó từ chối sớm request không có quyền và làm rõ contract của root field. Nhưng nó không biết mọi nested field nếu selection set có nhiều nhánh. Một operation đọc danh sách document có thể hợp lệ cho field `title` nhưng không hợp lệ cho `secret` của từng document.
+
+```java title="CatalogQueryController.java — minh họa tĩnh"
+@Controller
+public class CatalogQueryController {
+
+    private final CatalogPolicy catalogPolicy;
+    private final CatalogService catalogService;
+
+    public CatalogQueryController(
+            CatalogPolicy catalogPolicy,
+            CatalogService catalogService) {
+        this.catalogPolicy = catalogPolicy;
+        this.catalogService = catalogService;
+    }
+
+    @QueryMapping
+    public java.util.List<DocumentView> documents(
+            graphql.GraphQLContext context) {
+        RequestContext request = context.get("requestContext");
+        if (request == null || request.principal() == null) {
+            throw new UnauthenticatedException();
+        }
+
+        catalogPolicy.requireCanReadDocuments(request);
+        return catalogService.findVisibleDocuments(request);
+    }
+}
+```
+
+`CatalogPolicy`, `CatalogService`, `DocumentView` và exception trong đoạn code là type giả định. Resolver chỉ là adapter minh họa. Method không lấy tenant từ variables; service nhận tenant hiệu lực từ context và query tập document đã được lọc.
+
+### Authorization ở field
+
+Field-level authorization phù hợp khi chỉ một số field nhạy cảm cần rule riêng. `@SchemaMapping` tạo một boundary dễ review cho field nested như `Document.secret`, `Document.auditTrail` hoặc `User.billingProfile`.
+
+Một field nhạy cảm không nên để property data fetcher mặc định đọc trực tiếp từ entity nếu getter đó chứa dữ liệu cần policy. Hãy trả DTO không có secret từ root resolver, rồi dùng resolver riêng cho field được kiểm soát. Cách này cũng làm rõ source object và giúp đo latency của field.
+
+Field policy cần xử lý cả hai câu hỏi:
+
+1. Principal có được xem loại field này không?
+2. Principal có được xem giá trị của field trên **resource cụ thể** này không?
+
+Chỉ kiểm tra scope `document:secret:read` mà không kiểm tra tenant/ownership vẫn có thể làm lộ secret của tenant khác. Ngược lại, chỉ kiểm tra owner mà quên scope có thể cấp quyền vượt quá capability đã công bố.
+
+### Resolver không thay service domain
+
+Resolver biết GraphQL field, arguments, selection set và context. Service/domain biết invariant, transaction, resource ownership và cách các đường gọi khác nhau phải tuân thủ cùng rule.
+
+| Lớp | Nên sở hữu | Không nên làm một mình |
+| --- | --- | --- |
+| Interceptor/security | Verify credential, tạo principal và tenant context | Quyết định mọi resource trong graph. |
+| Root resolver | Kiểm tra capability rộng, bind argument, gọi use case | Chứa SQL hoặc là nơi duy nhất bảo vệ resource. |
+| Field resolver | Kiểm tra field/resource policy, chuyển source thành DTO an toàn | Tin argument/header để cấp quyền. |
+| Application service | Authorization resource, invariant, transaction, idempotency | Phụ thuộc vào UI hoặc selection set để an toàn. |
+| Repository/data source | Tenant predicate, ownership filter, projection | Trả toàn bộ dữ liệu rồi chờ client lọc. |
+
+Service nên kiểm tra lại policy ngay trước thao tác nhạy cảm. Đây không phải kiểm tra thừa: một entity có thể đã đổi ownership giữa lúc root resolver đọc và nested resolver chạy, hoặc service có thể được gọi từ một entry point khác.
+
+### Context boundary trong Spring for GraphQL
+
+Một context an toàn có ba đặc tính:
+
+- **Server-created:** được tạo từ authentication đã verify và metadata đã allow-list.
+- **Execution-scoped:** thuộc một GraphQL execution hoặc một operation subscription, không phải singleton.
+- **Immutable và nhỏ:** giữ principal snapshot, tenant hiệu lực, correlation ID, deadline hoặc policy metadata cần thiết.
+
+Trong Spring for GraphQL, `WebGraphQlInterceptor` là một boundary thường dùng để tạo hoặc bổ sung context trước execution. `GraphQLContext` được data fetcher đọc từ `DataFetchingEnvironment`. Tên callback, cách cấu hình interceptor và annotation như `@ContextValue` phụ thuộc version; hãy kiểm tra reference đúng BOM.
+
+Không dựa vào `ThreadLocal` như nguồn authorization chính trong resolver async hoặc reactive. `CompletableFuture`, Reactor và WebFlux có thể đổi thread. Truyền `RequestContext` explicit hoặc dùng propagation mechanism đã được kiểm tra.
+
+Với WebSocket subscription, authentication ở handshake/`connection_init` không làm quyền bất biến mãi mãi. Cần kiểm tra operation subscribe, xử lý token expiry/revocation và lọc event theo policy hiện tại. Xem [Context, interceptor và request lifecycle](/docs/tich-hop-spring-for-graphql/context-interceptor-request-lifecycle) và [DataFetcher và GraphQL context](/docs/tich-hop-spring-for-graphql/datafetcher-va-graphql-context).
+
+## Ví dụ xuyên suốt secret theo tenant
+
+Ví dụ này dùng document thuộc một tenant. `secret` là field chỉ một số principal được đọc. Các type Java, service và response bên dưới chỉ là minh họa tĩnh độc lập.
+
+### SDL query variables và response
+
+```graphql title="schema.graphqls — minh họa tĩnh"
+schema {
+  query: Query
+  mutation: Mutation
+  subscription: Subscription
+}
+
+type Query {
+  document(id: ID!): Document
+  documents: [Document!]!
+}
+
+type Document {
+  id: ID!
+  title: String!
+  secret: Secret
+}
+
+type Secret {
+  value: String!
+  classification: SecretClassification!
+}
+
+enum SecretClassification {
+  INTERNAL
+  CONFIDENTIAL
+}
+
+type Mutation {
+  updateSecret(input: UpdateSecretInput!): UpdateSecretPayload!
+}
+
+input UpdateSecretInput {
+  documentId: ID!
+  value: String!
+  idempotencyKey: ID
+}
+
+type UpdateSecretPayload {
+  document: Document
+  userErrors: [UserError!]!
+}
+
+type UserError {
+  code: UserErrorCode!
+  message: String!
+  inputPath: [String!]!
+}
+
+enum UserErrorCode {
+  FORBIDDEN
+  DOCUMENT_NOT_FOUND
+  IDEMPOTENCY_CONFLICT
+}
+
+type Subscription {
+  secretChanged(tenantId: ID!): Document!
+}
+```
+
+`Document.secret: Secret` là nullable có chủ đích. Nó cho phép public fields của document vẫn xuất hiện khi secret bị ẩn hoặc field resolver gặp lỗi được map an toàn. Nếu domain bắt buộc mọi document visible đều có secret, có thể chọn `Secret!`, nhưng phải chấp nhận phạm vi null bubbling được mô tả ở phần sau.
+
+`tenantId` trong `secretChanged` chỉ là argument client yêu cầu subscribe. Nó không cấp quyền vào tenant. `UpdateSecretInput.documentId` chọn resource; nó cũng không chứng minh ownership.
+
+Một query đọc cả field công khai và secret có thể là:
+
+```graphql title="ReadDocument.graphql — minh họa tĩnh"
+query ReadDocument($id: ID!) {
+  document(id: $id) {
+    id
+    title
+    secret {
+      value
+      classification
+    }
+  }
+}
+```
+
+```json title="Variables — minh họa tĩnh"
+{
+  "id": "document-17"
+}
+```
+
+Khi principal có tenant membership, ownership hoặc role phù hợp và scope đọc secret, response thành công **có thể** có dạng:
+
+```json title="Response thành công — minh họa tĩnh"
+{
+  "data": {
+    "document": {
+      "id": "document-17",
+      "title": "Kế hoạch phát hành",
+      "secret": {
+        "value": "Nội dung chỉ dành cho nhóm được cấp quyền",
+        "classification": "CONFIDENTIAL"
+      }
+    }
+  }
+}
+```
+
+Giá trị document và secret là dữ liệu giả định. SDL không tự verify token, load database hay tạo response này. Việc response có `secret` hay không phụ thuộc policy và implementation.
+
+### Field resolver Java minh họa
+
+`DocumentView` là source object do root service tạo ra. Nó có metadata phục vụ policy nhưng không chứa plaintext secret:
+
+```java title="DocumentView.java — minh họa tĩnh"
+public record DocumentView(
+        String id,
+        String tenantId,
+        String ownerId,
+        String title,
+        SecretClassification classification) {
+}
+
+public record SecretView(
+        String value,
+        SecretClassification classification) {
+}
+
+enum PolicyDecision {
+    ALLOW,
+    HIDE,
+    FORBID
+}
+```
+
+Field resolver có thể đặt policy rõ ràng như sau:
+
+```java title="DocumentFieldController.java — pseudo-code minh họa tĩnh"
+@Controller
+public final class DocumentFieldController {
+
+    private static final String REQUEST_CONTEXT = "requestContext";
+
+    private final DocumentPolicy documentPolicy;
+    private final SecretService secretService;
+
+    public DocumentFieldController(
+            DocumentPolicy documentPolicy,
+            SecretService secretService) {
+        this.documentPolicy = documentPolicy;
+        this.secretService = secretService;
+    }
+
+    @SchemaMapping(typeName = "Document", field = "secret")
+    public SecretView secret(
+            DocumentView document,
+            graphql.schema.DataFetchingEnvironment environment) {
+
+        RequestContext request = environment
+                .getGraphQlContext()
+                .get(REQUEST_CONTEXT);
+
+        if (request == null || request.principal() == null) {
+            throw new UnauthenticatedException();
+        }
+
+        PolicyDecision decision = documentPolicy.decideReadSecret(
+                request,
+                document.id(),
+                document.tenantId(),
+                document.ownerId(),
+                document.classification());
+
+        if (decision == PolicyDecision.HIDE) {
+            // Chỉ dùng khi contract cho phép ẩn như không tồn tại.
+            return null;
+        }
+        if (decision == PolicyDecision.FORBID) {
+            // Exception resolver sẽ map thành lỗi an toàn, nếu policy chọn báo lỗi.
+            throw new ForbiddenException();
+        }
+
+        // Service vẫn kiểm tra lại tenant/resource trước khi đọc secret.
+        return secretService.readVisibleSecret(request, document.id());
+    }
+}
+```
+
+`@SchemaMapping(typeName = "Document", field = "secret")` trỏ tới cặp GraphQL `Document.secret`; `DocumentView document` là source/parent do field cha trả về. Resolver không nhận một `tenantId` từ query để làm authority.
+
+`HIDE`, `FORBID` và `ALLOW` là vocabulary minh họa. Không nên vừa trả `null` vừa ném exception ngẫu nhiên cho cùng một policy mà không tài liệu hóa. Nếu `secretService` trả lỗi database, không nuốt lỗi thành `null`; nullable chỉ nên biểu diễn semantics đã chọn, không che outage.
+
+Service cần có boundary độc lập với GraphQL:
+
+```java title="SecretService.java — pseudo-code minh họa tĩnh"
+@Service
+public final class SecretService {
+
+    private final DocumentPolicy policy;
+    private final SecretRepository repository;
+
+    public SecretService(
+            DocumentPolicy policy,
+            SecretRepository repository) {
+        this.policy = policy;
+        this.repository = repository;
+    }
+
+    @Transactional(readOnly = true)
+    public SecretView readVisibleSecret(
+            RequestContext request,
+            String documentId) {
+
+        DocumentMetadata metadata = repository
+                .findMetadataInTenant(documentId, request.tenantId())
+                .orElseThrow(() -> new DocumentNotFoundException());
+
+        policy.requireReadSecret(request, metadata);
+        return repository.findSecretProjection(
+                        documentId, request.tenantId())
+                .map(SecretViewMapper::toView)
+                .orElseThrow(() -> new SecretNotFoundException());
+    }
+}
+```
+
+Tên repository, exception, transaction và projection là giả định. Điểm chính là query data source nhận tenant hiệu lực từ context và policy được kiểm tra lại trong service. Không trả entity chứa secret từ root rồi chờ serializer hoặc client che field.
+
+### Response forbidden minh họa
+
+Nếu policy chọn báo lỗi field và query dùng alias `doc`, một execution result có thể là:
+
+```graphql title="Query có alias — minh họa tĩnh"
+query ReadDocument($id: ID!) {
+  doc: document(id: $id) {
+    id
+    title
+    secret {
+      value
+    }
+  }
+}
+```
+
+```json title="Forbidden field — minh họa tĩnh"
+{
+  "data": {
+    "doc": {
+      "id": "document-17",
+      "title": "Kế hoạch phát hành",
+      "secret": null
+    }
+  },
+  "errors": [
+    {
+      "message": "Field không khả dụng.",
+      "path": ["doc", "secret"],
+      "extensions": {
+        "code": "FORBIDDEN",
+        "requestId": "request-example-17"
+      }
+    }
+  ]
+}
+```
+
+`errors.path` trỏ vào **response path**, nên nó dùng alias `doc`, không phải tên Java class hay URL. Nếu path đi qua list, nó có thêm index như `["documents", 0, "secret"]`. `message`, HTTP status và `extensions.code` là convention của application; server phải map chúng an toàn.
+
+Response trên chỉ phù hợp khi caller được phép biết document tồn tại và policy muốn thông báo field bị từ chối. Nếu sự tồn tại của document hoặc secret là thông tin nhạy cảm, dùng semantics hide như phần tiếp theo thay vì trả `FORBIDDEN` có thể tạo resource oracle.
+
+## Unauthorized forbidden và hide hay error
+
+### Phân biệt unauthenticated và forbidden
+
+Dùng hai khái niệm này nhất quán:
+
+- **Unauthenticated:** request không có principal đã verify. Token thiếu, sai chữ ký, hết hạn hoặc context bị thiếu đều thuộc nhóm này. Không tự hạ xuống anonymous nếu field cần authentication.
+- **Forbidden:** principal đã xác minh nhưng policy không cho phép hành động, tenant, resource hoặc field cụ thể.
+- **Not found hoặc hidden:** server cố ý không tiết lộ resource có tồn tại hay không. Caller có thể nhận kết quả giống resource không tồn tại.
+
+HTTP `401` và `403` là convention thường gặp ở transport. GraphQL execution có thể trả lỗi `UNAUTHENTICATED` hoặc `FORBIDDEN` trong `errors`, tùy security/error policy. Không giả định mọi deployment phải dùng cùng status; hãy giữ semantics ổn định và không lộ dữ liệu.
+
+| Tình huống | Kênh có thể dùng | Điều không nên lộ |
+| --- | --- | --- |
+| Không có credential hợp lệ | Chặn ở security boundary hoặc GraphQL error `UNAUTHENTICATED` | Resource ID, owner, tenant membership. |
+| Có credential nhưng thiếu quyền field | Lỗi `FORBIDDEN` nếu sự tồn tại đã an toàn | Secret, rule nội bộ, role cần có hoặc tên bảng. |
+| Resource không tồn tại hoặc bị hide | `null` ở root nullable, filter khỏi list hoặc lỗi generic | Sự khác nhau giữa “không tồn tại” và “tồn tại nhưng bị từ chối”. |
+| Policy backend unavailable | Lỗi generic hoặc hide theo contract, nhưng luôn deny | Fallback allow, tenant mặc định hoặc stack trace. |
+
+### Khi nên ẩn như không tồn tại
+
+Hide-vs-not-found phù hợp khi việc biết resource tồn tại đã là dữ liệu nhạy cảm. Ví dụ, một user đoán `documentId` và nhận `FORBIDDEN` khác với ID không tồn tại có thể dùng response để enumerate resource.
+
+Một contract hide an toàn thường có các đặc điểm:
+
+1. Root field nullable trả `null` cho cả “không tồn tại” và “không được biết đến”.
+2. List query lọc ở server và chỉ trả resource caller được phép thấy; không trả một ô `null` giả theo vị trí nếu điều đó làm lộ số lượng hoặc thứ tự.
+3. Message, error code, HTTP status và timing không tạo tín hiệu rõ ràng để phân biệt hai trường hợp.
+4. Repository dùng tenant/resource predicate thay vì load toàn bộ rồi lọc sau.
+5. Audit nội bộ vẫn có thể ghi một lần deny đã được redaction, nhưng không trả chi tiết đó cho client.
+
+Ví dụ, nếu root `document: Document` là nullable và resource bị hide, response có thể giữ cùng hình dạng với trường hợp không tồn tại:
+
+```json title="Hidden resource — minh họa tĩnh"
+{
+  "data": {
+    "document": null
+  }
+}
+```
+
+Hide không có nghĩa luôn nuốt mọi lỗi thành `null`. Database timeout, lỗi mapping hoặc policy service hỏng phải được ghi nhận và map theo error contract an toàn. Nếu nuốt tất cả thành “không tồn tại”, client không phân biệt được không có dữ liệu với outage.
+
+### Khi nên trả lỗi field
+
+Trả lỗi field khi client đã được phép biết object cha tồn tại và cần phân biệt field bị từ chối với field thật sự không có dữ liệu. Ví dụ, một admin portal có thể hiển thị `title` cho mọi thành viên nhưng báo field `secret` cần scope bổ sung.
+
+Giữ message generic và dùng code ổn định nếu client cần hành động. Không trả policy expression, danh sách role nội bộ, SQL hoặc `ownerId` trong `errors.message`.
+
+Với mutation, lỗi nghiệp vụ dự kiến có thể nằm trong typed payload như `userErrors`. Với query hoặc nested resolver, execution error thường nằm trong top-level `errors` và có `path`. Xem [Xử lý lỗi trong mutation](/docs/query-mutation-subscription/xu-ly-loi-trong-mutation) và [Xử lý lỗi tập trung](/docs/tich-hop-spring-for-graphql/xu-ly-loi-tap-trung).
+
+## Nullability errors path và partial data
+
+Nullability định nghĩa phạm vi ảnh hưởng khi field resolver không thể trả giá trị. Authorization policy phải chọn nullability cùng hide/error semantics, thay vì dùng `null` tùy ý.
+
+### Secret non null và Secret nullable
+
+Hai SDL sau tạo ra hai contract khác nhau:
+
+```graphql title="Nullable field — minh họa tĩnh"
+type Document {
+  id: ID!
+  title: String!
+  secret: Secret
+}
+```
+
+```graphql title="Non null field — minh họa tĩnh"
+type Document {
+  id: ID!
+  title: String!
+  secret: Secret!
+}
+```
+
+Với `secret: Secret`, field resolver có thể trả `null` khi policy chọn hide hoặc khi domain thực sự không có secret. Nếu policy chọn error, GraphQL có thể giữ `document` và đặt `secret: null` cùng `errors.path`:
+
+```json title="Nullable secret có execution error — minh họa tĩnh"
+{
+  "data": {
+    "document": {
+      "id": "document-17",
+      "title": "Kế hoạch phát hành",
+      "secret": null
+    }
+  },
+  "errors": [
+    {
+      "message": "Field không khả dụng.",
+      "path": ["document", "secret"],
+      "extensions": {
+        "code": "FORBIDDEN"
+      }
+    }
+  ]
+}
+```
+
+Với `secret: Secret!`, resolver không thể đặt `null` thành một kết quả hợp lệ. Nếu resolver ném lỗi hoặc kết quả là `null`, GraphQL bubble lỗi lên object `Document`. Khi root `document: Document` nullable, response có thể là:
+
+```json title="Non null secret bubble lên document — minh họa tĩnh"
+{
+  "data": {
+    "document": null
+  },
+  "errors": [
+    {
+      "message": "Field không khả dụng.",
+      "path": ["document", "secret"],
+      "extensions": {
+        "code": "FORBIDDEN"
+      }
+    }
+  ]
+}
+```
+
+Nếu cả `Query.document` và `Document.secret` đều non-null, lỗi có thể bubble lên root `data` và làm mất nhiều phần response hơn. `Secret!` không tự cấp quyền và cũng không biến policy deny thành success. Nó chỉ nói rằng khi `Document` được trả, field `secret` phải hoàn tất được contract non-null.
+
+Nếu cần hide secret nhưng vẫn giữ document, field thường phải nullable hoặc schema cần một projection/payload khác đã thiết kế rõ. Đừng trả `null` cho `Secret!` rồi hy vọng GraphQL bỏ qua lỗi.
+
+### List phần tử và partial data
+
+Với list document:
+
+```graphql title="List authorization — minh họa tĩnh"
+type Query {
+  documents: [Document!]!
+}
+```
+
+Resource không được phép ở **root list** nên được lọc trước khi tạo response. Không lấy tất cả document rồi để client lọc. Nếu không có document nào caller được xem, `[]` có thể là kết quả bình thường; nó không nên chứa một ô `null` giả chỉ để giữ vị trí của resource bị ẩn.
+
+Field-level deny bên trong một document lại phụ thuộc nullability:
+
+- `documents: [Document!]!` và `secret: Secret` có thể giữ các document khác, với `secret: null` hoặc error ở path tương ứng.
+- `documents: [Document!]!` và `secret: Secret!` có thể làm một `Document` thành `null`, rồi bubble lên cả list vì element là non-null.
+- `documents: [Document]` giữ được nhiều phần tử hơn nhưng mở thêm trạng thái `null`; `null` theo vị trí có thể làm lộ số lượng, thứ tự hoặc sự hiện diện của resource nếu policy không cẩn thận.
+
+Partial data không có nghĩa authorization bị bỏ qua. Một response có `data` cùng `errors` phải được client đọc theo `errors.path`, alias, index list và nullability. Xem [List và nullable](/docs/schema-va-type-system/list-va-nullable) để đối chiếu wrapper `[T]`, `[T!]`, `[T]!` và `[T!]!`.
+
+### Chọn contract theo semantics
+
+Viết rõ ba trạng thái cho mỗi field nhạy cảm:
+
+| Trạng thái | Semantics nên tài liệu hóa |
+| --- | --- |
+| Được phép và có dữ liệu | Trả object/giá trị theo SDL. |
+| Được phép nhưng không có dữ liệu | `null` hoặc `[]` nếu đó là kết quả domain bình thường. |
+| Không được phép | Hide, lỗi field hoặc payload error; không dùng ngẫu nhiên giữa các request. |
+| Lỗi hạ tầng | Execution error, generic message và log nội bộ; không đổi im lặng thành empty result. |
+
+`null` không nên là code lỗi duy nhất. Client cần phân biệt “không có secret”, “secret bị ẩn” và “service không thể đọc” khi sản phẩm yêu cầu; nếu không cần phân biệt, hãy chọn hide nhất quán và bảo vệ khỏi timing/data leakage.
+
+## Nested field DataLoader và batching
+
+### Policy theo source object
+
+Nested resolver nhận source object của field cha. Source phải được tạo từ server, không phải object client gửi để tự mô tả quyền.
+
+```text
+Query.document
+      │  trả DocumentView không chứa plaintext secret
+      ▼
+Document.secret
+      │  source = DocumentView của document-17
+      ├── policy principal + tenant + owner + classification
+      └── SecretService hoặc DataLoader đọc projection được phép
+```
+
+`DocumentView.tenantId`, `ownerId` và `classification` là dữ liệu resource đã được data source trả về. Resolver đối chiếu chúng với tenant/principal trong context. Không lấy `ownerId` từ variables và không coi source là identity của request.
+
+Nếu field không có resolver riêng, property data fetcher có thể đọc getter cùng tên. Với dữ liệu nhạy cảm, hãy cân nhắc DTO không có getter `getSecret()` hoặc mapping explicit để không vô tình bỏ qua policy.
+
+### Batch authorization trước khi đọc dữ liệu
+
+DataLoader giúp gom nhiều `load(key)` trong một execution. Nó không tự kiểm tra quyền. Batch loader phải biết context của execution hiện tại và áp dụng policy trước khi trả projection nhạy cảm.
+
+Một key an toàn hơn có thể gắn scope của decision:
+
+```java title="SecretKey và field loader — pseudo-code minh họa tĩnh"
+public record SecretKey(
+        String subject,
+        String tenantId,
+        String documentId,
+        String field,
+        String policyVersion) {
+}
+
+@SchemaMapping(typeName = "Document", field = "secret")
+public java.util.concurrent.CompletableFuture<SecretView> secret(
+        DocumentView document,
+        graphql.GraphQLContext context,
+        org.dataloader.DataLoader<SecretKey, SecretView> loader) {
+
+    RequestContext request = context.get("requestContext");
+    if (request == null || request.principal() == null) {
+        throw new UnauthenticatedException();
+    }
+
+    SecretKey key = new SecretKey(
+            request.principal().subject(),
+            request.tenantId(),
+            document.id(),
+            "Document.secret",
+            "secret-policy-v1");
+
+    return loader.load(key);
+}
+```
+
+Đoạn code là pseudo-code; việc Spring bind `DataLoader`, kiểu future và API đăng ký loader cần đối chiếu version. Trong một registry theo execution, context đã được cô lập nên resource ID có thể đủ cho một số thiết kế. Tuy nhiên, không dùng cùng loader/cache singleton cho nhiều principal. Khi output phụ thuộc principal, tenant, role hoặc policy version, security dimensions phải nằm trong scope hoặc key.
+
+Batch loader có thể được mô tả như sau:
+
+```java title="Batch loader — pseudo-code minh họa tĩnh"
+registerMappedBatchLoader((keys, batchEnvironment) -> {
+    RequestContext request = batchEnvironment
+            .getGraphQlContext()
+            .get("requestContext");
+
+    if (request == null || request.principal() == null) {
+        throw new UnauthenticatedException();
+    }
+
+    java.util.Set<String> documentIds = keys.stream()
+            .map(SecretKey::documentId)
+            .collect(java.util.stream.Collectors.toSet());
+
+    // Query đã giới hạn tenant. Policy có thể lọc tiếp theo owner,
+    // scope và classification trước khi trả projection secret.
+    return secretRepository.findVisibleByDocumentIds(
+            request,
+            documentIds,
+            "Document.secret");
+});
+```
+
+Tên `registerMappedBatchLoader`, `batchEnvironment` và return type chỉ minh họa ý tưởng. Với Spring for GraphQL, `BatchLoaderRegistry`, `@BatchMapping`, `Mono` và `CompletionStage` có chi tiết version-specific. Điều bất biến cần giữ là batch loader dùng context hiện tại, không lấy mọi secret rồi lọc ở client, xử lý key bị thiếu theo contract và không trả nhầm tenant.
+
+Khi resource bị từ chối trong batch, chọn trước một semantics:
+
+- mapped loader bỏ key bị hide khỏi kết quả để field nullable nhận `null` theo contract;
+- loader tạo lỗi theo key nếu caller được biết field bị từ chối;
+- batch tách allowed/denied và giữ error per parent nếu adapter hỗ trợ;
+- nếu field non-null không thể hoàn tất, để GraphQL bubble lỗi thay vì giả vờ thành công.
+
+Không để map thiếu key vô tình trở thành `null` im lặng cho `Secret!`. Kiểm thử missing key, forbidden key và lỗi data source riêng biệt.
+
+### N plus 1 và ordering
+
+**N+1 query** là tình huống một lần đọc root tạo thêm một lần đọc cho từng parent. Resolver nested ngây thơ có thể tạo chi phí này:
+
+```text
+1 query lấy documents
++ N query policy/secret cho từng document
+= 1 + N lần gọi data source
+```
+
+DataLoader hoặc `@BatchMapping` có thể gom thành batch:
+
+```text
+1 query lấy document metadata
++ 1 batch query lấy secret của các document được phép
+= 2 nhóm gọi minh họa
+```
+
+Đây không phải cam kết mọi runtime luôn có đúng hai query. Selection set, async timing, cache hit, `maxBatchSize` và data source có thể chia thành nhiều batch. Quan trọng là đo số query, batch size, latency và số key bị lọc.
+
+Batching không thay authorization. `WHERE document_id IN (...)` cần đi cùng `tenant_id = ?` và policy resource tương ứng. Nếu ABAC khác nhau theo từng parent, policy có thể cần quyết định theo key trước khi ghép query, hoặc chia batch theo policy context tương thích.
+
+Giữ mapping đúng parent:
+
+- loader dạng list phải trả value cùng thứ tự với input keys;
+- mapped loader trả map theo key và phải xử lý key thiếu;
+- `@BatchMapping` trả sequence phải giữ thứ tự parent nếu API yêu cầu;
+- database trả rows lệch thứ tự không được làm secret của document A gắn sang document B.
+
+Xem [Batch loading và DataLoader](/docs/truy-cap-du-lieu-va-hieu-nang/batch-loading-va-dataloader) và [N+1 query](/docs/truy-cap-du-lieu-va-hieu-nang/n-plus-1-query) để nối batching với execution boundary và cách đo.
+
+### Cache và cách ly cache key
+
+Authorization-dependent data cần cache theo security scope. Một cache key chỉ gồm `documentId` là nguy hiểm nếu kết quả khác nhau theo principal, tenant, scope hoặc field.
+
+Một key khái niệm có thể gồm:
+
+```text
+tenantId | principalSubject hoặc policyGroup | role/scope version
+          | resourceId | parentType.field | policyVersion
+```
+
+Không phải lúc nào cũng cần đưa raw subject vào mọi cache. Có thể dùng policy group ổn định nếu hệ thống bảo đảm mọi principal trong group có cùng quyền, cùng tenant và invalidation đúng. Nếu không chứng minh được điều đó, dùng scope hẹp hơn.
+
+Phân biệt các lớp cache:
+
+| Lớp | Rủi ro authorization | Quy tắc tối thiểu |
+| --- | --- | --- |
+| DataLoader cache | Lẫn principal nếu registry singleton | Tạo theo execution/request; không chia sẻ mutable cache. |
+| Service cache | Lẫn tenant hoặc policy epoch | Key có security scope, TTL và invalidation khi membership đổi. |
+| HTTP response cache | Replay toàn response cho user khác | Chỉ cache dữ liệu public, hoặc vary/key theo auth scope, variables và selection. |
+| CDN/shared cache | Rò dữ liệu cross-user ở biên | Không cache private GraphQL response nếu chưa có contract cache rõ. |
+
+Đừng cache một quyết định `ALLOW` lâu hơn vòng đời membership hoặc policy version. Đừng cache `DENY` vô thời hạn nếu quyền có thể vừa được cấp. Cache key isolation là lớp bổ sung; service vẫn phải kiểm tra policy khi cache miss và khi cache scope không chắc chắn.
+
+## Mutation transaction và idempotency
+
+### Quyền trước khi ghi
+
+Mutation cần kiểm tra principal, tenant, ownership, role/scope và trạng thái resource trước side effect. `idempotencyKey` không thay authorization. Một user không có quyền không được tạo hoặc giữ một idempotency record có thể làm lộ trạng thái mutation của tenant khác.
+
+Operation minh họa:
+
+```graphql title="UpdateSecret.graphql — minh họa tĩnh"
+mutation UpdateSecret($input: UpdateSecretInput!) {
+  updateSecret(input: $input) {
+    document {
+      id
+      title
+      secret {
+        value
+        classification
+      }
+    }
+    userErrors {
+      code
+      message
+      inputPath
+    }
+  }
+}
+```
+
+```json title="Variables mutation — minh họa tĩnh"
+{
+  "input": {
+    "documentId": "document-17",
+    "value": "Giá trị mới",
+    "idempotencyKey": "update-secret-001"
+  }
+}
+```
+
+Resolver chỉ bind input và gọi application service. Service không dùng `input.documentId` như authority; nó load document trong tenant hiệu lực rồi quyết định quyền sửa.
+
+### Transaction và trạng thái không xác định
+
+`@MutationMapping` không tự mở transaction, rollback downstream hoặc làm request retry an toàn. Transaction boundary nên nằm ở application service phù hợp với stack imperative/reactive thật.
+
+```java title="SecretCommandService.java — pseudo-code minh họa tĩnh"
+@Service
+public final class SecretCommandService {
+
+    @Transactional
+    public UpdateSecretPayload updateSecret(
+            RequestContext request,
+            UpdateSecretInput input) {
+
+        DocumentMetadata document = documentRepository
+                .findForTenant(input.documentId(), request.tenantId())
+                .orElseThrow(() -> new DocumentNotFoundException());
+
+        policy.requireWriteSecret(request, document);
+
+        IdempotencyResult previous = idempotencyStore
+                .findOrStart(request, "updateSecret", input);
+        if (previous.isConflict()) {
+            return UpdateSecretPayload.conflict();
+        }
+        if (previous.isReplay()) {
+            return previous.payload();
+        }
+
+        documentRepository.updateSecret(
+                document.id(), request.tenantId(), input.value());
+        outboxRepository.appendAfterAuthorization(
+                request, document.id(), "SECRET_CHANGED");
+
+        UpdateSecretPayload payload = UpdateSecretPayload.success(document.id());
+        idempotencyStore.complete(previous.key(), payload);
+        return payload;
+    }
+}
+```
+
+Đoạn code không phải implementation hoàn chỉnh. `@Transactional`, locking, outbox và idempotency store phải khớp database/transaction manager. Một transaction database không tự bao phủ email, HTTP call hoặc broker publish. Nếu event phải phản ánh trạng thái đã commit, phát sau commit hoặc dùng transactional outbox.
+
+Nếu client timeout sau khi database commit nhưng trước khi nhận response, trạng thái commit trở nên không chắc chắn ở phía client. Không retry mù mutation. Hãy dùng idempotency hoặc một query kiểm tra trạng thái không tạo side effect.
+
+### Idempotency key gắn với authority
+
+Nếu công bố mutation có idempotency, service cần định nghĩa tối thiểu:
+
+1. Scope key theo `principal`, tenant hiệu lực và operation. Không dùng key toàn cục chỉ theo string client gửi.
+2. Lưu fingerprint của input đã chuẩn hóa. Cùng key và cùng input có thể replay outcome cũ.
+3. Từ chối cùng key nhưng input khác bằng code ổn định như `IDEMPOTENCY_CONFLICT`.
+4. Xử lý concurrent request bằng unique constraint hoặc cơ chế lock phù hợp.
+5. Quy định trạng thái `PENDING`, `COMPLETED`, thất bại, retention và TTL.
+6. Không để replay trả dữ liệu mà principal hiện tại không còn được phép thấy; kiểm tra policy theo semantics đã chọn.
+
+Một field tên `idempotencyKey` trong SDL chỉ là dữ liệu input. Nó không chứng minh server đã deduplicate. Xem thêm [Xử lý lỗi trong mutation](/docs/query-mutation-subscription/xu-ly-loi-trong-mutation) để tách typed payload, top-level errors và retry.
+
+## Subscription và lọc event
+
+### Authorization lúc subscribe
+
+Subscription cần kiểm tra quyền ở thời điểm client gửi `subscribe`. Argument `tenantId` là selector do client yêu cầu; server phải xác nhận tenant đó thuộc membership được phép rồi mới tạo Publisher.
+
+```java title="DocumentSubscriptionController.java — pseudo-code minh họa tĩnh"
+@Controller
+public final class DocumentSubscriptionController {
+
+    private final SubscriptionPolicy subscriptionPolicy;
+    private final DocumentEventStream eventStream;
+
+    @SubscriptionMapping
+    public reactor.core.publisher.Flux<DocumentChangedEvent> secretChanged(
+            @Argument("tenantId") String requestedTenant,
+            graphql.GraphQLContext context) {
+
+        RequestContext request = context.get("requestContext");
+        if (request == null || request.principal() == null) {
+            throw new UnauthenticatedException();
+        }
+
+        String effectiveTenant = subscriptionPolicy
+                .requireCanSubscribe(request, requestedTenant);
+
+        return eventStream.forTenant(effectiveTenant);
+    }
+}
+```
+
+`Flux`, `DocumentChangedEvent`, `SubscriptionPolicy` và event source là type giả định. `@SubscriptionMapping` chỉ nối root field với Publisher; nó không tự bật WebSocket, không tự tạo event và không tự lọc tenant.
+
+### Lọc từng event và revoke
+
+Quyền có thể thay đổi trong thời gian stream sống. Membership bị thu hồi, role đổi, resource chuyển trạng thái hoặc token hết hạn đều có thể khiến event tiếp theo không còn được phép.
+
+Lọc event nên xảy ra trước khi payload nhạy cảm đi vào queue của subscriber:
+
+```java title="Per-event authorization — pseudo-code minh họa tĩnh"
+return eventStream.forTenant(request.tenantId())
+        .filterWhen(event -> subscriptionPolicy
+                .canReadEvent(request, event))
+        .map(DocumentChangedEvent::safeDocument)
+        .doFinally(signal -> subscriptionRegistry.release(
+                request.principal().subject(), request.tenantId()));
+```
+
+Nếu event không còn được phép, policy có thể:
+
+- bỏ qua event và giữ stream nếu việc im lặng không làm lộ record;
+- kết thúc operation nếu credential hoặc membership bị revoke;
+- trả execution error nếu schema và client đã thiết kế semantics đó;
+- đóng connection khi vi phạm nghiêm trọng hoặc auth context không còn hợp lệ.
+
+Không phát một payload secret vào stream chung rồi hy vọng nested resolver sẽ che lại sau đó. Lúc đó event đã có thể lọt vào buffer, broker consumer, log hoặc metric. Topic/partition nên có tenant isolation phù hợp, nhưng event source vẫn không thay thế policy per-event.
+
+Authorization per-event có thể dùng cache ngắn hạn để giảm chi phí, nhưng cache phải có invalidation/revocation path. Token lúc handshake không làm quyền hợp lệ vĩnh viễn. Xem [Subscription và WebSocket](/docs/query-mutation-subscription/subscription-websocket) để kiểm tra connection lifecycle, reconnect, cancellation và backpressure.
+
+### Cleanup và delivery guarantee
+
+Khi client gửi `complete`, đóng socket, gặp timeout hoặc server drain, cancellation phải đi tới Publisher, broker consumer, queue và registry. Không giữ context hoặc DataLoader cache của subscription lâu hơn cần thiết.
+
+Event nên có `eventId` ổn định và sequence/cursor nếu client cần deduplicate hoặc catch-up sau reconnect. WebSocket không tự tạo exactly-once delivery. Ghi rõ stream là at-most-once, at-least-once hay có replay; không dùng idempotency của mutation để suy ra idempotency của subscription.
+
+## Method security policy service và interceptor
+
+### PreAuthorize và service boundary
+
+Spring Security method security có thể đặt guard ở public service method. Trong các dòng Spring Security hiện đại, `@EnableMethodSecurity` và `@PreAuthorize` là những cơ chế thường gặp; tên cấu hình và propagation cần đối chiếu version.
+
+```java title="Method security — minh họa tĩnh"
+@Service
+public class DocumentApplicationService {
+
+    @PreAuthorize("@documentPolicy.canRead(authentication, #documentId, 'secret')")
+    public SecretView readSecret(
+            String documentId,
+            RequestContext request) {
+        return secretRepository.readVisible(
+                request.tenantId(), documentId);
+    }
+}
+```
+
+Biểu thức trên chỉ là ví dụ. Policy phải kiểm tra resource, tenant và scope; `hasRole('ADMIN')` một mình thường quá rộng. Method security cũng không tự xử lý field alias, null bubbling, DataLoader cache hoặc event revoke.
+
+Các điểm dễ bỏ sót:
+
+- proxy-based method security có thể bị bypass bởi self-invocation trong cùng bean;
+- method private/final hoặc cách tạo object ngoài Spring container có thể không đi qua proxy như mong đợi;
+- async/reactive callback không tự bảo đảm `Authentication` hoặc `SecurityContext` còn được propagate;
+- một annotation trên resolver không bảo vệ đường gọi khác tới service;
+- method security không thay tenant predicate trong repository.
+
+Đặt guard ở application service để bảo vệ use case, sau đó dùng field resolver cho decision cần biết parent type/field. Test cả proxy và service thật; không kết luận từ việc annotation xuất hiện trên source code.
+
+### Policy service tập trung
+
+Một policy service giúp giữ rule trong một owner thay vì sao chép nhiều biểu thức ở controller, resolver và repository. Nó nên nhận principal đã verify, resource metadata, tenant và action/field; trả decision hoặc ném exception domain đã quy ước.
+
+```java title="DocumentPolicy.java — minh họa tĩnh"
+public interface DocumentPolicy {
+
+    PolicyDecision decideReadSecret(
+            RequestContext request,
+            String documentId,
+            String resourceTenant,
+            String ownerId,
+            SecretClassification classification);
+
+    void requireWriteSecret(
+            RequestContext request,
+            DocumentMetadata document);
+}
+```
+
+Policy service không nên nhận `GraphQLContext` hoặc raw `DataFetchingEnvironment`. Adapter GraphQL đọc context rồi truyền dữ liệu typed vào policy. Nhờ vậy cùng rule có thể dùng cho mutation, REST, batch job và message consumer.
+
+Decision reason nội bộ có thể là `TENANT_MISMATCH`, `OWNER_MISMATCH`, `SCOPE_MISSING` hoặc `CLASSIFICATION_DENIED`. Chỉ expose code an toàn khi contract cho phép; không trả toàn bộ reason cho caller nếu reason đó làm lộ policy hoặc resource.
+
+### Interceptor và context boundary
+
+Authentication filter của Spring Security thường chạy ở web boundary trước GraphQL. `WebGraphQlInterceptor` có thể lấy authentication đã verify, resolve tenant hiệu lực và gắn `RequestContext` vào `GraphQLContext`.
+
+Pseudo-code:
+
+```java title="RequestContextInterceptor.java — pseudo-code minh họa tĩnh"
+final class RequestContextInterceptor
+        implements WebGraphQlInterceptor {
+
+    @Override
+    public reactor.core.publisher.Mono<WebGraphQlResponse> intercept(
+            WebGraphQlRequest request,
+            Chain chain) {
+
+        VerifiedAuthentication authentication =
+                authenticationFromSecurityBoundary(request);
+        PrincipalSnapshot principal = principalFactory
+                .fromVerified(authentication);
+        String tenantId = tenantResolver
+                .requireEffectiveTenant(principal, request);
+
+        RequestContext context = new RequestContext(
+                principal,
+                tenantId,
+                correlationIds.from(request));
+
+        request.configureExecutionInput((executionInput, builder) ->
+                builder.graphQLContext(
+                        graphql.GraphQLContext.newContext()
+                                .of("requestContext", context)
+                                .build())
+                        .build());
+
+        return chain.next(request);
+    }
+}
+```
+
+Tên callback, `VerifiedAuthentication`, `tenantResolver` và cách builder context là minh họa. Interceptor phải fail closed khi credential hoặc tenant không thể xác minh. Không điền tenant mặc định chỉ để resolver chạy tiếp.
+
+`GraphQLContext` thuộc execution. Nó không phải một map mà client kiểm soát, không phải static current user và không nên bị sửa bởi resolver. Với WebSocket, hook connection và hook từng operation có thể khác version; cần re-auth/revocation policy riêng. Đọc [Authentication với JWT/OAuth2](/docs/bao-mat-va-quan-sat/authentication-jwt-oauth2), [Context, interceptor và request lifecycle](/docs/tich-hop-spring-for-graphql/context-interceptor-request-lifecycle) và [DataFetcher và GraphQL context](/docs/tich-hop-spring-for-graphql/datafetcher-va-graphql-context).
+
+## Logging redaction và audit
+
+### Log đủ để điều tra
+
+GraphQL dùng chung endpoint nên log chỉ có `/graphql` không đủ. Log nên cho biết operation, field, policy outcome và correlation mà không ghi plaintext nhạy cảm.
+
+```json title="Security log event — minh họa tĩnh"
+{
+  "operationName": "ReadDocument",
+  "field": "Document.secret",
+  "path": ["doc", "secret"],
+  "decision": "DENY",
+  "policyCode": "SECRET_SCOPE_MISSING",
+  "principalHash": "subject-hash-example",
+  "tenantHash": "tenant-hash-example",
+  "queryHash": "query-hash-example",
+  "requestId": "request-example-17",
+  "durationMs": 12
+}
+```
+
+Các trường trên là format minh họa, không phải schema bắt buộc. Có thể ghi `operationName`, query hash, `parentType.field`, error code, path, request/correlation ID, latency, batch size và downstream. Principal/tenant nên được hash hoặc dùng opaque ID theo policy log.
+
+Không log:
+
+- access token, refresh token, cookie hoặc nguyên `Authorization` header;
+- toàn bộ variables nếu có secret, PII, payment data hoặc input nhạy cảm;
+- plaintext secret, entity graph, raw `GraphQLContext` hoặc `DataFetchingEnvironment`;
+- stack trace, SQL và policy expression vào `errors.message` trả client;
+- resource ID động làm metric label nếu cardinality quá lớn.
+
+Allow-list field log an toàn tốt hơn việc ghi tất cả rồi hy vọng redact hoàn hảo. Query text có thể được thay bằng normalized hash; hash là tín hiệu quan sát, không phải authority.
+
+### Audit khác debug log
+
+**Audit** là bằng chứng nghiệp vụ/an ninh có chủ đích, thường cần retention, quyền đọc và tính toàn vẹn riêng. Debug log phục vụ điều tra vận hành và có thể bị rotate nhanh hơn.
+
+Audit event cho truy cập hoặc thay đổi secret có thể cần:
+
+- subject đã verify và tenant hiệu lực;
+- action (`READ_SECRET`, `UPDATE_SECRET`, `SUBSCRIBE_EVENT`);
+- resource ID và field/classification ở dạng được bảo vệ;
+- decision và reason code nội bộ phù hợp;
+- timestamp, request ID, source channel và policy version;
+- kết quả thành công/thất bại, không có secret plaintext.
+
+Không ghi audit bằng cách serialize toàn bộ entity. Không dùng một debug log dễ sửa hoặc dễ xóa như nguồn duy nhất cho compliance. Audit cũng không nên trở thành một đường bypass policy; người đọc audit phải có quyền riêng.
+
+Theo dõi spike của `FORBIDDEN`, cross-tenant attempt, policy backend timeout và subscription revoke. Alert không nên đính kèm secret hoặc nguyên variables.
+
+## Fail closed timing và data leakage
+
+### Fail closed khi thiếu context
+
+**Fail closed** nghĩa là khi không thể chứng minh request được phép, hệ thống từ chối hoặc áp dụng semantics hide an toàn, thay vì cho phép theo mặc định.
+
+Các trường hợp phải fail closed:
+
+- `GraphQLContext` không có `RequestContext`;
+- principal thiếu `subject`, tenant không resolve được hoặc membership hết hạn;
+- token/claim chưa verify, signature sai hoặc policy version không hỗ trợ;
+- policy service timeout hoặc trả decision không hợp lệ;
+- resource metadata có tenant/owner mâu thuẫn;
+- cache entry thiếu security scope hoặc không biết cache thuộc principal nào;
+- event stream không còn xác minh được subscriber.
+
+Không fallback sang `tenant-1`, anonymous có role rộng, `isAdmin = false` rồi vẫn trả dữ liệu nhạy cảm, hoặc “cho chạy để kiểm tra UI”. Với field nullable, `null` hide có thể là outcome hợp lệ; với field non-null, cần lỗi/bubble hoặc đổi contract. Log chi tiết nội bộ và trả message generic.
+
+### Giảm timing và data leakage
+
+Authorization có thể làm rò rỉ thông tin qua nhiều kênh ngoài response value:
+
+- `FORBIDDEN` khác rõ `NOT_FOUND`;
+- thời gian query secret của resource tồn tại khác rõ query resource không tồn tại;
+- list length, thứ tự và số lượng `null` reveal resource bị ẩn;
+- cache hit nhanh hơn cache miss;
+- error message nêu owner, classification, tenant hoặc tên bảng;
+- log, metric, trace và exception chứa plaintext secret;
+- introspection/UI không hiển thị field nhưng server vẫn trả field khi query thủ công.
+
+Biện pháp thực dụng:
+
+1. Kiểm tra policy trước khi tải plaintext secret hoặc gọi downstream đắt tiền.
+2. Dùng query predicate tenant/resource và projection tối thiểu ở data source.
+3. Chọn hide/error nhất quán cho resource nhạy cảm.
+4. Giữ shape, message và code tương tự cho not-found/hidden khi threat model yêu cầu.
+5. Đặt timeout và budget tương đồng; không cố hứa constant-time cho toàn bộ database, nhưng tránh chênh lệch dễ đo.
+6. Redact log/trace/metric và giới hạn cardinality.
+7. Không xem tắt introspection, persisted operation hoặc UI allowlist là authorization.
+
+Không thể loại bỏ mọi side channel chỉ bằng một resolver. Threat model cần xem cả database, cache, broker, proxy và telemetry.
+
+## Ma trận kiểm thử authorization
+
+### Matrix principal tenant resource và field
+
+Dùng cùng một ma trận cho policy unit test, resolver test và execution test. Các giá trị `hide` hoặc `error` dưới đây là lựa chọn minh họa; project phải chốt contract một cách nhất quán.
+
+| Principal | Tenant context | Resource | Field/action | Kết quả mong đợi |
+| --- | --- | --- | --- | --- |
+| Anonymous | Không có | Document của tenant A | `Document.secret` | `UNAUTHENTICATED` hoặc hide; không đọc secret service. |
+| Alice, scope đọc secret | Tenant A | Document A do Alice sở hữu | `secret` | `ALLOW`, trả projection secret. |
+| Alice, thiếu scope | Tenant A | Document A do Alice sở hữu | `secret` | `HIDE` hoặc `FORBIDDEN` theo contract; không trả value. |
+| Alice, role editor | Tenant A | Document A của Bob | `title` | Cho phép nếu tenant policy cho đọc title. |
+| Alice, role editor | Tenant A | Document A của Bob | `secret` | Chỉ cho phép nếu policy field/ownership cho phép; role không tự bypass rule. |
+| Alice | Tenant A | Document B của tenant B | `title` hoặc `secret` | Root `null`/filter; không query secret của tenant B. |
+| Admin A | Tenant A | Document A của người khác | `secret` | Chỉ allow nếu role + scope + tenant policy công bố điều đó. |
+| Alice | Context A, input yêu cầu B | Document B | `documentId`/`tenantId` client gửi | Không đổi context sang B; không cấp quyền cross-tenant. |
+| Alice đã revoke | Tenant A | Document A | Query hoặc subscription event | Deny/hủy stream theo policy mới, không dùng cache allow cũ. |
+| Principal hợp lệ | Tenant A | Resource không tồn tại | Root `document` | Cùng semantics bên ngoài với resource bị hide nếu ID existence nhạy cảm. |
+| Principal hợp lệ | Tenant A | Metadata policy lỗi | `secret` hoặc mutation | Fail closed; generic error/hide, không fallback allow. |
+
+Bổ sung biến thể cho role, scope, attribute classification, resource archived, alias, fragment, list nhiều tenant và concurrent request. Test không chỉ principal “admin” và “user”; cần test tenant/resource/field kết hợp.
+
+### Unit integration và transport test
+
+**Policy và service unit test** nên xác nhận:
+
+- mỗi combination trong matrix cho decision đúng;
+- tenant/resource predicate được truyền xuống repository;
+- denied field không gọi secret store hoặc downstream nhạy cảm;
+- policy error không trở thành allow;
+- mutation authorization xảy ra trước idempotency side effect;
+- service vẫn bảo vệ khi được gọi không qua GraphQL.
+
+**Resolver và execution test** nên dùng `GraphQlTester`, `@GraphQlTest` hoặc API tương ứng của version để kiểm tra:
+
+- context có principal/tenant server-created;
+- variables/header giả không đổi authority;
+- query chỉ chọn `id`/`title` không gọi resolver secret;
+- query chọn secret trả success, hide hoặc `errors.path` đúng contract;
+- alias dùng response key đúng trong path;
+- `Secret!` và `Secret` bubble đúng;
+- list lọc resource unauthorized và không có ô `null` giả làm lộ count;
+- top-level `data` và `errors` được đọc cùng nhau.
+
+**Data layer và batching test** nên kiểm tra:
+
+- SQL/query luôn có tenant predicate;
+- số query không tăng thành N+1 khi chọn nested secret;
+- batch loader giữ key/order, xử lý missing/forbidden key;
+- DataLoader registry/cache bị hủy sau execution;
+- cache key không replay secret từ tenant/principal khác;
+- role/membership change invalidates allow decision.
+
+**Transport và lifecycle test** nên bao phủ:
+
+- HTTP authentication thiếu/sai và semantics `401`/GraphQL error;
+- authenticated nhưng forbidden và semantics `403`/GraphQL error hoặc hide;
+- WebSocket `connection_init`, `subscribe`, token expiry, revoke, `next`, `error`, `complete`;
+- per-event filtering không đưa event trái quyền vào queue;
+- cancellation, reconnect, shutdown và cleanup;
+- log/trace/audit không chứa token, variables nhạy cảm hoặc plaintext secret.
+
+Repository này không có backend để chạy các test trên. Một test fixture hoặc response mẫu chỉ chứng minh contract tài liệu, không chứng minh runtime đã an toàn.
+
+## Version endpoint và checklist
+
+### Endpoint HTTP theo Spring Boot
+
+Authorization không phụ thuộc URL, nhưng khi viết ví dụ kiểm thử endpoint cần dùng property đúng version. Với Spring Boot 3.5 trở lên:
+
+```yaml title="application.yml — Spring Boot 3.5+"
+spring:
+  graphql:
+    http:
+      path: /graphql
+```
+
+Với Spring Boot 3.4 trở xuống:
+
+```yaml title="application.yml — Spring Boot 3.4 trở xuống"
+spring:
+  graphql:
+    path: /graphql
+```
+
+Chỉ dùng một key cho cùng application. Path `/graphql` là giá trị minh họa; context path, reverse proxy và web stack có thể làm URL thực tế khác. Property HTTP không bật authorization, không tạo `GraphQLContext` và không làm `@SchemaMapping` tự chạy.
+
+Trước khi sao chép code, đối chiếu:
+
+- Spring Boot BOM với Spring for GraphQL và GraphQL Java;
+- `@SchemaMapping`, `@QueryMapping`, `@SubscriptionMapping` và argument resolver;
+- `GraphQLContext`, `DataFetchingEnvironment`, `@ContextValue`;
+- `WebGraphQlInterceptor`, WebSocket interceptor và authentication propagation;
+- `@BatchMapping`, `BatchLoaderRegistry`, DataLoader cache scope;
+- `DataFetcherExceptionResolver` và error policy của subscription;
+- Spring Security method security, proxy/self-invocation và async/reactive context.
+
+API version thay đổi không làm thay đổi nguyên tắc: authority phải đến từ principal đã verify, policy phải kiểm tra resource/field, và service phải bảo vệ invariant.
+
+### Checklist trước khi merge
+
+- [ ] Authentication verify credential trước khi tạo principal; phân biệt rõ authentication và authorization.
+- [ ] `RequestContext` được server tạo, immutable, execution-scoped và không chứa token/raw request/entity graph lớn.
+- [ ] Tenant hiệu lực đến từ membership/claim đã kiểm tra; không tin `tenantId` trong variables hoặc header client.
+- [ ] Policy decision xét đủ các chiều cần thiết: principal, tenant, ownership, role, scope, attribute và trạng thái resource.
+- [ ] Root operation có guard capability rộng nhưng không được coi là lớp duy nhất.
+- [ ] Field nhạy cảm có resolver/policy explicit hoặc projection không thể bị property data fetcher expose ngoài ý muốn.
+- [ ] Service/domain recheck authorization và invariant; repository/data source có tenant/resource predicate.
+- [ ] Hide, forbidden và not-found có semantics nhất quán; không tạo resource oracle qua message, code hoặc timing.
+- [ ] `errors.path` được giữ đúng response path, gồm alias và index list; message/extension không có secret, SQL hoặc stack trace.
+- [ ] `Secret!`/nullable và wrapper list được chọn theo blast radius mong muốn; không trả `null` cho non-null để che deny.
+- [ ] List unauthorized được lọc ở server; không trả ô `null` giả hoặc lọc ở UI.
+- [ ] DataLoader/batch loader dùng context hiện tại, có authorization trước projection nhạy cảm, xử lý key thiếu và giữ ordering.
+- [ ] N+1 đã được đo bằng query count/batch metric; batching không bị dùng như lý do bỏ policy.
+- [ ] Cache/DataLoader registry được cách ly theo execution và cache key có security scope phù hợp.
+- [ ] Mutation kiểm tra quyền trước write/idempotency side effect; transaction, outbox và timeout sau commit đã được review.
+- [ ] Idempotency key gắn với principal/tenant/operation, có input fingerprint, conflict, pending và retention semantics.
+- [ ] Subscription kiểm tra lúc subscribe, lọc từng event, xử lý revoke/token expiry và cleanup khi cancel/close.
+- [ ] `@PreAuthorize`/method security được đặt ở service boundary và test proxy/self-invocation/async propagation.
+- [ ] Log/trace chỉ ghi operation, field, path, decision, code, correlation và identifier đã redaction.
+- [ ] Audit event không chứa plaintext secret và có retention/access control riêng.
+- [ ] Policy thiếu context, policy backend lỗi hoặc cache scope không rõ đều fail closed.
+- [ ] Test matrix bao phủ principal, tenant, resource, field, role, scope, attribute, not-found, cache, batch, mutation và subscription.
+- [ ] Version Spring Boot/Spring for GraphQL đã được đối chiếu; nếu nhắc endpoint, dùng đúng `spring.graphql.http.path` hoặc `spring.graphql.path`.
 
 ## Bước tiếp theo
 
-Sau khi trang được điền nội dung, đọc bài kế tiếp trong nhóm để tiếp tục lộ trình.
+- Đọc [Authentication với JWT/OAuth2](/docs/bao-mat-va-quan-sat/authentication-jwt-oauth2) để đặt principal và credential ở authentication boundary.
+- Đọc [Context, interceptor và request lifecycle](/docs/tich-hop-spring-for-graphql/context-interceptor-request-lifecycle) và [DataFetcher và GraphQL context](/docs/tich-hop-spring-for-graphql/datafetcher-va-graphql-context) để truyền context server-side vào resolver.
+- Xem [Schema mapping và nested field](/docs/tich-hop-spring-for-graphql/schema-mapping-va-nested-field) để phân biệt root mapping, source object, property fetcher và `@SchemaMapping`.
+- Đọc [Xử lý lỗi tập trung](/docs/tich-hop-spring-for-graphql/xu-ly-loi-tap-trung) và [Xử lý lỗi trong mutation](/docs/query-mutation-subscription/xu-ly-loi-trong-mutation) để map exception, `errors.path`, payload error và null bubbling.
+- Thực hành [Batch loading và DataLoader](/docs/truy-cap-du-lieu-va-hieu-nang/batch-loading-va-dataloader), [N+1 query](/docs/truy-cap-du-lieu-va-hieu-nang/n-plus-1-query) và [Caching](/docs/truy-cap-du-lieu-va-hieu-nang/caching) mà không làm mất tenant isolation.
+- Xem [Subscription và WebSocket](/docs/query-mutation-subscription/subscription-websocket) trước khi triển khai filter event, reconnect và revoke.
+- Đọc [Logging và tracing](/docs/bao-mat-va-quan-sat/logging-va-tracing) cùng [Chiến lược kiểm thử](/docs/production/chien-luoc-kiem-thu) để hoàn thiện observability và test matrix.
+
+<Cards>
+  <Card title="Authentication với JWT/OAuth2" href="/docs/bao-mat-va-quan-sat/authentication-jwt-oauth2" description="Xác thực credential và đưa principal đã verify vào request context." />
+  <Card title="Schema mapping và nested field" href="/docs/tich-hop-spring-for-graphql/schema-mapping-va-nested-field" description="Đặt field resolver, source object và batching ở đúng boundary." />
+  <Card title="Xử lý lỗi tập trung" href="/docs/tich-hop-spring-for-graphql/xu-ly-loi-tap-trung" description="Map forbidden, execution error và metadata response an toàn." />
+  <Card title="Subscription và WebSocket" href="/docs/query-mutation-subscription/subscription-websocket" description="Kiểm tra authorization lúc subscribe, từng event và cleanup." />
+</Cards>

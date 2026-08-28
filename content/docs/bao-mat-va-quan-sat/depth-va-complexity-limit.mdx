@@ -1,23 +1,1101 @@
 ---
 title: "Giới hạn độ sâu và complexity"
-description: "Ngăn query quá sâu hoặc quá đắt bằng depth limit, complexity analysis và timeout."
+description: "Kết hợp depth, field complexity, cardinality, cost budget và timeout để bảo vệ tài nguyên GraphQL."
 ---
 
-Trang này sẽ trình bày **Giới hạn độ sâu và complexity** trong bối cảnh xây dựng GraphQL API với Spring Boot.
+import { Step, Steps } from 'fumadocs-ui/components/steps';
+
+GraphQL cho phép client tự chọn `selection set`, lồng nhiều object, gọi một field nhiều lần bằng alias và truyền kích thước trang qua variables. Tính linh hoạt đó có thể biến một HTTP request nhỏ thành rất nhiều công việc ở CPU, heap, database, downstream service hoặc connection pool.
+
+Trang này trình bày cách thiết kế **query protection** (bảo vệ truy vấn) theo hướng nhiều lớp cho GraphQL API dùng Spring Boot và Spring for GraphQL. Các schema, query, JSON, YAML và pseudocode đều là ví dụ tĩnh; repository là docs-only, không có backend Spring Boot tương ứng để chạy. Tên extension point, chữ ký API và hành vi mặc định phải được đối chiếu với version Spring Boot, Spring for GraphQL và GraphQL Java của ứng dụng thật.
+
+<Callout type="warn" title="Không có một ngưỡng đúng cho mọi hệ thống">
+`maxDepth`, trọng số field, page size và cost budget phải được suy ra từ workload, SLO, database, downstream, principal và capacity thực tế. Những giá trị dạng cấu hình trong bài chỉ là tên policy hoặc placeholder để minh họa, không phải magic threshold có thể dùng nguyên xi cho mọi API.
+</Callout>
 
 ## Mục lục
 
-- [Nội dung dự kiến](#nội-dung-dự-kiến)
+- [Mục tiêu và mô hình đe dọa](#mục-tiêu-và-mô-hình-đe-dọa)
+  - [Resource exhaustion trong GraphQL](#resource-exhaustion-trong-graphql)
+  - [Một query nông nhưng đắt](#một-query-nông-nhưng-đắt)
+- [Các lớp bảo vệ không thay thế nhau](#các-lớp-bảo-vệ-không-thay-thế-nhau)
+  - [Depth limit](#depth-limit)
+  - [Field và operation complexity](#field-và-operation-complexity)
+  - [List multiplier và cardinality](#list-multiplier-và-cardinality)
+  - [Query cost budget](#query-cost-budget)
+  - [Timeout và cancellation](#timeout-và-cancellation)
+  - [Rate limit và concurrency](#rate-limit-và-concurrency)
+- [Mô hình cost theo selection và dữ liệu](#mô-hình-cost-theo-selection-và-dữ-liệu)
+  - [Registry trọng số phía server](#registry-trọng-số-phía-server)
+  - [Pagination filter sort và aggregate](#pagination-filter-sort-và-aggregate)
+  - [Variable-dependent cost](#variable-dependent-cost)
+  - [Pseudocode estimator](#pseudocode-estimator)
+- [Phân tích query trước execution](#phân-tích-query-trước-execution)
+  - [Pipeline validation](#pipeline-validation)
+  - [Fragments và fragment cycle](#fragments-và-fragment-cycle)
+  - [Aliases và field merging](#aliases-và-field-merging)
+  - [Directives interface union custom scalar](#directives-interface-union-custom-scalar)
+  - [Introspection](#introspection)
+- [Policy theo operation và principal](#policy-theo-operation-và-principal)
+  - [Allow deny theo context](#allow-deny-theo-context)
+  - [Persisted operation và dynamic query](#persisted-operation-và-dynamic-query)
+  - [Page size và input limits](#page-size-và-input-limits)
+  - [Config minh họa](#config-minh-họa)
+- [Đặt guard trong Spring for GraphQL](#đặt-guard-trong-spring-for-graphql)
+  - [Validation hook và version caveat](#validation-hook-và-version-caveat)
+  - [Context authorization service](#context-authorization-service)
+  - [Endpoint property theo Spring Boot](#endpoint-property-theo-spring-boot)
+- [Bảo vệ khi execution chạy](#bảo-vệ-khi-execution-chạy)
+  - [Timeout deadline cancellation](#timeout-deadline-cancellation)
+  - [DataLoader và N plus 1](#dataloader-và-n-plus-1)
+  - [Cache không phải bypass](#cache-không-phải-bypass)
+- [Error response và observability](#error-response-và-observability)
+  - [Error an toàn](#error-an-toàn)
+  - [Metrics log trace](#metrics-log-trace)
+- [Tuning và rollout](#tuning-và-rollout)
+  - [False positive](#false-positive)
+  - [Shadow mode](#shadow-mode)
+- [Test adversarial và checklist](#test-adversarial-và-checklist)
+  - [Bộ test](#bộ-test)
+  - [Checklist production](#checklist-production)
 - [Bước tiếp theo](#bước-tiếp-theo)
 
-## Nội dung dự kiến
+---
 
-Nội dung chi tiết sẽ bao gồm khái niệm chính, ví dụ code và các lưu ý thực hành liên quan đến chủ đề này.
+## Mục tiêu và mô hình đe dọa
 
-<Callout type="info" title="Trang placeholder">
-Đây là trang khung. Hãy dùng skill `fumadocs-technical-writer` để viết đầy đủ trang này trong bước tiếp theo.
-</Callout>
+### Resource exhaustion trong GraphQL
+
+Mục tiêu của query protection không phải là làm mọi query ngắn hoặc cấm nested field. Mục tiêu là giới hạn công việc mà một request có thể gây ra trước khi công việc đó chiếm hết tài nguyên dùng chung.
+
+Các tài nguyên thường cần bảo vệ:
+
+| Tài nguyên | Cách query GraphQL có thể làm cạn kiệt | Tín hiệu nên theo dõi |
+| --- | --- | --- |
+| CPU parse và validation | Document quá lớn, nhiều alias, fragment spread hoặc directive | thời gian parse/validate, số node AST |
+| Heap và response buffer | Nhiều node, nhiều scalar, list multiplier lớn | response bytes, node count, allocation/GC |
+| Database | `totalCount`, sort/filter khó dùng index, offset sâu, nhiều relation | query count, rows scanned, query duration |
+| Downstream service | Nested field gọi HTTP, recommendation, search hoặc aggregate | call count, fan-out, timeout, retry |
+| Thread và connection pool | Nhiều request chậm chạy đồng thời | active execution, queue wait, pool saturation |
+| Cache và broker | Cache key cardinality lớn, stampede, subscription buffer | hit/miss, key count, queue depth, lag |
+
+Một query vượt giới hạn nên bị từ chối **trước root resolver** khi có thể. Nếu query đã bắt đầu execution, timeout, cancellation, bulkhead và concurrency cap vẫn cần thiết vì estimator có thể đánh giá thấp, dữ liệu có thể thay đổi hoặc downstream có thể chậm bất thường.
+
+### Một query nông nhưng đắt
+
+Giả sử schema minh họa có các field sau:
+
+```graphql title="Schema minh họa"
+type Query {
+  search(text: String!, first: Int = 20): SearchConnection!
+  books(first: Int = 20): BookConnection!
+  book(id: ID!): Book
+}
+
+type SearchConnection {
+  nodes: [Book!]!
+  totalCount: Int!
+  facets: [Facet!]!
+}
+
+type BookConnection {
+  nodes: [Book!]!
+}
+
+type Book {
+  id: ID!
+  title: String!
+  author: Author!
+  reviews(first: Int = 10): ReviewConnection!
+}
+
+type Author {
+  id: ID!
+  name: String!
+  books(first: Int = 20): BookConnection!
+}
+
+type ReviewConnection {
+  nodes: [Review!]!
+}
+
+type Review {
+  id: ID!
+  body: String!
+}
+
+type Facet {
+  name: String!
+  count: Int!
+}
+```
+
+Query dưới đây có ít tầng lồng nhau nhưng có thể đắt:
+
+```graphql
+query SearchPage($text: String!, $first: Int!) {
+  search(text: $text, first: $first) {
+    totalCount
+    facets {
+      name
+      count
+    }
+    nodes {
+      id
+      title
+    }
+  }
+}
+```
+
+Theo quy ước root field có depth bằng `1`, query này chỉ khoảng ba tầng. Tuy nhiên, server có thể phải:
+
+- chạy full-text search với pattern khó dùng index;
+- đếm toàn bộ tập kết quả cho `totalCount`;
+- tính aggregation cho `facets`;
+- serialize nhiều `Book` khi `$first` lớn;
+- giữ các bước đó trong cùng request và cùng connection pool.
+
+Vì vậy, depth thấp không chứng minh query rẻ. Các hình dạng khác cũng có cùng vấn đề:
+
+| Hình dạng | Vì sao depth không đủ |
+| --- | --- |
+| Nhiều alias của `book(id: ...)` | Mỗi alias có thể là một lookup hoặc downstream call riêng dù cùng depth. |
+| `books(first: ...) { nodes { reviews(first: ...) } }` | Số review tiềm năng là tích của cardinality các list. |
+| Một field `report` hoặc `recommendations` | Resolver nông nhưng có thể chạy aggregate, search hoặc fan-out đắt. |
+| `totalCount`/`facets` cạnh một page nhỏ | Metadata có thể quét toàn bộ tập authorized, không chỉ page. |
+| Filter `or` dài, `contains`, sort tùy chọn | Input đúng kiểu vẫn có thể tạo query plan xấu hoặc nhiều nhánh. |
+
+## Các lớp bảo vệ không thay thế nhau
+
+Một policy thực tế nên phân biệt các lớp sau. Tên gọi giữa các thư viện có thể khác; điều quan trọng là semantics và thời điểm áp dụng.
+
+| Lớp | Đo hoặc giới hạn | Thời điểm | Không thay thế |
+| --- | --- | --- | --- |
+| **Depth limit** | Số cạnh field sâu nhất trong selection | Parse/validation | Cardinality, field cost, DB plan |
+| **Field/operation complexity** | Trọng số selection, resolver, operation và argument | Trước execution | Timeout và admission control |
+| **List multiplier/cardinality** | Số phần tử tiềm năng nhân xuống subtree | Cost analysis trước execution | Authorization và page contract |
+| **Query cost budget** | Tổng cost được phép cho một operation/principal | Sau khi có policy context, trước execution | Runtime timeout, rate limit |
+| **Timeout/cancellation** | Thời gian và tín hiệu hủy công việc đang chạy | Trong execution và downstream | Từ chối query đã biết là quá đắt |
+| **Rate limit** | Số request hoặc cost token trong một khoảng thời gian | Admission trước hoặc quanh execution | Giới hạn một request đơn lẻ |
+| **Concurrency limit** | Số execution/cost token đang in-flight | Admission và runtime | Burst rate, query cost, timeout |
+
+### Depth limit
+
+**Depth limit** giới hạn độ sâu tối đa của cây selection. Quy ước trong trang này là root field dưới `Query`, `Mutation` hoặc `Subscription` có depth `1`; mỗi field object/list object con tăng thêm `1`. Một implementation khác có thể tính root là `0`, vì vậy phải ghi rõ convention khi so sánh metric hoặc chuyển policy.
+
+Depth hữu ích để chặn các query quan hệ lặp qua nhiều object:
+
+```graphql
+query NestedRelations {
+  books(first: 20) {
+    nodes {
+      author {
+        books(first: 20) {
+          nodes {
+            author {
+              books(first: 20) {
+                nodes {
+                  id
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+Nhưng depth chỉ trả lời “đi xa bao nhiêu tầng”, không trả lời “mỗi tầng có bao nhiêu phần tử hoặc tốn bao nhiêu”. Một depth policy cần đi cùng:
+
+- giới hạn document bytes, AST node và fragment spread để bảo vệ chính analyzer;
+- complexity của field/operation;
+- multiplier của list và page argument;
+- giới hạn riêng cho relation, aggregate, `totalCount` và introspection;
+- timeout, concurrency và rate theo principal.
+
+Đừng chọn `maxDepth` chỉ vì một con số thường thấy trong blog. Hãy đo depth của operation hợp lệ, xác định query nào cần exception có kiểm soát, rồi kiểm chứng p95/p99 và resource usage ở dataset gần production.
+
+### Field và operation complexity
+
+**Field complexity** gán trọng số cho từng selection. Scalar đọc từ object đã có thường có trọng số nhỏ hơn field gọi search, aggregate, filesystem hoặc downstream. **Operation complexity** là tổng cost của một operation sau khi tính các field và quan hệ giữa chúng. Một số thư viện dùng “complexity” để gọi cả mô hình cardinality; một số thư viện tách `complexity` và `cost`. Hãy định nghĩa vocabulary của team trước khi viết policy.
+
+Ví dụ các field cần metadata riêng:
+
+- `Book.id`, `Book.title`: field lá đơn giản, nhưng vẫn tiêu tốn response bytes.
+- `SearchConnection.totalCount`: count toàn bộ tập authorized, có thể là query thứ hai.
+- `SearchConnection.facets`: aggregate theo tập kết quả, không bị giới hạn chỉ bởi `first`.
+- `Book.reviews`: list relation, cần multiplier từ page size.
+- `Book.recommendations`: có thể gọi search hoặc nhiều service, cần budget riêng.
+- custom scalar nhận JSON lớn hoặc directive làm regex/full-text: cost gồm input size và cách xử lý.
+
+Field weight nên là **metadata server-owned**. Client không được gửi một argument kiểu `cost: 0` để làm estimator bỏ qua field. Cost của một field cũng không nên chỉ dựa trên tên Java method; owner cần biết data source, query plan, cache behavior và failure mode.
+
+### List multiplier và cardinality
+
+Nếu một field trả list, cost của các field con có thể phải nhân theo số phần tử tiềm năng. Với path:
+
+```text
+books(first: A) → nodes → reviews(first: B) → nodes
+```
+
+cardinality upper bound của `Review` có thể xấp xỉ `A × B` trước khi tính filter, authorization và page thực tế. Đây là **upper bound bảo thủ**, không phải lời hứa server luôn trả đủ số đó.
+
+Nguyên tắc tính multiplier:
+
+- field to-one thường có multiplier `1`; nullable không biến nó thành list;
+- list có argument `first`, `limit` hoặc tương đương thì dùng giá trị sau default/coercion, nhưng không vượt field policy;
+- list không có giới hạn rõ ràng phải dùng maximum server định nghĩa hoặc bị từ chối;
+- `offset` không làm giảm công việc bỏ qua dữ liệu; offset sâu có thể thêm cost riêng;
+- cursor/keyset thường giới hạn số node trả về, nhưng vẫn cần kiểm tra index, seek và nested selection;
+- `totalCount`, facet, aggregate và search có thể phụ thuộc toàn bộ tập matching, không chỉ page size;
+- authorization không được dùng như lý do để giả định cardinality bằng `0` trước khi policy đã được áp dụng.
+
+Đừng nhân mọi sibling một cách máy móc thành tích. Cost estimator phải bám semantics execution: các nhánh sibling thường cộng cost; subtree dưới từng list mới nhân theo cardinality. Khi có field merge, alias hoặc abstract type, phải xử lý trước khi cộng để không đếm sai.
+
+### Query cost budget
+
+**Query cost budget** là ngân sách tổng cho một operation trong một policy context. Budget có thể biểu diễn bằng cost units nội bộ, token, hoặc một phân loại như `LOW`, `MEDIUM`, `HIGH`; đơn vị không phải chuẩn GraphQL. Nó nên trả lời:
+
+- operation này được phép tiêu tốn bao nhiêu công việc;
+- principal hoặc tenant nào có policy nào;
+- cost được tính tĩnh, theo variables hay theo upper bound;
+- khi vượt budget thì từ chối trước execution hay chuyển sang workflow khác;
+- budget có liên quan thế nào với rate và concurrency.
+
+Một operation có cost nằm dưới budget vẫn có thể timeout vì database bị nghẽn. Ngược lại, một operation có cost cao nhưng dùng cache có thể chạy nhanh trong một lần cụ thể. Vì vậy, budget là guardrail dự đoán trước; metrics runtime dùng để hiệu chỉnh, không phải lý do bỏ qua các lớp khác.
+
+### Timeout và cancellation
+
+**Timeout** giới hạn thời gian chờ hoặc làm fail một công việc. **Cancellation** là tín hiệu rằng client, transport, parent stream hoặc server không còn cần công việc đó. Đặt một deadline vào context không tự hủy query database, HTTP call, `CompletableFuture` hoặc `Publisher`.
+
+Timeout nên tồn tại ở các boundary có thể kiểm soát:
+
+- gateway/HTTP request;
+- GraphQL execution;
+- application service;
+- database statement/query;
+- HTTP/gRPC client và connection pool;
+- WebSocket subscription hoặc event source.
+
+Các deadline phải có thứ tự hợp lý: lớp ngoài đủ dài cho lớp trong hoàn tất, nhưng không vô hạn. Một future timeout có thể trả lỗi cho GraphQL trong khi HTTP connection hoặc database statement vẫn đang chạy nếu client bên dưới không hỗ trợ cancel. Hãy đo resource còn sống sau timeout và cấu hình cancellation/cleanup ở driver, executor và reactive pipeline tương ứng.
+
+### Rate limit và concurrency
+
+**Rate limit** giới hạn tốc độ nhận request trong một cửa sổ thời gian. **Concurrency limit** giới hạn số công việc đang chạy cùng lúc. Cả hai khác với cost budget:
+
+```text
+rate limit      = tốc độ đến
+concurrency     = số việc đang chạy
+cost budget     = một việc được phép nặng đến đâu
+timeout         = một việc được chạy lâu đến đâu
+```
+
+Một attacker có thể gửi nhiều query hợp lệ, mỗi query dưới cost budget. Khi đó rate limit hoặc concurrency theo principal/tenant giúp bảo vệ pool. Ngược lại, một request duy nhất có nhiều alias có thể vượt cost dù rate thấp. Với workload hỗn hợp, có thể dùng **weighted admission**: request tốn nhiều cost tiêu thụ nhiều token hơn, nhưng cách tính và capacity phải được benchmark.
+
+## Mô hình cost theo selection và dữ liệu
+
+### Registry trọng số phía server
+
+Một registry khái niệm có thể mô tả cost và cardinality như sau:
+
+| Field | Loại cost | Cardinality hoặc điều kiện |
+| --- | --- | --- |
+| `Query.search` | base resolver + search cost | Lấy từ `first`, giới hạn theo policy; `text` có giới hạn độ dài |
+| `SearchConnection.nodes` | serialization/list cost | Nhân theo số node của search |
+| `SearchConnection.totalCount` | full-set count | Không giả định bị giới hạn bởi `first` |
+| `SearchConnection.facets` | full-set aggregate | Số facet và query plan do server kiểm soát |
+| `Book.reviews` | relation/list cost | Lấy từ `first` sau default và max của field |
+| `Book.recommendations` | downstream/fan-out cost | Có thể yêu cầu scope riêng hoặc persisted operation |
+| `JSON` custom scalar | input/coercion cost | Giới hạn bytes, cấu trúc và operator được phép |
+
+Đây không phải SDL directive hay API built-in bắt buộc. Team có thể lưu metadata trong code, schema registry hoặc cấu hình server, miễn là registry versioned, được review cùng schema và không để client sửa. Nếu một field có nhiều execution path tùy cache hoặc feature flag, chọn upper bound an toàn và quan sát actual cost.
+
+Một model có thể dùng công thức khái niệm:
+
+```text
+fieldCost = weight(parentType.field, arguments, principal)
+          × currentListMultiplier
+
+operationCost = operationBase
+              + sum(fieldCost)
+              + inputFilterCost
+              + documentCost
+```
+
+Trong đó `weight` được benchmark theo workload của hệ thống; nó không phải số điểm có ý nghĩa phổ quát giữa hai service. Một policy tốt thường lưu thêm `reasons` hoặc cost breakdown để log nội bộ, giúp biết field nào làm query bị từ chối mà không đưa chi tiết đó ra response công khai.
+
+### Pagination filter sort và aggregate
+
+Pagination phải được tính vào cost chứ không chỉ được xem là tính năng response.
+
+| Thành phần | Câu hỏi cost |
+| --- | --- |
+| `first`/`limit` | Bao nhiêu node có thể đi vào subtree? Giá trị có được coerce và nằm trong max per field không? |
+| `offset` | Database có phải bỏ qua nhiều row trước khi lấy page không? Có page-depth cap không? |
+| `after`/cursor | Cursor có hợp lệ, đúng filter/sort/scope và có seek/index phù hợp không? |
+| `totalCount` | Có phải count toàn bộ authorized set không? Client có thật sự cần field này không? |
+| `contains`/full-text | Có index hoặc search path phù hợp không? Giới hạn độ dài và pattern thế nào? |
+| `in`/`or` | Có bao nhiêu phần tử hoặc nhánh predicate? Có giới hạn input tree không? |
+| sort | Có bao nhiêu key, collation/null policy nào, và có thể gây sort ngoài index không? |
+| relation filter | Có join/`EXISTS` qua bao nhiêu relation và policy authorization nào? |
+
+Schema default cho `first` chỉ giúp client không phải gửi argument. Nó không tự đặt maximum. Service/policy vẫn phải kiểm tra số âm, `0`, giá trị quá lớn, list filter rỗng, số nhánh boolean và độ sâu của input filter. Khi vượt max, nên trả lỗi input ổn định thay vì âm thầm biến `1000` thành `100`; nếu API chọn clamp thì semantics và metadata phải được công bố.
+
+Với cursor, cursor nên bind với filter, sort, tenant hoặc authorization scope nếu đó là yêu cầu của domain. Với offset, page depth có thể là một thành phần cost vì offset lớn vẫn tốn database dù response chỉ có vài node. Đọc [Pagination](/docs/query-mutation-subscription/pagination), [Filtering và sorting](/docs/query-mutation-subscription/filtering-va-sorting) và [Cursor/offset pagination trong Spring](/docs/truy-cap-du-lieu-va-hieu-nang/cursor-offset-pagination-spring) để nối các giới hạn này với contract và query plan.
+
+### Variable-dependent cost
+
+Cost của query thường phụ thuộc variables, không chỉ văn bản document:
+
+```graphql
+query Books($first: Int!, $withReviews: Boolean!) {
+  books(first: $first) {
+    nodes {
+      id
+      title
+      reviews(first: $first) @include(if: $withReviews) {
+        nodes {
+          id
+          body
+        }
+      }
+    }
+  }
+}
+```
+
+Cùng một document có cost rất khác khi `$first` nhỏ hay lớn, hoặc khi `$withReviews` là `false` hay `true`. Luồng an toàn là:
+
+1. parse document và chọn `operationName`;
+2. validate field, argument, fragment, directive và variable definition với schema;
+3. coerce variables JSON và áp dụng default theo contract;
+4. lấy principal/policy đã xác thực;
+5. đánh giá cost với giá trị runtime, page policy và directive condition;
+6. từ chối nếu vượt budget, sau đó mới bắt đầu root resolver.
+
+Nếu extension point của implementation chạy trước khi variables được coerce, dùng upper bound: giá trị page tối đa theo policy và cả nhánh directive có thể được chọn. Không mặc định coi biến chưa biết là `0`. Nếu variable thiếu hoặc sai kiểu, GraphQL nên dừng ở coercion; không cố đoán cost rồi để resolver xử lý.
+
+Static persisted operation có thể lưu **structural upper bound** offline, nhưng vẫn cần kiểm tra variables tại runtime. Một persisted query được đăng ký với `$first` không có nghĩa client được dùng mọi giá trị `$first`; page maximum, filter size, principal scope và timeout vẫn là runtime policy.
+
+### Pseudocode estimator
+
+Pseudocode sau mô tả cách xử lý selection, list multiplier và fragment. Đây không phải chữ ký API của GraphQL Java hoặc Spring for GraphQL:
+
+```java title="Cost estimator — pseudocode"
+Estimate estimate(Operation operation, Variables variables, Policy policy) {
+    policy.checkDocumentSize(operation.document());
+
+    Cost total = policy.operationBase(operation.name());
+    Set<String> activeFragmentStack = new HashSet<>();
+
+    total += visitSelections(
+            operation.selectionSet(),
+            operation.rootType(),
+            1,                         // root list multiplier
+            variables,
+            policy,
+            activeFragmentStack);
+
+    return total.withBreakdown();
+}
+
+Cost visitSelections(
+        SelectionSet selections,
+        Type parentType,
+        CardinalityMultiplier multiplier,
+        Variables variables,
+        Policy policy,
+        Set<String> activeFragmentStack) {
+
+    Cost total = Cost.zero();
+
+    for (Selection selection : selections) {
+        if (selection.isField()) {
+            Field field = policy.schemaField(parentType, selection.name());
+            policy.checkFieldAllowed(field);
+
+            DirectiveState directives = policy.evaluateDirectives(
+                    selection.directives(), variables);
+            if (directives.isSkipped()) {
+                continue;
+            }
+
+            Cardinality card = policy.cardinality(
+                    field, selection.arguments(), variables);
+            Cost own = policy.fieldWeight(
+                    field, selection.arguments(), variables)
+                    .multiply(multiplier);
+            total += own;
+
+            if (selection.hasSubSelection()) {
+                CardinalityMultiplier childMultiplier = multiplier
+                        .multiply(card.forChildFields());
+                total += visitSelections(
+                        selection.subSelection(),
+                        field.namedChildType(),
+                        childMultiplier,
+                        variables,
+                        policy,
+                        activeFragmentStack);
+            }
+        } else if (selection.isFragmentSpread()) {
+            String name = selection.fragmentName();
+            if (!activeFragmentStack.add(name)) {
+                throw policy.fragmentCycle("QUERY_FRAGMENT_CYCLE");
+            }
+            Fragment fragment = policy.fragment(name);
+            total += visitSelections(
+                    fragment.selectionSet(),
+                    policy.narrowType(parentType, fragment.typeCondition()),
+                    multiplier,
+                    variables,
+                    policy,
+                    activeFragmentStack);
+            activeFragmentStack.remove(name);
+        } else if (selection.isInlineFragment()) {
+            // Với interface/union, policy có thể dùng upper bound của các type khả dĩ.
+            total += visitSelections(
+                    selection.selectionSet(),
+                    policy.narrowType(parentType, selection.typeCondition()),
+                    multiplier,
+                    variables,
+                    policy,
+                    activeFragmentStack);
+        }
+    }
+
+    return total;
+}
+```
+
+Estimator thực tế cần thêm các guard cho số AST node, số fragment definition, số lần spread, độ dài string, số nhánh filter và recursion của input. Một global `visitedFragments` không đủ: cùng fragment được spread ở hai path khác nhau có thể tạo cost hai lần. Có thể memoize để tối ưu analyzer, nhưng key phải giữ đủ parent type, path/cardinality, directive và arguments; không được memoize đến mức undercount.
+
+Sau khi tính, decision nên giữ các trường nội bộ như:
+
+```text
+estimatedCost
+estimatedDepth
+maxListMultiplier
+documentNodeCount
+principalPolicy
+reasons
+policyVersion
+```
+
+Không nhất thiết trả các trường này cho client. Chúng hữu ích cho metrics, shadow mode và điều tra false positive.
+
+## Phân tích query trước execution
+
+### Pipeline validation
+
+Một pipeline khái niệm an toàn có thứ tự như sau:
+
+```text
+HTTP/WebSocket security và body limit
+             │
+             ▼
+chọn operation + parse document
+             │
+             ▼
+GraphQL schema validation
+             │  field, argument, selection, fragment, directive
+             ▼
+coerce variables và default
+             │
+             ▼
+principal policy + depth/complexity/cardinality/cost guard
+             │
+             ▼
+root resolver → nested resolver → data source
+```
+
+Cụm “validation trước execution” ở đây bao gồm cả query guardrail. Validation schema kiểm tra query có hợp lệ theo contract; cost policy kiểm tra query hợp lệ đó có được phép theo capacity và principal hay không. Một query `books(first: 100000)` có thể đúng kiểu `Int` nhưng vẫn phải bị từ chối trước repository.
+
+Các giới hạn sớm nên cân nhắc:
+
+- HTTP body bytes và JSON variables bytes;
+- số operation trong một document và `operationName` được chọn;
+- số token/AST node, fragment definition và fragment spread;
+- độ dài query string, tên alias và string input;
+- số nhánh filter, relation depth và phần tử `in`;
+- introspection policy;
+- depth, field cost, list multiplier và tổng budget.
+
+Nếu analyzer chỉ chạy trong một hook đã có execution bắt đầu, cần xác minh nó thực sự được gọi trước `DataFetcher`. Không đặt toàn bộ protection trong resolver: khi vào resolver, parser, schema và có thể đã có một phần side effect đã xảy ra. Guard ở resolver/service vẫn cần cho invariant runtime, authorization resource và limit page của từng use case.
+
+### Fragments và fragment cycle
+
+Named fragment giúp tái sử dụng selection nhưng không làm cost biến mất:
+
+```graphql
+query Catalog($withReviews: Boolean!, $first: Int!) {
+  books(first: $first) {
+    nodes {
+      ...BookCard
+      ...BookReviews
+    }
+  }
+}
+
+fragment BookCard on Book {
+  id
+  title
+}
+
+fragment BookReviews on Book {
+  reviews(first: $first) @include(if: $withReviews) {
+    nodes {
+      id
+      body
+    }
+  }
+}
+```
+
+Analyzer nên:
+
+- chỉ duyệt fragment có thể reach từ operation được chọn;
+- mở rộng fragment theo path, type condition, directive và multiplier;
+- phát hiện `A → B → A` bằng active recursion stack và từ chối trước execution;
+- tính mỗi spread có thể tạo công việc, đồng thời tôn trọng field merge khi selection hoàn toàn tương thích;
+- giới hạn số node sau expansion để chính analyzer không bị DoS;
+- không tin rằng fragment definition nằm sau operation hoặc ở file client khác sẽ tự tạo scope mới.
+
+GraphQL validation thường có quy tắc chống fragment cycle, nhưng custom cost analyzer vẫn nên có cycle detection riêng. Validation của library và hook custom có thể chạy ở thời điểm hoặc thứ tự khác nhau theo version. Nếu cycle lọt qua một bước, analyzer không được recurse vô hạn.
+
+### Aliases và field merging
+
+Alias đổi response key, không làm field rẻ hơn:
+
+```graphql
+query ManyLookups {
+  first: book(id: "book-1") {
+    id
+    title
+  }
+  second: book(id: "book-2") {
+    id
+    title
+  }
+  third: book(id: "book-3") {
+    id
+    title
+  }
+}
+```
+
+Mỗi alias là response key khác nhau và có arguments khác nhau, nên analyzer phải tính từng lookup. Không giới hạn số alias chỉ bằng độ sâu. Alias cũng có thể nhân downstream call nếu resolver không có request cache hoặc DataLoader phù hợp.
+
+Ngược lại, GraphQL có thể merge hai selection cùng field, cùng arguments và nested shape tương thích dưới cùng response key. Analyzer quá đơn giản đếm từng dòng sẽ overestimate; analyzer dùng một global dedup theo field name lại có thể undercount hai alias hoặc hai arguments khác nhau. Quy tắc thực hành:
+
+- phân biệt `response key` với `field name`;
+- dùng semantics field collection/merge của GraphQL sau validation;
+- chỉ dedupe khi field, arguments, directives và nested selection chắc chắn merge được;
+- alias khác nhau hoặc arguments khác nhau là các đơn vị cost riêng, trừ khi server có request cache được chứng minh và policy chủ động mô hình hóa điều đó;
+- đặt max alias/selection/node count để bảo vệ parser và analyzer.
+
+### Directives interface union custom scalar
+
+**Directive điều khiển selection** như `@include` và `@skip` tạo cost phụ thuộc variables. Nếu `$includeReviews` đã được coerce thành `false`, nhánh có thể được bỏ qua trong estimate runtime. Nếu giá trị chưa biết ở thời điểm precompute, dùng cost upper bound hoặc biểu diễn khoảng `[min, max]`; không giả định nhánh đắt bị skip.
+
+**Interface và union** có thể có nhiều concrete type. Một cách an toàn là:
+
+- cộng field chung một lần;
+- với inline fragment, tính upper bound của các branch có thể xuất hiện trên một item;
+- nếu branch có list multiplier hoặc downstream khác nhau, chọn branch đắt nhất cho pre-execution budget;
+- theo dõi actual concrete type và cost sau execution để giảm false positive có cơ sở.
+
+**Custom scalar** vẫn là scalar ở quy tắc selection: client không được mở thêm subfield chỉ vì scalar chứa JSON. Nhưng custom scalar có thể tốn CPU/memory khi parse hoặc nhận input lớn. Cần giới hạn bytes, độ sâu của JSON nếu có, số phần tử và operator; không cho một scalar `JSON` trở thành DSL/regex/SQL tùy ý.
+
+**Custom directive** không tự có cost metadata. Nếu directive thay đổi execution, thêm field, gọi resolver đặc biệt, áp dụng search hoặc `@defer`/streaming tùy runtime, registry phía server phải mô tả effect của nó. Directive unknown, không có policy hoặc không thể ước lượng nên bị từ chối hoặc tính theo worst case. Directive phía client cũng không thay thế authorization; `@include(if: false)` không cấp quyền để đọc field nếu nhánh trở thành active ở request khác.
+
+### Introspection
+
+`__typename` thường là meta-field nhẹ, nhưng `__schema` và `__type` có thể trả nhiều metadata, bị gọi bằng nhiều alias và giúp attacker lập bản đồ schema. Introspection cần policy theo môi trường và principal:
+
+- local/dev hoặc principal được phép: cho phép để khám phá schema, nhưng vẫn giới hạn document, alias, depth, response bytes và concurrency;
+- public production: có thể deny toàn bộ hoặc chỉ cho persisted operation/introspection snapshot đã kiểm soát;
+- internal tooling: allow theo identity/service scope, có rate/concurrency cap;
+- không xem việc tắt introspection là authorization cho field hoặc resource.
+
+Analyzer nên nhận diện namespace introspection riêng. Không dùng cùng trọng số với `__typename`, nhưng cũng không bỏ qua `__schema`/`__type` khỏi document cost. Error khi introspection bị deny nên an toàn, không tiết lộ policy nội bộ hoặc tên schema ẩn.
+
+## Policy theo operation và principal
+
+### Allow deny theo context
+
+Operation name do client gửi có ích cho log nhưng không nên là bằng chứng duy nhất để allow. Chính sách nên dựa trên một định danh ổn định hơn, chẳng hạn hash của document đã canonicalize hoặc persisted operation ID, cùng với principal đã xác thực và schema/policy version.
+
+Một ma trận minh họa:
+
+| Principal class | Nguồn query | Introspection | Field đắt/aggregate | Budget và concurrency |
+| --- | --- | --- | --- | --- |
+| Anonymous/public | Persisted operation; dynamic chỉ khi policy cho phép | Thường deny hoặc snapshot giới hạn | Deny nếu không có allowlist riêng | Thấp, có weighted rate limit |
+| Authenticated app | Persisted + dynamic đã phân tích | Restricted theo scope | Chỉ field được scope cho phép | Theo user/tenant/client |
+| Internal service | Identity service-to-service và allowlist | Có thể allow trong network policy | Allow có kiểm soát, không vô hạn | Theo service pool và downstream |
+| Admin/dev | Dynamic để debug có kiểm soát | Có thể allow trong môi trường phù hợp | Budget cao hơn nhưng vẫn bounded | Không bypass timeout/concurrency |
+
+Đây chỉ là hình dạng policy, không phải bộ role cố định. Mỗi quyết định allow/deny cần xét:
+
+- operation kind: query, mutation hoặc subscription;
+- persisted ID/hash và schema version;
+- principal, authorities, tenant và client application;
+- field/argument policy, đặc biệt introspection, aggregate và downstream;
+- depth, estimated cost, page size và timeout budget;
+- trạng thái hệ thống như overload hoặc circuit open.
+
+Authorization và cost là hai câu hỏi khác nhau. Một principal có thể được phép gọi `search` nhưng không được gọi `recommendations`; một query có cost thấp vẫn phải bị từ chối nếu resource không thuộc tenant. Đừng trả ra khác biệt quá chi tiết giữa “field không tồn tại”, “field bị cấm” và “field quá đắt” nếu điều đó làm lộ schema hoặc policy.
+
+### Persisted operation và dynamic query
+
+**Static persisted operation/allowlist** lưu document đã review dưới một ID/hash. **Dynamic query** cho client gửi document mới và server parse/validate/analyze mỗi lần. So sánh:
+
+| Tiêu chí | Persisted operation/allowlist | Dynamic query |
+| --- | --- | --- |
+| Attack surface | Nhỏ hơn nếu public chỉ nhận ID hợp lệ | Lớn hơn: parse, validation và analyzer nhận input tự do |
+| Cost tĩnh | Có thể precompute structural upper bound | Phải tính mỗi request hoặc cache theo hash |
+| Variables | Vẫn phải coerce và kiểm tra max/runtime cost | Vẫn phải coerce và kiểm tra max/runtime cost |
+| Rollout | Review theo operation, owner, client và policy | Linh hoạt nhưng cần shadow/telemetry mạnh |
+| Debug nội bộ | Có thể allow dynamic có hạn | Không nên mở vô hạn ở production public |
+
+Allowlist nên gắn document với operation kind, principal class/scope, field policy, maximum page/cost, timeout class và policy version. Hash phải tính từ document canonicalize theo quy ước ổn định; không dùng `operationName` do client tự đặt làm authorization.
+
+Persisted operation không thay thế:
+
+- authentication và authorization hiện tại;
+- kiểm tra tenant/resource ở service/repository;
+- variable-dependent cost như `$first`, `$includeReviews`;
+- rate/concurrency/timeout khi hệ thống đang overload;
+- kiểm tra cursor, filter và input domain.
+
+Nếu dùng cơ chế automatic persisted query, hãy quy định rõ request nào được phép đăng ký document mới. Public client không nên tự biến một document chưa review thành allowlist chỉ bằng cách gửi hash rồi fallback dynamic vô hạn.
+
+### Page size và input limits
+
+GraphQL `Int` chỉ kiểm tra kiểu số nguyên. Schema default cũng không tự giới hạn maximum. Policy cần đặt giới hạn theo **field** và có thể theo principal:
+
+- `first`/`limit` có default rõ ràng và min/max được kiểm tra sau coercion;
+- list connection không có page argument phải có maximum cardinality server-side hoặc bị deny;
+- `totalCount`, facet, export và aggregate có thể yêu cầu field/persisted operation scope riêng;
+- filter `and`/`or` có giới hạn số node, độ sâu, list `in` và độ dài text;
+- sort có allowlist, số key và page-depth policy;
+- cursor có giới hạn độ dài, version, integrity và scope/filter binding;
+- variables JSON và custom scalar có body/bytes limit;
+- query có nhiều operation phải chọn đúng `operationName`; document không được dùng operation khác để né policy.
+
+Nên reject out-of-range thay vì âm thầm clamp:
+
+```text
+first không hợp lệ → PAGE_SIZE_OUT_OF_RANGE
+filter quá nhiều nhánh → FILTER_TOO_COMPLEX
+cursor sai scope → INVALID_CURSOR
+field aggregate không có scope → FIELD_NOT_ALLOWED
+```
+
+Các mã trên là mã ứng dụng minh họa. Nếu sản phẩm chọn clamp, response phải mô tả giới hạn hiệu dụng hoặc có contract rõ; nếu không, client có thể tưởng rằng đã nhận đủ dữ liệu trong khi server âm thầm cắt.
+
+### Config minh họa
+
+Đây là pseudoconfig để minh họa shape của policy. `graphql.protection.*` **không phải** bộ property Spring Boot mặc định được khẳng định trong bài; tên key và cơ chế đăng ký phải do implementation chọn và kiểm tra theo version.
+
+```yaml title="Query protection policy — pseudoconfig"
+graphql:
+  protection:
+    mode: ${GRAPHQL_PROTECTION_MODE} # shadow hoặc enforce theo rollout
+    document:
+      max-bytes: ${GRAPHQL_DOCUMENT_MAX_BYTES}
+      max-ast-nodes: ${GRAPHQL_DOCUMENT_MAX_AST_NODES}
+      max-operations: ${GRAPHQL_DOCUMENT_MAX_OPERATIONS}
+      max-fragment-spreads: ${GRAPHQL_MAX_FRAGMENT_SPREADS}
+    policies:
+      public-dynamic:
+        allow-introspection: false
+        max-depth: ${GRAPHQL_PUBLIC_MAX_DEPTH}
+        max-cost: ${GRAPHQL_PUBLIC_MAX_COST}
+        max-concurrency: ${GRAPHQL_PUBLIC_MAX_CONCURRENCY}
+        timeout-class: public-read
+      authenticated-app:
+        allow-introspection: ${GRAPHQL_APP_INTROSPECTION}
+        max-depth: ${GRAPHQL_APP_MAX_DEPTH}
+        max-cost: ${GRAPHQL_APP_MAX_COST}
+        max-concurrency: ${GRAPHQL_APP_MAX_CONCURRENCY}
+        timeout-class: app-read
+      persisted-internal:
+        allow-introspection: ${GRAPHQL_INTERNAL_INTROSPECTION}
+        max-cost: ${GRAPHQL_INTERNAL_MAX_COST}
+        max-concurrency: ${GRAPHQL_INTERNAL_MAX_CONCURRENCY}
+        timeout-class: internal-read
+    page-size-by-field:
+      Query.search: ${GRAPHQL_SEARCH_MAX_PAGE_SIZE}
+      Query.books: ${GRAPHQL_BOOKS_MAX_PAGE_SIZE}
+      Book.reviews: ${GRAPHQL_REVIEWS_MAX_PAGE_SIZE}
+```
+
+Nên version hóa policy cùng schema hoặc deployment. Khi thay đổi trọng số, max page hoặc timeout, biết operation nào bị ảnh hưởng và có dashboard so sánh trước/sau. Không để một `admin-bypass: true` toàn cục trở thành cách vô hiệu hóa mọi guard; exception nên gắn operation ID, principal scope, audit và vẫn chịu timeout/concurrency.
+
+## Đặt guard trong Spring for GraphQL
+
+### Validation hook và version caveat
+
+Trong Spring for GraphQL, request thường đi qua transport/interceptor, rồi vào GraphQL Java để parse, validate và execute. Một kiến trúc có thể đặt các phần sau ở các boundary khác nhau:
+
+| Boundary | Việc phù hợp |
+| --- | --- |
+| Gateway/HTTP filter | body size, route, TLS, authentication sớm, rate limit và concurrency admission |
+| `WebGraphQlInterceptor` hoặc boundary tương đương | tạo context, correlation/deadline, principal policy và request metadata đã làm sạch |
+| GraphQL validation/instrumentation | đọc operation/AST, depth, fragment, field complexity và cost trước resolver |
+| Resolver/service | page max của use case, authorization resource/tenant, filter semantics và invariant |
+| Repository/gateway | tenant predicate, query timeout, downstream timeout và defense in depth |
+
+GraphQL Java có khái niệm validation và instrumentation; Spring for GraphQL có các extension point để nối chúng vào runtime. Tuy nhiên, tên bean, builder, callback, context và thứ tự hook phụ thuộc version. Không coi một class/method cụ thể trong blog là API signature đã được ứng dụng hỗ trợ. Khi triển khai, xác minh:
+
+- guard thực sự chạy sau parse/validation cần thiết nhưng trước root `DataFetcher`;
+- variables đã được coerce hay phải dùng upper bound;
+- instrumentation có được gọi cho query bị reject, timeout và subscription event không;
+- exception/error resolver map được mã policy an toàn;
+- sync, `CompletionStage`, Reactor và WebSocket có truyền deadline/cancellation hay không;
+- custom `GraphQlSource`/runtime wiring có đè hoặc bỏ qua auto-configuration không.
+
+[Kiến trúc Spring for GraphQL](/docs/tich-hop-spring-for-graphql/kien-truc-spring-for-graphql) mô tả lifecycle, `GraphQlSource`, resolver và instrumentation ở mức boundary. [DataFetcher và GraphQL context](/docs/tich-hop-spring-for-graphql/datafetcher-va-graphql-context) nối context, DataLoader, timeout và cleanup. Các bài đó cũng nhấn mạnh rằng annotated controller chỉ là registration; nó không tự tạo query policy.
+
+### Context authorization service
+
+Cost policy cần principal, nhưng không nên lấy principal hoặc tenant từ variables. Context được tạo từ credential đã xác minh và truyền xuống service bằng holder nhỏ, immutable. Một flow khái niệm:
+
+```text
+HTTP/WebSocket credential
+          │
+          ▼
+Spring Security/interceptor
+          │ principal + tenant + deadline + request ID
+          ▼
+GraphQL execution context
+          │
+          ├─ cost policy chọn budget theo principal
+          ├─ resolver bind argument đã coerce
+          └─ service/repository kiểm tra resource authorization
+```
+
+Resolver có thể làm nhiệm vụ adapter:
+
+```java title="Resolver boundary — pseudocode"
+@QueryMapping
+BookConnection books(
+        @Argument("first") Integer first,
+        @Argument("filter") BookFilterInput filter,
+        DataFetchingEnvironment environment) {
+
+    RequestContext context = requestContextFrom(environment);
+    QueryPolicy policy = costPolicyFor(context.principal());
+
+    // Guard đã chạy trước resolver; service vẫn kiểm tra invariant/use case.
+    PageRequest page = pagePolicy.normalize("Query.books", first, policy);
+    return bookService.findVisible(
+            context.actor(), context.tenant(), filter, page,
+            context.deadline());
+}
+```
+
+Đây là pseudocode, không phải source code có sẵn hoặc chữ ký Spring đã kiểm chứng. `DataFetchingEnvironment`, `@Argument`, `@QueryMapping` và cách lấy context cần đối chiếu version thật. Điểm cần giữ là:
+
+- query guard không thay authorization resource;
+- service không tin `tenantId` từ input;
+- repository áp tenant/filter trước pagination;
+- page policy lặp lại ở boundary use case để bảo vệ khi service được gọi từ nơi khác;
+- context không chứa token raw, toàn bộ request hoặc entity graph lớn.
+
+Cost analysis cũng không nên tiết lộ resource existence. Nếu user không được đọc `Book.reviews`, policy nên deny theo field/scope hoặc áp dụng response contract an toàn; không chạy query trước rồi mới lọc kết quả ở client. [Authorization theo field và resolver](/docs/bao-mat-va-quan-sat/authorization-field-resolver) là bài nối tiếp về resource authorization.
+
+### Endpoint property theo Spring Boot
+
+Endpoint HTTP không quyết định depth/complexity policy, nhưng cần đúng khi smoke test backend thật:
+
+Với Spring Boot **3.5 trở lên**, dùng:
+
+```yaml title="application.yml — Spring Boot 3.5+"
+spring:
+  graphql:
+    http:
+      path: /graphql
+```
+
+Với Spring Boot **3.4 trở xuống**, dùng:
+
+```yaml title="application.yml — Spring Boot <= 3.4"
+spring:
+  graphql:
+    path: /graphql
+```
+
+`/graphql` chỉ là giá trị minh họa. Không cấu hình đồng thời hai key endpoint cho cùng application. Đây là property transport, không phải property built-in để đặt `maxDepth` hay `maxCost`; query protection vẫn cần extension/policy do ứng dụng chọn. Đối chiếu version và configuration metadata thật trước khi sao chép. [Thêm dependency và cấu hình](/docs/bat-dau/them-dependency-va-cau-hinh) và [Kiến trúc Spring for GraphQL](/docs/tich-hop-spring-for-graphql/kien-truc-spring-for-graphql) mô tả thêm boundary này.
+
+## Bảo vệ khi execution chạy
+
+### Timeout deadline cancellation
+
+Pre-execution cost guard là lớp đầu tiên; runtime cần một deadline truyền từ context xuống service và downstream. Deadline nên được tính từ server-side policy, không cho client nới vô hạn bằng một header hoặc variable.
+
+```text
+request deadline
+      │
+      ├─ GraphQL execution budget
+      ├─ database statement timeout
+      ├─ downstream HTTP/gRPC timeout
+      ├─ executor queue/task budget
+      └─ WebSocket subscription/event budget
+```
+
+Các nguyên tắc:
+
+- timeout của database/downstream phải thực sự được driver/client hỗ trợ, không chỉ bọc một future;
+- khi client disconnect, truyền cancellation đến `Publisher`, task, queue, HTTP call hoặc database nếu stack hỗ trợ;
+- cleanup phải chạy cho `complete`, `error`, `cancel`, timeout, socket close và application shutdown;
+- executor phải bounded; `supplyAsync` với pool không giới hạn có thể tạo resource exhaustion khác;
+- subscription cần giới hạn buffer và xử lý subscriber chậm, không dùng queue vô hạn;
+- với mutation, cancellation sau khi side effect đã commit không tự rollback; use case cần idempotency và trạng thái rõ.
+
+Một response timeout không chứng minh tài nguyên đã dừng. Hãy đo active task, DB connection, downstream request và subscription consumer sau timeout/cancel. [DataFetcher và GraphQL context](/docs/tich-hop-spring-for-graphql/datafetcher-va-graphql-context) có ví dụ tĩnh về deadline, Reactor cancellation và cleanup; [Kiến trúc Spring for GraphQL](/docs/tich-hop-spring-for-graphql/kien-truc-spring-for-graphql) giải thích boundary transaction/async.
+
+### DataLoader và N plus 1
+
+Query sau có thể tạo N+1:
+
+```graphql
+query BooksWithAuthors($first: Int!) {
+  books(first: $first) {
+    nodes {
+      id
+      title
+      author {
+        id
+        name
+      }
+    }
+  }
+}
+```
+
+Implementation ngây thơ có thể có một query lấy books và một query lấy author cho mỗi book. DataLoader/batch loading có thể gom các key trong cùng execution thành batch, nhưng không làm logical cardinality biến mất.
+
+Cost policy nên tính:
+
+- số `Book` tối đa từ `first`;
+- số field scalar và response bytes trên mỗi book;
+- số key có thể vào batch `author`;
+- batch size, batch timeout và memory;
+- nested list sau `author` nếu có;
+- authorization của từng key và tenant scope.
+
+Đừng giảm cost về `1` chỉ vì dùng DataLoader. DataLoader có thể giảm số DB/network calls, nhưng batch 10.000 key vẫn có thể làm nặng database, heap và response. Registry phải mới theo execution/request, key nên bao gồm scope khi ID không global, và batch loader không được lọc authorization muộn ở client.
+
+Pagination root và DataLoader giải quyết hai vấn đề khác nhau:
+
+```text
+root pagination  → giới hạn số node đi vào execution
+DataLoader       → gom lookup nested của các node đó
+cost/depth       → giới hạn shape và công việc tổng thể
+```
+
+Đọc [Batch loading và DataLoader](/docs/truy-cap-du-lieu-va-hieu-nang/batch-loading-va-dataloader) và [N+1 query](/docs/truy-cap-du-lieu-va-hieu-nang/n-plus-1-query) khi triển khai data layer; đọc [Cursor/offset pagination trong Spring](/docs/truy-cap-du-lieu-va-hieu-nang/cursor-offset-pagination-spring) để nối page limit với repository/query plan.
+
+### Cache không phải bypass
+
+Cache có thể làm actual latency thấp hơn nhưng không nên là lý do bỏ qua pre-execution guard:
+
+- một query có selection/alias/filter quá lớn vẫn có thể tạo cache key, parse response hoặc cache miss tốn tài nguyên;
+- cache hit hôm nay có thể thành miss sau invalidation và tạo stampede;
+- response cache phải vary theo principal/tenant, variables, operation và policy; shared cache sai scope có thể làm lộ dữ liệu;
+- DataLoader cache theo execution không phải shared response cache và không được dùng giữa user/tenant;
+- cache key nên dùng query hash/operation ID đã kiểm soát, filter đã canonicalize và page/cursor context, không dùng raw secret;
+- cost metric nên ghi cả estimated cost và cache hit/miss để biết estimator đang đánh giá công việc lý thuyết hay actual path.
+
+Cache có thể được mô hình hóa như một điều chỉnh nhỏ trong field weight nếu benchmark chứng minh, nhưng vẫn giữ hard cap cho document, depth, cardinality, response bytes và concurrency. [Caching](/docs/truy-cap-du-lieu-va-hieu-nang/caching) và [Cache và persisted operation](/docs/production/cache-va-persisted-operation) là các bài nối tiếp khi thiết kế cache key/invalidation/allowlist.
+
+## Error response và observability
+
+### Error an toàn
+
+Một error public nên cho client biết request không được chấp nhận và đưa mã ổn định để xử lý, nhưng không tiết lộ threshold nội bộ, schema ẩn, SQL, stack trace, token, tenant hoặc query text.
+
+```json title="Error khi vượt cost — minh họa tĩnh"
+{
+  "errors": [
+    {
+      "message": "Truy vấn không đáp ứng chính sách bảo vệ tài nguyên.",
+      "extensions": {
+        "code": "QUERY_COST_LIMIT_EXCEEDED",
+        "requestId": "req-example-123"
+      }
+    }
+  ],
+  "data": null
+}
+```
+
+Các mã như `QUERY_COST_LIMIT_EXCEEDED`, `QUERY_DEPTH_LIMIT_EXCEEDED`, `QUERY_OPERATION_NOT_ALLOWED`, `QUERY_INTROSPECTION_DISABLED`, `PAGE_SIZE_OUT_OF_RANGE` và `QUERY_TIMEOUT` là contract ứng dụng minh họa, không phải mã mặc định của Spring for GraphQL. HTTP status, `data` có `null` hay không, `path` và error resolver phụ thuộc implementation. Client nên dựa vào `extensions.code` nếu server công bố code ổn định, không parse nguyên văn `message`.
+
+Server có thể log chi tiết hơn ở nơi được bảo vệ:
+
+```text
+requestId + policyVersion + operationId/hash
+estimatedDepth + estimatedCost + maxListMultiplier
+rejectReason + principalClass + tenant-safe bucket
+```
+
+Không ghi raw query, variables, cursor, access token hoặc PII vào log chỉ để giải thích lỗi. Nếu cần debug, dùng sampling, redaction và fingerprint. Error policy nên fail closed khi context/policy thiếu; không chuyển sang anonymous budget rộng hơn.
+
+### Metrics log trace
+
+GraphQL dùng một endpoint chung, nên observability phải phân biệt operation và field nhưng tránh metric cardinality vô hạn.
+
+Nên theo dõi các nhóm sau:
+
+| Nhóm | Ví dụ tín hiệu |
+| --- | --- |
+| Admission | request count, rejected count theo reason, rate-limit/concurrency reject |
+| Static estimate | depth histogram, AST node count, alias count, fragment spread count, estimated cost, max multiplier |
+| Runtime | parse/validate/guard/execute duration, timeout, cancel, response bytes |
+| Data source | DB query count/duration, rows scanned/returned, downstream call/fan-out, retry/circuit state |
+| DataLoader | batch count, batch size, cache hit/miss, key reject, batch timeout |
+| Cache | hit/miss, stampede, private/shared scope, response size |
+| Security | introspection attempts, operation not allowed, field authorization deny, tenant mismatch |
+| Capacity | active executions, queue wait, heap/GC, DB/HTTP pool saturation |
+
+Label an toàn hơn thường là `operationId` đã allowlist, operation kind, policy class, cost bucket, page-size bucket và reject reason. Tránh đặt raw query, raw operationName do client kiểm soát, email, resource ID, tenant cardinality cao hoặc variables vào metric label. Query hash giúp nhóm dữ liệu nhưng không thay authorization.
+
+Tracing nên nối:
+
+```text
+request/trace ID
+      └─ operation policy
+           └─ GraphQL execution
+                ├─ Query.books
+                ├─ Book.author/DataLoader batch
+                ├─ database query
+                └─ downstream call
+```
+
+Trace attribute nên là query hash/operation ID, policy version, estimated cost bucket và outcome đã redact. [Logging và tracing](/docs/bao-mat-va-quan-sat/logging-va-tracing), [Metrics và health check](/docs/bao-mat-va-quan-sat/metrics-va-health-check) và [Monitoring và SLO](/docs/production/monitoring-va-slo) nối tiếp phần quan sát này.
+
+## Tuning và rollout
+
+### False positive
+
+Một estimator bảo thủ có thể từ chối query hợp lệ; estimator quá lạc quan có thể cho query DoS đi qua. Tuning nên dựa trên evidence:
+
+1. thu thập operation hash/persisted ID, depth, selection shape và variables đã redact;
+2. đo estimated cost cùng CPU, memory, DB rows, downstream calls, response bytes và duration;
+3. so sánh estimate với p50/p95/p99 theo operation, principal class và page bucket;
+4. tìm field metadata đang under/overestimate, đặc biệt aggregate, relation và cache path;
+5. chỉnh trọng số hoặc tạo override hẹp cho operation đã review;
+6. replay adversarial query và workload đồng thời trước khi enforce.
+
+Override nên gắn persisted operation ID, owner, principal scope, expiry/policy version và audit. Không sửa false positive bằng cách tắt toàn bộ depth/cost hoặc thêm bypass theo header client. Nếu một operation cần công việc dài, cân nhắc workflow async/export riêng thay vì mở budget vô hạn trên request GraphQL.
+
+Tách **cost estimate** và **actual cost** trong dashboard. Actual có thể thấp vì cache hoặc filter trả ít rows, nhưng hard cap vẫn cần dựa trên upper bound để tránh dữ liệu thay đổi làm request đột nhiên phình lớn.
+
+### Shadow mode
+
+Rollout nên có giai đoạn `shadow` (dry-run): analyzer tính quyết định would-deny nhưng vẫn cho request chạy trong một phạm vi kiểm soát. Shadow mode cần:
+
+- ghi metric reject candidate và lý do, không ghi secret;
+- gắn policy version để so sánh thay đổi;
+- sampling raw shape chỉ trong môi trường an toàn, production dùng hash/fingerprint;
+- so sánh query hợp lệ của client với workload adversarial;
+- theo dõi request nào would-deny nhưng đang nằm trong SLO và request nào đã gây overload;
+- không dùng shadow làm lý do bỏ timeout, rate limit hoặc auth đang có.
+
+Một lộ trình tham khảo:
+
+<Steps>
+  <Step>
+    **Inventory.** Liệt kê operation thực tế, client, principal, page size, fragment/alias shape, resolver và data source. Tách persisted operation khỏi dynamic traffic.
+  </Step>
+  <Step>
+    **Baseline.** Đo depth, estimated cost, actual duration, DB/downstream work, response bytes và concurrency ở dataset gần production.
+  </Step>
+  <Step>
+    **Shadow.** Chạy policy trong shadow, review would-deny, bổ sung field metadata, page cap và operation exception hẹp.
+  </Step>
+  <Step>
+    **Canary enforce.** Enforce trước với anonymous/public hoặc một nhóm client đã biết; giữ timeout, rate và concurrency độc lập.
+  </Step>
+  <Step>
+    **Mở rộng.** Theo dõi false positive, error rate, p95/p99, pool saturation và client retry; tăng phạm vi theo principal/operation.
+  </Step>
+  <Step>
+    **Governance.** Version policy, review schema field mới, cập nhật persisted allowlist và kiểm thử adversarial mỗi release.
+  </Step>
+</Steps>
+
+Khi deny, không nên tự retry cùng query không đổi. Client cần dùng page nhỏ hơn, bỏ field đắt, dùng persisted operation phù hợp hoặc chuyển sang API/workflow đã thiết kế cho tác vụ dài. [Tuning hiệu năng](/docs/production/tuning-hieu-nang) và [Chiến lược kiểm thử](/docs/production/chien-luoc-kiem-thu) là tài liệu bổ sung cho baseline và rollout.
+
+## Test adversarial và checklist
+
+### Bộ test
+
+Test cần chứng minh cả **đúng policy** lẫn **không tiêu tốn resource trước khi bị từ chối**. Bộ tối thiểu nên có:
+
+| Nhóm adversarial | Ví dụ | Assertion chính |
+| --- | --- | --- |
+| Depth | Quan hệ lặp nhiều tầng, to-one/to-many xen kẽ | Reject đúng depth; root resolver/data source chưa được gọi |
+| Field cost | `totalCount`, facet, report, recommendation, full-text | Field scope/cost đúng; không thể né bằng alias |
+| Cardinality | `first`/`limit` nhỏ, max, âm, `0`, rất lớn; nested list | Dùng default/max đúng; multiplier không overflow; out-of-range bị reject |
+| Alias | Nhiều alias cùng field, arguments khác nhau, alias collision | Tính từng response key cần thiết; không undercount hoặc merge sai |
+| Fragment | Spread lặp, inline fragment, fragment definition không reach | Tính đúng path; giới hạn expansion; không đếm fragment không dùng |
+| Fragment cycle | `A → B → A`, cycle dài | Trả `QUERY_FRAGMENT_CYCLE`; analyzer không recurse/stack overflow |
+| Directive | `@include`/`@skip` với cả `true` và `false`, variable thiếu/sai type | Cost runtime hoặc upper bound đúng; không coi nhánh unknown là miễn phí |
+| Interface/union | Các concrete type có cost khác nhau | Upper bound an toàn hoặc policy branch rõ |
+| Introspection | `__schema`, `__type` nhiều alias, `__typename` | Policy principal/environment đúng; error không lộ schema nội bộ |
+| Filter input | `or`/`and` lớn, `in` dài, nested relation, `contains` dài | Input limits và cost được áp dụng trước repository |
+| Document/variables | Body lớn, AST node lớn, nhiều operation, variables JSON lớn | Parser/analyzer có bounded work và error an toàn |
+| Persisted operation | Hash mismatch, ID chưa allowlist, document thay đổi | Không fallback dynamic ngoài policy; auth/cost vẫn chạy |
+| Authorization | Cùng query với tenant/principal khác nhau | Budget/field allow đúng; không dùng variables làm authority |
+| DataLoader/N+1 | Page nhiều node, duplicate key, batch quá lớn | Batch bounded, key có scope, query count đo được |
+| Cache | Hit, miss, invalidation, stampede, shared/private | Guard không bị bypass; cache key không cross-tenant |
+| Runtime | DB/downstream delay, client disconnect, WebSocket cancel | Timeout/cancel/cleanup truyền xuống; active resource về baseline |
+| Burst | Nhiều request dưới budget đồng thời | Rate/concurrency bảo vệ pool; không chỉ kiểm tra từng request |
+
+Ở lớp GraphQL contract, assert `errors` có code/category đã cam kết, không khóa vào message mặc định của GraphQL Java. Ở lớp service/data source, assert tenant predicate, page filter và timeout. Ở lớp integration/load, đo CPU, heap, DB rows, downstream call, pool saturation và p95/p99.
+
+### Checklist production
+
+- [ ] Đã ghi rõ convention depth và cách tính root field chưa?
+- [ ] Có giới hạn document bytes, AST nodes, operations, fragments, aliases và variables JSON chưa?
+- [ ] Depth được kết hợp với field/operation complexity, list multiplier và cost budget chưa?
+- [ ] Field cost registry do server sở hữu, được review cùng schema và có version chưa?
+- [ ] List cardinality dùng page arguments sau default/coercion; list không bounded có bị reject hoặc có max không?
+- [ ] Nested list được nhân theo upper bound; sibling, field merge, alias và abstract type được xử lý đúng chưa?
+- [ ] `totalCount`, facet, aggregate, full-text, sort, offset sâu và filter relation có cost riêng chưa?
+- [ ] Variable-dependent cost được tính sau coercion hoặc dùng upper bound khi variable chưa biết chưa?
+- [ ] Fragment cycle/fragment expansion có guard riêng dù GraphQL validation đã kiểm tra chưa?
+- [ ] `@include`, `@skip` và custom directive có cost semantics; directive unknown có fail closed không?
+- [ ] Interface/union dùng upper bound hoặc branch policy; custom scalar có byte/shape limit chưa?
+- [ ] Introspection được allow/deny theo environment và principal; không nhầm với authorization chưa?
+- [ ] Persisted operation/allowlist có bind operation ID/hash với principal/scope, cost, page và schema version chưa?
+- [ ] Dynamic query có policy riêng, body/parser limit và analyzer trước resolver chưa?
+- [ ] `first`/`limit` có default, min/max theo field; input filter/sort/cursor có giới hạn chưa?
+- [ ] Authentication/context được tạo server-side; variables không tự chọn tenant/quyền chưa?
+- [ ] Resolver guard chạy trước root execution; service/repository vẫn áp authorization và defense in depth chưa?
+- [ ] Timeout thật tồn tại ở GraphQL, database và downstream; cancellation/cleanup đã được test chưa?
+- [ ] Rate limit và concurrency limit được tách khỏi cost budget; có weighted admission nếu cần chưa?
+- [ ] DataLoader request-scoped, batch bounded, key có security scope và không thay root pagination chưa?
+- [ ] Cache không bypass guard; key vary theo operation, variables, principal/tenant và policy chưa?
+- [ ] Error response chỉ lộ code/request ID; không có SQL, stack trace, threshold, token, PII hoặc schema ẩn chưa?
+- [ ] Metrics/traces có estimated + actual cost, reject reason, resolver/data source, batch, cache và pool saturation nhưng cardinality được kiểm soát chưa?
+- [ ] Shadow mode, canary, policy version, owner và rollback plan đã có chưa?
+- [ ] Adversarial, integration và load test chứng minh resolver/data source chưa chạy khi pre-execution reject chưa?
+- [ ] Đã đối chiếu API hook/property với version Spring Boot/Spring for GraphQL/GraphQL Java thật chưa?
 
 ## Bước tiếp theo
 
-Sau khi trang được điền nội dung, đọc bài kế tiếp trong nhóm để tiếp tục lộ trình.
+- Đọc [Query, selection set và alias](/docs/query-mutation-subscription/query-selection-set-alias) để hiểu response key, nested selection và alias collision trước khi tính cost.
+- Ôn [Variables, arguments và fragments](/docs/query-mutation-subscription/variables-arguments-fragments) để xử lý variables, fragment scope và `@include`/`@skip`.
+- Xem [Pagination](/docs/query-mutation-subscription/pagination) và [Filtering và sorting](/docs/query-mutation-subscription/filtering-va-sorting) để đặt page size, filter tree, sort và aggregate cost.
+- Đọc [Kiến trúc Spring for GraphQL](/docs/tich-hop-spring-for-graphql/kien-truc-spring-for-graphql) và [DataFetcher và GraphQL context](/docs/tich-hop-spring-for-graphql/datafetcher-va-graphql-context) để đặt guard, context, DataLoader, timeout và cancellation đúng boundary.
+- Đối chiếu [Authorization theo field và resolver](/docs/bao-mat-va-quan-sat/authorization-field-resolver) và [Introspection, CORS và CSRF](/docs/bao-mat-va-quan-sat/introspection-cors-csrf) khi kết hợp query policy với security.
+- Đi tiếp với [Batch loading và DataLoader](/docs/truy-cap-du-lieu-va-hieu-nang/batch-loading-va-dataloader), [N+1 query](/docs/truy-cap-du-lieu-va-hieu-nang/n-plus-1-query) và [Caching](/docs/truy-cap-du-lieu-va-hieu-nang/caching) để tối ưu execution mà không bỏ qua cardinality hoặc tenant boundary.
+- Xem [Xử lý lỗi tập trung](/docs/tich-hop-spring-for-graphql/xu-ly-loi-tap-trung), [Logging và tracing](/docs/bao-mat-va-quan-sat/logging-va-tracing) và [Monitoring và SLO](/docs/production/monitoring-va-slo) để hoàn thiện error contract và observability.
