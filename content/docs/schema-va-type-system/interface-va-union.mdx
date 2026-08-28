@@ -3,21 +3,549 @@ title: "Interface và union"
 description: "Dùng interface và union để biểu diễn nhiều loại kết quả trong cùng một field."
 ---
 
-Trang này sẽ trình bày **Interface và union** trong bối cảnh xây dựng GraphQL API với Spring Boot.
+Một field GraphQL đôi khi cần trả về nhiều hình dạng object khác nhau. Ví dụ, tìm kiếm có thể trả về sách hoặc khóa học; một feed có thể chứa thẻ sản phẩm hoặc bài biên tập. Nếu ép tất cả kết quả vào một object khổng lồ, contract sẽ có nhiều field không liên quan và client phải đoán field nào có giá trị.
+
+**Interface** (giao diện) và **union** (tập hợp kiểu) là hai cách mô hình hóa trường hợp này ở phía output. Cả hai đều cho phép một field trả về nhiều **concrete/object type** (kiểu cụ thể/kiểu object). Điểm khác nhau là interface công khai một contract field chung, còn union chỉ công khai tập các type có thể xuất hiện.
+
+Khi execution xử lý các type này, **type resolution** (xác định kiểu runtime) chọn concrete type tương ứng với giá trị resolver trả về. Client có thể đọc **`__typename`** (meta-field tên kiểu) và dùng **inline fragment** (fragment nội tuyến) để chọn field theo từng biến thể.
+
+<Callout type="info" title="Phạm vi và giả định">
+  Các SDL, query, variables và JSON trong bài là các ví dụ minh họa độc lập. Hai schema chính không được dán ghép nguyên xi vì mỗi schema đều định nghĩa một `Query` riêng. Repository là docs-only, không có backend Spring Boot để chạy các ví dụ; response và bước xác định kiểu runtime chỉ mô tả execution có thể xảy ra, không phải output đã được kiểm chứng runtime.
+</Callout>
 
 ## Mục lục
 
-- [Nội dung dự kiến](#nội-dung-dự-kiến)
+- [Bức tranh tổng thể](#bức-tranh-tổng-thể)
+  - [Vì sao một field cần nhiều loại output](#vì-sao-một-field-cần-nhiều-loại-output)
+- [Từ object type đến type trừu tượng](#từ-object-type-đến-type-trừu-tượng)
+  - [Các thuật ngữ cần biết](#các-thuật-ngữ-cần-biết)
+  - [Interface là contract chung](#interface-là-contract-chung)
+  - [Union là tập các biến thể](#union-là-tập-các-biến-thể)
+- [Ví dụ interface cho kết quả tìm kiếm](#ví-dụ-interface-cho-kết-quả-tìm-kiếm)
+  - [SDL khai báo implements](#sdl-khai-báo-implements)
+  - [Query field chung và inline fragment](#query-field-chung-và-inline-fragment)
+  - [Execution và response của interface](#execution-và-response-của-interface)
+- [Ví dụ union cho feed khám phá](#ví-dụ-union-cho-feed-khám-phá)
+  - [SDL khai báo union members](#sdl-khai-báo-union-members)
+  - [Query với typename và inline fragments](#query-với-typename-và-inline-fragments)
+  - [Execution và response của union](#execution-và-response-của-union)
+- [Chọn interface hay union](#chọn-interface-hay-union)
+  - [Bảng so sánh](#bảng-so-sánh)
+  - [Quy tắc quyết định](#quy-tắc-quyết-định)
+- [Selection set và validation](#selection-set-và-validation)
+  - [Field chung và field theo concrete type](#field-chung-và-field-theo-concrete-type)
+  - [Các lỗi validation thường gặp](#các-lỗi-validation-thường-gặp)
+- [Type resolution trong execution](#type-resolution-trong-execution)
+  - [GraphQL cần biết concrete type](#graphql-cần-biết-concrete-type)
+  - [Liên hệ GraphQL Java và Spring for GraphQL](#liên-hệ-graphql-java-và-spring-for-graphql)
+- [Thêm member an toàn](#thêm-member-an-toàn)
+  - [Thêm field vào interface](#thêm-field-vào-interface)
+  - [Thêm member vào union](#thêm-member-vào-union)
+  - [Kiểm thử và quan sát](#kiểm-thử-và-quan-sát)
+- [Checklist thực hành](#checklist-thực-hành)
 - [Bước tiếp theo](#bước-tiếp-theo)
 
-## Nội dung dự kiến
+## Bức tranh tổng thể
 
-Nội dung chi tiết sẽ bao gồm khái niệm chính, ví dụ code và các lưu ý thực hành liên quan đến chủ đề này.
+GraphQL không có cú pháp kiểu `[Book | Course]` cho một list output. Khi một field có thể trả về nhiều object type, schema cần một **abstract output type** (kiểu output trừu tượng) để mô tả các khả năng hợp lệ. Interface và union cung cấp vai trò đó.
 
-<Callout type="info" title="Trang placeholder">
-Đây là trang khung. Hãy dùng skill `fumadocs-technical-writer` để viết đầy đủ trang này trong bước tiếp theo.
+### Vì sao một field cần nhiều loại output
+
+Hãy lấy field `search` làm ví dụ. Một kết quả có thể là sách với `author`, hoặc khóa học với `instructor`. Hai loại này đều xuất hiện trong cùng danh sách, nhưng client cần biết rõ loại nào đang đứng ở từng vị trí để hiển thị đúng UI.
+
+Có hai cách diễn tả ý định:
+
+- Nếu mọi kết quả đều có một contract có ý nghĩa, chẳng hạn `id` và `title`, hãy dùng interface. Client chọn field chung trực tiếp rồi mở rộng bằng fragment cho phần riêng.
+- Nếu các biến thể không có field chung đủ ổn định, hãy dùng union. Client chỉ dựa vào danh sách type được phép và chọn field bên trong từng biến thể.
+
+```text
+Query.search: [SearchHit!]!
+        │
+        ├── Book   → id, title, author
+        └── Course → id, title, instructor
+
+Query.discover: [DiscoveryItem!]!
+        │
+        ├── ProductCard   → sku, name, price
+        └── EditorialCard → slug, headline, readingTimeMinutes
+```
+
+Hai field trong sơ đồ là hai quyết định contract khác nhau. Không nên thêm một field `author`, `instructor` hoặc `price` giả vào một object chung chỉ để tránh chọn abstract type. [Scalar, object và field](/docs/schema-va-type-system/scalar-object-field) giải thích thêm cách output object tạo thành graph; [SDL và nguyên tắc thiết kế schema](/docs/schema-va-type-system/sdl-va-thiet-ke-schema) giúp review ngữ nghĩa và ownership của type mới.
+
+## Từ object type đến type trừu tượng
+
+### Các thuật ngữ cần biết
+
+Các từ sau sẽ xuất hiện xuyên suốt bài:
+
+- **Concrete type/object type** (kiểu cụ thể/kiểu object) là type mô tả object thật mà execution có thể trả về, như `Book`, `Course` hoặc `ProductCard`. Đây là kiểu có các field cụ thể và là giá trị runtime ở từng phần tử.
+- **Interface** (giao diện) là một abstract output type khai báo các field chung. Một object type muốn là possible type của interface phải khai báo `implements` và cung cấp các field đó.
+- **Union** (tập hợp kiểu) là một abstract output type chỉ liệt kê các object type có thể xuất hiện. Union không tự khai báo field chung.
+- **Type resolution** (xác định kiểu runtime) là bước chọn concrete type nào tương ứng với giá trị mà resolver trả về cho một field interface hoặc union.
+- **`__typename`** (meta-field tên kiểu) là field tích hợp trả về tên concrete type thực tế, chẳng hạn `"Book"` hoặc `"Course"`.
+- **Inline fragment** (fragment nội tuyến) là khối `... on Book { ... }` chỉ được áp dụng khi giá trị hiện tại có đúng type `Book` hoặc type tương thích với điều kiện đó.
+
+Interface và union chỉ dùng cho output. GraphQL không cho dùng chúng như input để client gửi một trong nhiều hình dạng. Nếu cần input đa dạng, hãy thiết kế input object, enum hoặc các mutation riêng theo contract; không lấy output union làm input thay thế.
+
+### Interface là contract chung
+
+Một interface giống như hợp đồng nhỏ mà nhiều object type cùng thực hiện. Field trả về interface có thể cho phép client chọn trực tiếp các field trong hợp đồng đó. Mỗi object triển khai interface vẫn được phép có thêm field riêng.
+
+Ví dụ, `SearchHit` có thể yêu cầu mọi kết quả tìm kiếm có `id` và `title`. `Book` thêm `author`, còn `Course` thêm `instructor`. Những field riêng không thuộc interface, nên client phải đặt chúng trong inline fragment.
+
+`implements` không phải chỉ là ghi chú cho người đọc. Schema validation có thể kiểm tra `Book` và `Course` thật sự có đủ field, đúng tên và đúng kiểu mà interface công khai. Khi thêm field vào interface, tất cả object type triển khai interface đều phải đáp ứng contract mới.
+
+### Union là tập các biến thể
+
+Một union giống như danh sách đóng các object type được phép xuất hiện trong một field. Ví dụ `DiscoveryItem = ProductCard | EditorialCard` nói rằng kết quả chỉ có thể là `ProductCard` hoặc `EditorialCard` trong schema hiện tại.
+
+Union không khai báo `sku`, `slug`, `name` hay bất kỳ field nào. Kể cả khi hai member tình cờ có field cùng tên, union vẫn không biến field đó thành field chung để query trực tiếp. Client phải dùng inline fragment để đi vào từng member.
+
+Đổi lại, union không bắt các member phải có cùng vocabulary. Đây là lựa chọn rõ ràng hơn một object có nhiều field nullable khi sự khác nhau giữa các biến thể là bản chất của domain.
+
+## Ví dụ interface cho kết quả tìm kiếm
+
+Phần này dùng một schema độc lập. Mục tiêu là cho thấy `implements`, field chung, field riêng, `__typename`, inline fragment và response khi một list có nhiều concrete type.
+
+### SDL khai báo implements
+
+```graphql title="schema-interface.graphqls"
+schema {
+  query: Query
+}
+
+type Query {
+  search(text: String!): [SearchHit!]!
+}
+
+interface SearchHit {
+  id: ID!
+  title: String!
+}
+
+type Book implements SearchHit {
+  id: ID!
+  title: String!
+  author: String!
+}
+
+type Course implements SearchHit {
+  id: ID!
+  title: String!
+  instructor: String!
+}
+```
+
+Đọc schema theo hai lớp:
+
+1. `SearchHit` là kiểu trả về của `Query.search`. Nó công khai `id` và `title` như contract chung.
+2. `Book` và `Course` là possible types của `SearchHit`. Mỗi type lặp lại các field interface yêu cầu rồi thêm field riêng.
+
+`[SearchHit!]!` nghĩa là field luôn trả về một list và mỗi phần tử trong list không được `null`. Quy tắc list/non-null không thay đổi chỉ vì phần tử là interface. Khi interface nằm trong list, hãy kiểm tra cả type resolution của từng phần tử và nullability của list. Xem [List và nullable](/docs/schema-va-type-system/list-va-nullable) để phân tích các wrapper như `[T!]!`.
+
+### Query field chung và inline fragment
+
+Query sau chọn field chung trực tiếp và field riêng bằng inline fragment:
+
+```graphql title="Query interface"
+query SearchCatalog($text: String!) {
+  search(text: $text) {
+    __typename
+    id
+    title
+    ... on Book {
+      author
+    }
+    ... on Course {
+      instructor
+    }
+  }
+}
+```
+
+Variables là một JSON object riêng:
+
+```json title="Variables của SearchCatalog"
+{
+  "text": "graphql"
+}
+```
+
+Có ba điểm cần chú ý:
+
+- `id` và `title` hợp lệ ngay trên `SearchHit` vì chúng thuộc interface.
+- `author` chỉ hợp lệ trong fragment có điều kiện `Book`; `instructor` chỉ hợp lệ trong fragment có điều kiện `Course`.
+- `__typename` cho biết object thực tế ở từng phần tử. Client có thể dùng giá trị này để chọn component UI, ghi cache hoặc xử lý một biến thể chưa biết.
+
+Selection set quyết định shape của response. Query không chọn field nào khác của `Book` hoặc `Course` thì response cũng không tự thêm field đó. [Query, selection set và alias](/docs/query-mutation-subscription/query-selection-set-alias) trình bày thêm cách selection set định hình response.
+
+### Execution và response của interface
+
+Giả sử resolver của `Query.search` tìm thấy một sách và một khóa học. Resolver có thể trả về hai object runtime tương ứng với `Book` và `Course`; đây là giả định minh họa, không phải dữ liệu có sẵn trong repository.
+
+Trong execution, engine thực hiện theo ý nghĩa sau:
+
+1. Resolve `Query.search` và nhận một list giá trị.
+2. Với mỗi giá trị, thực hiện type resolution để xác định đó là `Book` hay `Course` trong tập possible types của `SearchHit`.
+3. Hoàn tất `__typename`, `id` và `title` cho mọi phần tử.
+4. Chỉ thực thi `author` cho phần tử `Book`, và chỉ thực thi `instructor` cho phần tử `Course`.
+
+Response có thể là:
+
+```json title="Response interface minh họa"
+{
+  "data": {
+    "search": [
+      {
+        "__typename": "Book",
+        "id": "book-1",
+        "title": "GraphQL in Action",
+        "author": "Samer Buna"
+      },
+      {
+        "__typename": "Course",
+        "id": "course-1",
+        "title": "GraphQL căn bản",
+        "instructor": "Nguyễn An"
+      }
+    ]
+  }
+}
+```
+
+Ở phần tử `Book`, fragment `Course` không tạo ra key `instructor`. Ở phần tử `Course`, fragment `Book` không tạo ra key `author`. Đây là cách GraphQL giữ response đúng với concrete type thay vì trả một object có nhiều field `null` không liên quan.
+
+Nếu resolver trả về một giá trị không xác định được là possible type của `SearchHit`, execution có thể thêm lỗi tại path của phần tử đó. Vì phần tử được khai báo non-null, lỗi có thể lan lên list và parent theo quy tắc nullability. Đây là lý do response minh họa không thay thế cho test runtime; repository hiện không có backend để xác nhận đường đi này.
+
+## Ví dụ union cho feed khám phá
+
+Union phù hợp khi các biến thể không có một contract field chung đủ ý nghĩa. Schema dưới đây cố ý dùng `sku` cho sản phẩm và `slug` cho bài biên tập. Không có field nào được khai báo trên `DiscoveryItem` để client chọn trực tiếp.
+
+### SDL khai báo union members
+
+```graphql title="schema-union.graphqls"
+schema {
+  query: Query
+}
+
+type Query {
+  discover: [DiscoveryItem!]!
+}
+
+type ProductCard {
+  sku: ID!
+  name: String!
+  price: Float!
+}
+
+type EditorialCard {
+  slug: ID!
+  headline: String!
+  readingTimeMinutes: Int!
+}
+
+union DiscoveryItem = ProductCard | EditorialCard
+```
+
+`DiscoveryItem` chỉ công khai hai member là `ProductCard` và `EditorialCard`. Các member phải là object type. Union không thể liệt kê scalar, input object hoặc interface làm member.
+
+Không nên suy ra rằng `DiscoveryItem` có field `sku`, `name`, `slug` hoặc `headline`. Các field đó thuộc member cụ thể. Đây là khác biệt về contract so với `SearchHit`: interface có field chung, còn union chỉ có tập possible types.
+
+### Query với typename và inline fragments
+
+Vì union không có field chung, query phải đặt field cụ thể trong inline fragment:
+
+```graphql title="Query union"
+query DiscoverFeed {
+  discover {
+    __typename
+    ... on ProductCard {
+      sku
+      name
+      price
+    }
+    ... on EditorialCard {
+      slug
+      headline
+      readingTimeMinutes
+    }
+  }
+}
+```
+
+`__typename` vẫn hữu ích dù query đã có hai fragment. Nó giúp client nhận diện biến thể bằng một metadata thống nhất, đặc biệt khi UI có nhánh xử lý rõ cho từng type. Nếu client chỉ muốn dữ liệu của một member, vẫn có thể chỉ viết fragment cho member đó; nhưng phải có chiến lược cho member khác nếu server trả về nó.
+
+### Execution và response của union
+
+Giả sử resolver trả về một sản phẩm và một bài biên tập. GraphQL engine cần xác định từng giá trị là `ProductCard` hay `EditorialCard`, rồi chỉ hoàn tất fragment tương ứng.
+
+Response có thể có dạng:
+
+```json title="Response union minh họa"
+{
+  "data": {
+    "discover": [
+      {
+        "__typename": "ProductCard",
+        "sku": "sku-42",
+        "name": "Bàn phím cơ",
+        "price": 129.9
+      },
+      {
+        "__typename": "EditorialCard",
+        "slug": "graphql-va-type-system",
+        "headline": "Thiết kế schema cho nhiều client",
+        "readingTimeMinutes": 8
+      }
+    ]
+  }
+}
+```
+
+Engine không cố tìm một field chung trên `DiscoveryItem` vì union không có field surface. Nó dùng type runtime để quyết định fragment nào được áp dụng. Nếu response có thêm một member mới nhưng query cũ chưa có fragment cho member đó, phần tử mới có thể chỉ chứa các field mà query còn chọn được, thường là `__typename`; client không nên coi đó là dữ liệu đầy đủ.
+
+## Chọn interface hay union
+
+### Bảng so sánh
+
+| Tiêu chí | Interface | Union |
+| --- | --- | --- |
+| Contract schema | Khai báo một nhóm field chung mà mọi implementation phải cung cấp | Chỉ khai báo danh sách object type member |
+| Field query trực tiếp | Có thể chọn field chung trên abstract type | Không có field chung để chọn trực tiếp |
+| Field riêng của biến thể | Chọn bằng inline fragment trên concrete type | Chọn bằng inline fragment trên member type |
+| Điều kiện nên dùng | Các type có cùng ngữ nghĩa, chẳng hạn mọi kết quả đều có định danh và tiêu đề | Các type khác hình dạng, không có field chung đủ ổn định hoặc không nên ép chung |
+| Tác động khi thêm type | Type mới phải thực hiện toàn bộ contract interface | Chỉ cần thêm type vào danh sách union, nhưng client có thể nhận biến thể mới |
+| Rủi ro thiết kế | Interface quá rộng làm mọi implementation mang field gượng ép | Union quá rộng làm client phải lặp fragment và xử lý nhiều nhánh |
+| Input | Không dùng trực tiếp làm input | Không dùng trực tiếp làm input |
+
+### Quy tắc quyết định
+
+Có thể bắt đầu bằng bốn câu hỏi:
+
+1. **Có field chung mang cùng ngữ nghĩa không?** Nếu có, và field đó ổn định cho mọi biến thể, interface thường làm contract dễ dùng hơn.
+2. **Field chung có bị gượng ép không?** Nếu chỉ có một `id` kỹ thuật hoặc nhiều field nullable không có ý nghĩa cho mọi loại, union có thể trung thực hơn.
+3. **Client cần biết toàn bộ biến thể không?** Union làm tập member rõ ràng ngay trong SDL. Interface cũng có tập possible types, nhưng trọng tâm của nó là contract chung.
+4. **Đây là output hay input?** Interface và union trong bài là output. Với dữ liệu gửi vào, tạo input object riêng, tách mutation hoặc dùng enum để giữ validation rõ ràng.
+
+Đừng chọn interface chỉ vì các class Java có một superclass. Schema nên phản ánh ngữ nghĩa mà client sử dụng, không sao chép cây kế thừa của implementation. Ngược lại, đừng chọn union chỉ để trì hoãn việc đặt tên contract chung khi `id`, `label` hoặc `status` thực sự có cùng ý nghĩa ở mọi biến thể.
+
+<Callout type="idea" title="Quy tắc nhớ nhanh">
+  **Interface = contract chung. Union = tập type được phép.** Nếu client có một nhóm field chung đáng tin cậy, bắt đầu từ interface. Nếu sự khác nhau là thông tin chính và không có field chung tự nhiên, bắt đầu từ union.
 </Callout>
+
+SDL design vẫn cần xem xét ownership, semantics và khả năng tiến hóa. Hãy đọc [SDL và nguyên tắc thiết kế schema](/docs/schema-va-type-system/sdl-va-thiet-ke-schema) trước khi đưa một abstract type vào schema dùng chung.
+
+## Selection set và validation
+
+### Field chung và field theo concrete type
+
+Validation diễn ra dựa trên type mà field đang trả về, không dựa trên việc các object Java tình cờ có getter cùng tên.
+
+Với interface `SearchHit`, query sau hợp lệ vì `id` là field của interface:
+
+```graphql
+query CommonInterfaceFields {
+  search(text: "graphql") {
+    id
+    title
+  }
+}
+```
+
+`author` không phải field của `SearchHit`, nên phải viết:
+
+```graphql
+query InterfaceSpecificField {
+  search(text: "graphql") {
+    ... on Book {
+      author
+    }
+  }
+}
+```
+
+Với union `DiscoveryItem`, query trực tiếp field member là không hợp lệ:
+
+```graphql
+query InvalidUnionField {
+  discover {
+    sku
+  }
+}
+```
+
+Cách đúng là đặt `sku` trong fragment:
+
+```graphql
+query ValidUnionField {
+  discover {
+    ... on ProductCard {
+      sku
+    }
+  }
+}
+```
+
+Selection set của abstract type vì vậy có hai lớp: field chung nếu interface cung cấp, và inline fragment cho field chỉ có trên concrete type. [Mô hình request/response](/docs/nen-tang/mo-hinh-request-response) giải thích thêm vì sao validation xảy ra trước execution và response chỉ giữ field đã chọn.
+
+### Các lỗi validation thường gặp
+
+| Tình huống | Vì sao lỗi | Cách sửa |
+| --- | --- | --- |
+| Chọn `sku` trực tiếp trên `DiscoveryItem` | Union không khai báo field `sku` | Dùng `... on ProductCard { sku }` |
+| Chọn `author` trực tiếp trên `SearchHit` | `author` chỉ thuộc `Book`, không thuộc interface | Dùng fragment có type condition `Book` |
+| Dùng fragment trên type không thể xuất hiện | Type condition không giao với possible types của abstract type | Chọn đúng member hoặc sửa SDL |
+| Bỏ selection set của `search` hoặc `discover` | Cả hai field đều trả list của object/abstract output, không phải scalar | Chọn `__typename`, field chung hoặc inline fragment |
+| Gửi field có trong Java class nhưng không có SDL | Schema là contract, không đọc getter tùy ý | Thêm field vào SDL theo review, hoặc sửa query |
+| Trả `null` cho phần tử của `[T!]!` | Phần tử non-null không chấp nhận `null` | Chuẩn hóa dữ liệu hoặc chọn nullability phù hợp |
+
+Ví dụ lỗi validation có thể có dạng:
+
+```json title="Validation error minh họa"
+{
+  "errors": [
+    {
+      "message": "Cannot query field \"sku\" on type \"DiscoveryItem\"."
+    }
+  ]
+}
+```
+
+Thông báo, `locations` và HTTP status cụ thể phụ thuộc GraphQL implementation. Ý nghĩa cần giữ là query sai contract và resolver của field sai thường chưa được gọi. Validation thành công cũng chưa chứng minh type resolution hoặc data source sẽ thành công lúc execution.
+
+## Type resolution trong execution
+
+### GraphQL cần biết concrete type
+
+SDL chỉ nói `search` trả về `SearchHit` hoặc `discover` trả về `DiscoveryItem`. Khi resolver trả về một object runtime, engine vẫn cần biết object đó tương ứng với type cụ thể nào để:
+
+- kiểm tra type đó có nằm trong possible types của interface/union không;
+- trả đúng giá trị `__typename`;
+- áp dụng đúng inline fragment;
+- hoàn tất field của concrete type theo selection set.
+
+Có thể hình dung flow như sau:
+
+```text
+Resolver Query.search / Query.discover
+                │
+                ▼
+       Giá trị object runtime
+                │
+                ▼
+          Type resolution
+                │
+       ┌────────┴────────┐
+       ▼                 ▼
+   Book/Course      ProductCard/EditorialCard
+       │                 │
+       └───────┬─────────┘
+               ▼
+  __typename + field chung + inline fragments
+               │
+               ▼
+          JSON response
+```
+
+Type resolution không phải là validation query. Validation kiểm tra document có thể yêu cầu gì trước execution. Type resolution xử lý giá trị thật sau khi resolver được gọi. Hai bước có thể cùng đúng hoặc một bước đúng, bước kia thất bại.
+
+Nếu engine không xác định được concrete type, response có thể chứa execution error với path tới field hoặc phần tử tương ứng. Nullability của field quyết định phần response nào còn giữ được. Với `[SearchHit!]!` hoặc `[DiscoveryItem!]!`, lỗi ở một phần tử có thể lan lên list. Không nên bắt client đoán một type mặc định khi dữ liệu không thỏa contract.
+
+### Liên hệ GraphQL Java và Spring for GraphQL
+
+Ở mức khái niệm, flow trong một ứng dụng Spring for GraphQL gồm các lớp sau:
+
+1. **SDL khai báo abstract type.** GraphQL Java xây dựng danh sách possible types từ các object `implements` interface hoặc các member của union.
+2. **Resolver cung cấp giá trị.** Một `@QueryMapping` có thể trả về list kết quả; một `@SchemaMapping` cũng có thể trả về field nested có kiểu interface hoặc union. Annotation mapping nối field với method, nhưng không nên được hiểu là đã tự giải quyết mọi abstract type.
+3. **GraphQL Java thực hiện type resolution.** Cơ chế type resolver, thường được biểu diễn bằng `TypeResolver`, nhận giá trị runtime và chọn một `GraphQLObjectType` hợp lệ. Cách chọn có thể dựa trên loại object, discriminator hoặc logic ứng dụng tùy cách schema được xây dựng.
+4. **Execution hoàn tất object.** Sau khi có concrete type, engine xử lý `__typename`, field chung và inline fragment rồi serialize thành response.
+
+Spring for GraphQL là lớp tích hợp lifecycle Spring Boot với GraphQL Java. GraphQL Java là execution engine chịu trách nhiệm parse, validation và execution. Vì hook đăng ký type resolver phụ thuộc version, cách tạo executable schema và kiểu mapping của ứng dụng, không nên sao chép một property hoặc đoạn cấu hình cụ thể mà chưa đối chiếu tài liệu version. Trang này không tuyên bố type resolution đã chạy trong repository.
+
+Một class Java tên `Book` cũng không tự động bảo đảm mọi runtime value đều được nhận là GraphQL type `Book`. Runtime value phải được ánh xạ vào một possible type mà schema biết và phải cung cấp các field phù hợp. Khi debug, tách ba câu hỏi:
+
+- Field có được mapping và gọi đúng resolver không?
+- Giá trị resolver trả về có thuộc tập possible types không?
+- Concrete type có đủ field và nullability mà schema cam kết không?
+
+[Kiến trúc GraphQL](/docs/nen-tang/kien-truc-graphql) đặt resolver, execution engine và data source vào cùng một flow. Khi xử lý field nested, xem [`@SchemaMapping` và nested field](/docs/tich-hop-spring-for-graphql/schema-mapping-va-nested-field); khi nối root operation, xem [`@QueryMapping`, `@MutationMapping`, `@SubscriptionMapping`](/docs/tich-hop-spring-for-graphql/query-mutation-subscription-mapping). Hai trang Spring mapping đó hiện là tài liệu liên quan để tham chiếu khái niệm, không phải bằng chứng runtime cho các ví dụ trong bài này.
+
+## Thêm member an toàn
+
+Thêm một possible type có thể là thay đổi additive ở schema, nhưng không phải lúc nào cũng vô hình với client. Client đang dùng `__typename`, code generation, cache hoặc switch exhaustive có thể quan sát thấy biến thể mới.
+
+### Thêm field vào interface
+
+Khi thêm field vào interface, mọi object type triển khai interface phải được cập nhật. Đây là trách nhiệm phía server trước khi schema mới có thể hợp lệ.
+
+| Thay đổi | Tác động cần xem xét |
+| --- | --- |
+| Thêm field nullable có ngữ nghĩa chung | Query hiện tại thường vẫn hợp lệ; mọi implementation vẫn phải khai báo field và quyết định giá trị có thể `null`. |
+| Thêm field non-null | Mọi implementation phải bảo đảm giá trị ở mọi execution path; dữ liệu thiếu có thể gây lỗi và null propagation. |
+| Đổi kiểu hoặc nullability field chung | Có thể phá query, generated client và resolver; cần compatibility review thay vì coi là refactor. |
+| Thêm object type mới implements interface | Client có thể nhận `__typename` mới; fragment cũ không biết field riêng của type mới, nên cần nhánh mặc định. |
+
+Nếu field mới chỉ phù hợp với `Book`, thêm nó vào `Book` rồi query bằng inline fragment thường an toàn hơn mở rộng interface cho mọi type. Interface nên giữ contract nhỏ và ổn định.
+
+### Thêm member vào union
+
+Thêm `EditorialCard` vào `DiscoveryItem` cho phép resolver trả thêm biến thể đó. Query cũ chứa fragment cho `ProductCard` vẫn có thể qua validation, nhưng client có thể nhận một item `EditorialCard` mà chưa có logic hiển thị.
+
+Đây là tác động quan trọng:
+
+- Client dùng `__typename` phải có nhánh `unknown` hoặc fallback thay vì giả định tập type đóng vĩnh viễn.
+- Client generated code có thể cần regenerate để biết member mới. Một switch exhaustive có thể thành lỗi build hoặc yêu cầu cập nhật.
+- Client chỉ chọn field trong fragment của member cũ có thể nhận object thiếu dữ liệu hiển thị khi member mới xuất hiện.
+- Cache và analytics có thể cần biết tên type mới để không phân loại item sai.
+
+<Callout type="warn" title="Member mới vẫn cần compatibility review">
+  Thêm union member thường không làm query cũ sai cú pháp, nhưng có thể thay đổi tập giá trị mà client phải xử lý. Hãy công bố migration note, thêm fixture cho member mới và yêu cầu client có fallback. Đừng coi “schema parse được” là bằng chứng thay đổi an toàn.
+</Callout>
+
+Không xóa member, đổi tên type hoặc đổi semantics field mà không có kế hoạch deprecation. Khi schema được chia thành nhiều file theo domain, owner của module chứa abstract type cần phối hợp với owner của module thêm implementation. Xem [Tách schema theo module](/docs/schema-va-type-system/tach-schema-theo-module) để giữ ownership và việc hợp nhất SDL rõ ràng.
+
+### Kiểm thử và quan sát
+
+Một quy trình kiểm tra thực dụng nên bao phủ cả contract lẫn giá trị runtime:
+
+1. **Schema check:** xác nhận mọi `implements` có field và kiểu khớp; mọi union member là object type; abstract type có possible type đúng với domain.
+2. **Operation check:** kiểm tra query field chung, mỗi inline fragment, `__typename`, variables và selection set. Giữ một query đại diện cho từng concrete type.
+3. **Fixture response:** tạo dữ liệu minh họa cho từng variant, list rỗng nếu hợp lệ, phần tử lỗi và trường hợp type không resolve được. So sánh `data`, `errors`, `path` và nullability.
+4. **Integration test khi có backend:** chạy qua Spring for GraphQL thật để kiểm tra resolver, type resolution, authorization và data source. Các bước này chưa thể chạy trong repository docs-only.
+5. **Compatibility check:** trước khi thêm member, tìm operation của client, generated model, switch theo `__typename`, cache policy và dashboard có thể bị ảnh hưởng.
+6. **Observability:** ghi operation name/query hash, path lỗi và concrete type ở mức đã redaction khi hệ thống cho phép. Không log token hoặc payload nhạy cảm chỉ để debug polymorphism.
+
+Đừng chỉ kiểm tra một response có `data` là đủ. Một field abstract có thể trả `data` một phần cùng `errors`; [Mô hình request/response](/docs/nen-tang/mo-hinh-request-response) và [Kiến trúc GraphQL](/docs/nen-tang/kien-truc-graphql) giúp đặt lỗi đó vào đúng lớp execution hay data source.
+
+## Checklist thực hành
+
+Trước khi thêm interface hoặc union vào schema, hãy kiểm tra:
+
+- [ ] Field này thật sự cần trả về từ hai concrete object type trở lên chưa?
+- [ ] Các type có field chung cùng ngữ nghĩa và ổn định không? Nếu có, cân nhắc interface.
+- [ ] Nếu không có field chung tự nhiên, union có diễn tả domain trung thực hơn không?
+- [ ] Interface đã được giữ nhỏ chưa? Mọi `implements` có lặp đủ field và đúng kiểu không?
+- [ ] Union chỉ liệt kê object type hợp lệ và có owner cho từng member chưa?
+- [ ] Query đã chọn field chung trực tiếp khi có interface, field riêng trong inline fragment và `__typename` khi client cần phân nhánh chưa?
+- [ ] List và nullability có phản ánh việc từng phần tử có thể thiếu hoặc type resolution thất bại không? Xem [List và nullable](/docs/schema-va-type-system/list-va-nullable).
+- [ ] Validation error có được phân biệt với execution error và lỗi data source không?
+- [ ] Type resolution có được mô tả ở mức implementation, nhưng không trộn với trách nhiệm của resolver field không?
+- [ ] Response fixture đã bao phủ mọi variant, `__typename`, field bị bỏ qua và trường hợp lỗi chưa?
+- [ ] Khi thêm member, client có fallback cho `__typename` chưa? Generated client, cache và analytics có cần cập nhật không?
+- [ ] SDL, ownership và module boundary đã được review chưa? Xem [Tách schema theo module](/docs/schema-va-type-system/tach-schema-theo-module).
 
 ## Bước tiếp theo
 
-Sau khi trang được điền nội dung, đọc bài kế tiếp trong nhóm để tiếp tục lộ trình.
+- Đọc [Scalar, object và field](/docs/schema-va-type-system/scalar-object-field) để ôn cách output object và scalar tạo thành graph.
+- Đọc [SDL và nguyên tắc thiết kế schema](/docs/schema-va-type-system/sdl-va-thiet-ke-schema) để chọn tên, semantics và ownership trước khi thêm abstract type.
+- Đọc [List và nullable](/docs/schema-va-type-system/list-va-nullable) để dự đoán null propagation cho list interface hoặc union.
+- Luyện [Query, selection set và alias](/docs/query-mutation-subscription/query-selection-set-alias) để viết field chung và inline fragment đúng validation.
+- Xem [Tách schema theo module](/docs/schema-va-type-system/tach-schema-theo-module) khi interface, union và implementation nằm ở các module khác nhau.
+- Đặt flow này vào [Kiến trúc GraphQL](/docs/nen-tang/kien-truc-graphql), sau đó đối chiếu mapping Spring ở [`@SchemaMapping` và nested field](/docs/tich-hop-spring-for-graphql/schema-mapping-va-nested-field).
+
+<Cards>
+  <Card title="Scalar, object và field" href="/docs/schema-va-type-system/scalar-object-field" description="Ôn output object, scalar, list và selection set trước khi thiết kế type trừu tượng." />
+  <Card title="List và nullable" href="/docs/schema-va-type-system/list-va-nullable" description="Hiểu nullability của list và phần tử khi execution gặp lỗi." />
+  <Card title="Kiến trúc GraphQL" href="/docs/nen-tang/kien-truc-graphql" description="Theo dõi resolver, execution engine và data source trong cùng một flow." />
+  <Card title="Schema mapping và nested field" href="/docs/tich-hop-spring-for-graphql/schema-mapping-va-nested-field" description="Nối field GraphQL với method Spring khi abstract type xuất hiện ở nested field." />
+</Cards>

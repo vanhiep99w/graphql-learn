@@ -1,23 +1,822 @@
 ---
 title: "Tách schema theo module"
-description: "Tổ chức nhiều file SDL theo domain và để Spring for GraphQL hợp nhất thành một schema."
+description: "Tổ chức nhiều file SDL theo domain và để Spring for GraphQL hợp nhất thành một GraphQL schema."
 ---
 
-Trang này sẽ trình bày **Tách schema theo module** trong bối cảnh xây dựng GraphQL API với Spring Boot.
+import { File, Files, Folder } from 'fumadocs-ui/components/files';
+
+Khi schema còn nhỏ, một file `schema.graphqls` giúp người mới nhìn thấy toàn bộ contract. Khi nhiều domain cùng phát triển, file đó nhanh chóng trở thành điểm xung đột: mọi thay đổi đều đi qua một nơi, ownership (quyền sở hữu trách nhiệm) không rõ và review khó đọc. Tách schema theo module là cách tổ chức các file SDL (Schema Definition Language, ngôn ngữ định nghĩa schema) theo domain trong cùng một ứng dụng, sau đó hợp nhất chúng thành **một** GraphQL schema mà client sử dụng.
+
+<Callout type="info" title="Phạm vi và giả định">
+  Ví dụ giả định một ứng dụng Spring Boot dùng Spring for GraphQL, schema nằm trên classpath dưới `graphql/` và dùng convention của Spring Boot 3.5.x. Repository này là docs-only, không có backend để khởi động hoặc gửi query; các ví dụ merge, startup và resolver bên dưới là hướng dẫn, không phải kết quả runtime đã được kiểm chứng. Nếu project dùng version Spring Boot khác, hãy đối chiếu property và default của đúng version trước khi áp dụng.
+</Callout>
 
 ## Mục lục
 
-- [Nội dung dự kiến](#nội-dung-dự-kiến)
+- [Khi nào nên tách file?](#khi-nào-nên-tách-file)
+  - [Mục tiêu và không phải mục tiêu](#mục-tiêu-và-không-phải-mục-tiêu)
+  - [Từ khóa cần nắm](#từ-khóa-cần-nắm)
+- [Một schema, nhiều module](#một-schema-nhiều-module)
+  - [Module boundary và ownership](#module-boundary-và-ownership)
+  - [Schema merge là gì?](#schema-merge-là-gì)
+  - [Root type và `extend type`](#root-type-và-extend-type)
+- [Cấu trúc thư mục và convention classpath](#cấu-trúc-thư-mục-và-convention-classpath)
+  - [Cây file đề xuất](#cây-file-đề-xuất)
+  - [Spring for GraphQL nạp nhiều resource](#spring-for-graphql-nạp-nhiều-resource)
+- [Ví dụ SDL hoàn chỉnh theo domain](#ví-dụ-sdl-hoàn-chỉnh-theo-domain)
+  - [Module Catalog sở hữu root và type domain](#module-catalog-sở-hữu-root-và-type-domain)
+  - [Module Review mở rộng Query](#module-review-mở-rộng-query)
+  - [Module Identity dùng type ổn định](#module-identity-dùng-type-ổn-định)
+  - [Schema sau khi hợp nhất](#schema-sau-khi-hợp-nhất)
+- [Nguyên tắc chia module](#nguyên-tắc-chia-module)
+  - [Chia theo domain, không theo loại syntax](#chia-theo-domain-không-theo-loại-syntax)
+  - [Ownership của type và field](#ownership-của-type-và-field)
+  - [Shared types và dependency direction](#shared-types-và-dependency-direction)
+  - [Naming và mô tả contract](#naming-và-mô-tả-contract)
+  - [Tránh vòng phụ thuộc và trùng field](#tránh-vòng-phụ-thuộc-và-trùng-field)
+- [Pattern mở rộng root và object type](#pattern-mở-rộng-root-và-object-type)
+  - [Chọn file định nghĩa và file mở rộng](#chọn-file-định-nghĩa-và-file-mở-rộng)
+  - [Khi nào dùng `extend type Query`](#khi-nào-dùng-extend-type-query)
+  - [Khi nào không dùng `extend type`](#khi-nào-không-dùng-extend-type)
+- [Di chuyển từ một file sang nhiều module](#di-chuyển-từ-một-file-sang-nhiều-module)
+  - [Lập inventory trước khi tách](#lập-inventory-trước-khi-tách)
+  - [Di chuyển theo lát cắt domain](#di-chuyển-theo-lát-cắt-domain)
+  - [Giữ behavior và rollback](#giữ-behavior-và-rollback)
+- [Kiểm tra schema và startup](#kiểm-tra-schema-và-startup)
+  - [Các lớp kiểm tra nên có](#các-lớp-kiểm-tra-nên-có)
+  - [Lỗi thường gặp khi merge](#lỗi-thường-gặp-khi-merge)
+  - [Version caveat của Spring Boot](#version-caveat-của-spring-boot)
+- [Tách file không phải federation](#tách-file-không-phải-federation)
+  - [So sánh nhanh](#so-sánh-nhanh)
+  - [Khi nào cần federation hoặc gateway](#khi-nào-cần-federation-hoặc-gateway)
+- [Checklist review module](#checklist-review-module)
+- [Liên hệ với resolver và kiến trúc](#liên-hệ-với-resolver-và-kiến-trúc)
 - [Bước tiếp theo](#bước-tiếp-theo)
 
-## Nội dung dự kiến
+## Khi nào nên tách file?
 
-Nội dung chi tiết sẽ bao gồm khái niệm chính, ví dụ code và các lưu ý thực hành liên quan đến chủ đề này.
+Tách file không phải là mục tiêu tự thân. Với một schema nhỏ, một file duy nhất thường dễ tìm và dễ kiểm tra hơn. Hãy cân nhắc tách khi có ít nhất một trong các tín hiệu sau:
 
-<Callout type="info" title="Trang placeholder">
-Đây là trang khung. Hãy dùng skill `fumadocs-technical-writer` để viết đầy đủ trang này trong bước tiếp theo.
+- Một file có nhiều domain và thường xuyên tạo conflict khi nhiều người sửa.
+- Mỗi domain có team hoặc người review riêng.
+- Các nhóm field có tốc độ thay đổi, nguồn dữ liệu hoặc chính sách authorization khác nhau.
+- Bạn muốn kiểm tra ownership (quyền sở hữu trách nhiệm) và dependency direction (hướng phụ thuộc) trước khi thêm field mới.
+- Schema cần mở rộng nhiều root field nhưng vẫn phải giữ một graph thống nhất cho client.
+
+Tách file giải quyết vấn đề **tổ chức contract**. Nó không tự giải quyết N+1, query complexity, authorization, caching hay business logic trong resolver. Những trách nhiệm đó vẫn thuộc kiến trúc server và ứng dụng.
+
+### Mục tiêu và không phải mục tiêu
+
+Mục tiêu thực tế của cách tổ chức này là:
+
+1. Mỗi domain có một nơi tự nhiên để đặt type, input, enum và root field của mình.
+2. Người review có thể tìm owner và hiểu dependency mà không đọc toàn bộ schema.
+3. Toàn bộ file vẫn được kiểm tra như một contract duy nhất trước khi ứng dụng phục vụ request.
+4. Việc đổi vị trí file không làm đổi tên field, kiểu dữ liệu hoặc behavior của API.
+
+Cách này **không** có nghĩa là:
+
+- mỗi file là một schema độc lập mà client gọi bằng một endpoint khác;
+- thư mục tạo ra namespace GraphQL tự động;
+- mỗi module phải là một Maven module, một process hoặc một microservice;
+- tách file đã tạo ra federation hoặc cho phép deploy từng domain độc lập;
+- resolver sẽ tự được tạo chỉ vì SDL đã được chia nhỏ.
+
+Nói ngắn gọn: file organization (tổ chức file) là quyết định về maintainability (khả năng bảo trì) trong một schema. Federation (liên kết nhiều subgraph thành một graph ở runtime) là quyết định kiến trúc phân tán khác, được phân biệt rõ ở phần [Tách file không phải federation](#tách-file-không-phải-federation).
+
+### Từ khóa cần nắm
+
+Các thuật ngữ sau xuất hiện xuyên suốt bài:
+
+| Thuật ngữ | Nghĩa trong bài | Quy tắc thực hành |
+| --- | --- | --- |
+| **Module boundary** (ranh giới module) | Đường biên logic quanh một domain hoặc capability (khả năng nghiệp vụ). | Đặt type và field gần domain chịu trách nhiệm về ý nghĩa của chúng. |
+| **Ownership** (quyền sở hữu trách nhiệm) | Team hoặc module chịu trách nhiệm cuối cùng cho semantics (ngữ nghĩa), dữ liệu, quyền, chất lượng và vòng đời của type/field. | Mỗi type và field cần một owner chính, dù nhiều resolver có thể tham gia cung cấp dữ liệu. |
+| **Schema merge** (hợp nhất schema) | Quá trình đọc nhiều tài liệu SDL, ghép các định nghĩa hợp lệ và tạo một schema GraphQL dùng chung. | Merge phải kết thúc bằng một graph không trùng tên, không reference thiếu và có root hợp lệ. |
+| **Root type** (kiểu gốc) | Object type là điểm bắt đầu của operation, thường là `Query`, `Mutation` hoặc `Subscription`. | Mỗi root có một định nghĩa nền; module khác mở rộng bằng `extend type`. |
+| **`extend type`** (mở rộng type) | Cú pháp SDL thêm field vào một type đã được định nghĩa ở nơi khác. | Type nền phải tồn tại trong tập resource cuối cùng; extension không tự tạo type mới. |
+| **Duplicate definition** (định nghĩa trùng) | Hai resource cùng định nghĩa một type, hoặc cùng khai báo một field trong cùng type. | Giữ một owner canonical (chính thức); không copy definition cũ sang file mới rồi để cả hai cùng được nạp. |
+| **Dependency direction** (hướng phụ thuộc) | Chiều mà một module tham chiếu contract ổn định của module khác. | Hướng nên đi một chiều; tránh để hai module phải mở rộng và hiểu chi tiết nội bộ của nhau. |
+
+Các thư mục và tên file chỉ giúp con người tổ chức code. GraphQL vẫn nhìn thấy type name và field name trong một không gian tên chung.
+
+## Một schema, nhiều module
+
+Hãy hình dung ba file SDL được đưa vào cùng một GraphQL server:
+
+```text
+catalog.graphqls ─┐
+review.graphqls  ─┼─ parse và kiểm tra ─► schema GraphQL hợp nhất ─► resolver ─► client
+identity.graphqls ┘
+```
+
+Client không gửi request đến `catalog.graphqls` hoặc `review.graphqls`. Client chỉ thấy một `Query`, một `Book`, một `Author` và toàn bộ field hợp lệ sau khi schema được xây dựng.
+
+### Module boundary và ownership
+
+Một **module boundary** tốt thường bám theo capability thay đổi cùng nhau. Ví dụ, Catalog có thể sở hữu `Book`, tìm kiếm sách và pagination. Review có thể sở hữu `Review` và field bổ sung trên `Book`. Identity có thể sở hữu `Author` và quy tắc hiển thị danh tính.
+
+**Ownership** không chỉ là “ai tạo file”. Owner cần trả lời được các câu hỏi sau:
+
+- Field này có ngữ nghĩa gì và giá trị đến từ nguồn nào?
+- Ai bảo đảm nullability, authorization và chất lượng dữ liệu?
+- Ai chịu latency, lỗi downstream và chi phí query của field?
+- Ai review deprecation hoặc breaking change trong tương lai?
+- Resolver nào hoặc service nào thực hiện contract này?
+
+Một module khác có thể **tham chiếu** type do module owner cung cấp. Điều đó không chuyển ownership chỉ vì field được dùng ở nhiều nơi. Nếu `Review` thêm `Book.reviews`, Catalog vẫn là owner của `Book` nền; Review là owner của field `reviews` và phải phối hợp với owner của `Book`.
+
+### Schema merge là gì?
+
+**Schema merge** là bước chuyển từ nhiều tài liệu SDL sang một contract GraphQL. Ở mức khái niệm, pipeline là:
+
+1. Spring tìm các resource phù hợp với schema location.
+2. GraphQL parser đọc từng file thành các definition như `type`, `input`, `enum` và `extend type`.
+3. Các definition được ghép vào cùng một type registry (bảng các type đã biết).
+4. GraphQL kiểm tra reference, root operation, duplicate definition và các quy tắc type system.
+5. GraphQL runtime tạo executable schema (schema có thể được thực thi) để resolver cung cấp giá trị.
+
+Merge không phải là phép nối text mù quáng. Thứ tự file không nên là cách giải quyết dependency. Một file có thể tham chiếu `PageInfo` được khai báo ở file khác, miễn là mọi resource cùng nằm trong tập được nạp và kết quả cuối cùng hợp lệ.
+
+Các định nghĩa vẫn dùng chung một namespace. Hai file cùng có `type Book` không tạo ra `catalog.Book` và `review.Book`; chúng tạo ra xung đột tên `Book`. Tương tự, hai extension cùng thêm `Query.search` vẫn là một field bị khai báo trùng.
+
+### Root type và `extend type`
+
+**Root type** là object type đứng ở đầu mỗi loại operation. `Query` là root cho query, `Mutation` cho mutation và `Subscription` cho subscription. Tên chuẩn giúp GraphQL suy ra root; một schema cũng có thể nối root bằng khối `schema` tường minh.
+
+Chỉ một module nên định nghĩa nền:
+
+```graphql
+type Query {
+  books: [Book!]!
+}
+```
+
+Module khác thêm field vào root đó bằng extension:
+
+```graphql
+extend type Query {
+  reviewsForBook(bookId: ID!): [Review!]!
+}
+```
+
+`extend type Query` không thay thế `type Query`. Nó chỉ nói rằng `Query` đã tồn tại ở một resource khác và file hiện tại bổ sung field. Nếu không có definition nền trong tập resource, startup/schema validation có thể báo type `Query` không tồn tại. Quy tắc tương tự áp dụng cho `extend type Book`, `extend type Mutation` và `extend type Subscription`.
+
+## Cấu trúc thư mục và convention classpath
+
+Một project Spring Boot thường giữ SDL trong `src/main/resources`, vì nội dung ở đó được đưa lên classpath khi build. Folder bên dưới `graphql/` chỉ là convention để Spring và người đọc tìm schema nhất quán.
+
+### Cây file đề xuất
+
+Ví dụ dưới đây tách theo domain nhưng vẫn nằm trong một artifact (gói build) Spring Boot:
+
+<Files>
+  <Folder name="graphql-spring-boot" defaultOpen>
+    <Folder name="src" defaultOpen>
+      <Folder name="main" defaultOpen>
+        <Folder name="resources" defaultOpen>
+          <Folder name="graphql" defaultOpen>
+            <Folder name="shared">
+              <File name="common.graphqls" />
+            </Folder>
+            <Folder name="catalog">
+              <File name="catalog.graphqls" />
+            </Folder>
+            <Folder name="review">
+              <File name="review.graphqls" />
+            </Folder>
+            <Folder name="identity">
+              <File name="identity.graphqls" />
+            </Folder>
+          </Folder>
+          <File name="application.yml" />
+        </Folder>
+      </Folder>
+    </Folder>
+    <File name="pom.xml" />
+  </Folder>
+</Files>
+
+Cây thư mục không tạo namespace. `graphql/catalog/catalog.graphqls` vẫn khai báo type toàn cục như `Book`, không phải `catalog.Book`. Vì vậy, file name và folder name nên nói rõ domain để hỗ trợ navigation, còn uniqueness phải được kiểm soát ở cấp GraphQL type và field.
+
+Giữ mỗi module một file là điểm bắt đầu dễ đọc. Nếu module lớn, có thể tách tiếp thành các file cùng thư mục, chẳng hạn `catalog.graphqls`, `catalog-inputs.graphqls` và `catalog-connection.graphqls`. Những file đó vẫn thuộc cùng ownership và vẫn phải hợp lệ khi merge.
+
+### Spring for GraphQL nạp nhiều resource
+
+Với convention của các bài Spring Boot trong repository, source path và classpath location tương ứng là:
+
+| Ở source tree | Khi chạy trên classpath |
+| --- | --- |
+| `src/main/resources/graphql/catalog/catalog.graphqls` | `classpath:graphql/catalog/catalog.graphqls` |
+| `src/main/resources/graphql/review/review.graphqls` | `classpath:graphql/review/review.graphqls` |
+| `src/main/resources/graphql/identity/identity.graphqls` | `classpath:graphql/identity/identity.graphqls` |
+
+Pattern `classpath:graphql/**/` có ba phần cần đọc:
+
+- `classpath:` nói rằng Spring tìm resource sau khi `src/main/resources` đã được đưa vào classpath, không tìm đường dẫn filesystem tuyệt đối.
+- `graphql/` là thư mục gốc quy ước của schema.
+- `**/` là wildcard đệ quy cho thư mục con, nên `catalog/`, `review/` và `identity/` đều được quét.
+
+Với giả định Spring Boot 3.5.x, có thể cấu hình rõ pattern và phần mở rộng như sau:
+
+```yaml title="src/main/resources/application.yml"
+spring:
+  graphql:
+    schema:
+      locations:
+        - "classpath:graphql/**/"
+      file-extensions:
+        - ".graphqls"
+```
+
+Ở mức tích hợp, Spring Boot bind các property này vào phần schema của Spring for GraphQL. Schema resource builder đọc tất cả file khớp location, rồi GraphQL Java parse và xây dựng một schema chung trước khi request được thực thi. Spring không tạo một endpoint cho từng file và cũng không merge các resolver Java chỉ vì chúng nằm trong cùng folder.
+
+Nếu muốn dùng `.gqls`, thêm phần mở rộng đó hoặc giữ danh sách default mà đúng version hỗ trợ. Nếu đặt location thành danh sách các thư mục cụ thể, hãy đưa **tất cả** domain cần nạp vào danh sách; đừng vô tình thay thế wildcard bằng chỉ `catalog/` rồi kết luận rằng `review` bị lỗi merge.
+
+<Callout type="warn" title="Đối chiếu version trước khi đổi property">
+  Tên property schema và danh sách phần mở rộng được Spring Boot quản lý, còn default có thể thay đổi giữa các dòng version. `classpath:graphql/**/` là convention được dùng trong bài này, không phải cú pháp bắt buộc của GraphQL specification. Hãy mở tài liệu Spring Boot/Spring for GraphQL đúng version hoặc configuration metadata của project để xác nhận `spring.graphql.schema.locations` và `spring.graphql.schema.file-extensions`. `classpath*:` chỉ nên dùng khi có chủ đích quét resource từ nhiều classpath root hoặc dependency và version hiện tại hỗ trợ pattern đó.
 </Callout>
+
+Khi application context khởi động trong một backend thật, lỗi parse hoặc validation của tập SDL thường xuất hiện ở giai đoạn tạo schema. Message và cách exception được bọc có thể khác theo Spring Boot, Spring for GraphQL, GraphQL Java và custom configuration. Trang này không tuyên bố startup đã chạy trong repository docs-only.
+
+## Ví dụ SDL hoàn chỉnh theo domain
+
+Các file sau tạo thành một tập resource hợp lệ khi được nạp cùng nhau. `shared/common.graphqls` định nghĩa type ít thay đổi. `catalog/catalog.graphqls` là module canonical (nơi định nghĩa nền) cho `Query` và `Book`. `review/review.graphqls` và `identity/identity.graphqls` mở rộng `Query`.
+
+### Module Catalog sở hữu root và type domain
+
+`catalog.graphqls` là nơi duy nhất trong ví dụ định nghĩa `type Query`. Nó cũng sở hữu các type và input cốt lõi của catalog:
+
+```graphql title="graphql/catalog/catalog.graphqls"
+schema {
+  query: Query
+}
+
+type Query {
+  book(id: ID!): Book
+  books(filter: BookFilter, sort: SortDirection = ASC): BookConnection!
+}
+
+type Book {
+  id: ID!
+  title: String!
+  author: Author!
+  category: BookCategory!
+  publishedAt: String
+}
+
+type BookConnection {
+  nodes: [Book!]!
+  pageInfo: PageInfo!
+}
+
+input BookFilter {
+  text: String
+  category: BookCategory
+}
+
+enum BookCategory {
+  PROGRAMMING
+  DESIGN
+  ARCHITECTURE
+}
+```
+
+`Book` tham chiếu `Author`, `PageInfo` và `SortDirection` được khai báo ở resource khác. Điều đó hợp lệ khi tất cả file cùng được nạp. Nó cũng làm lộ dependency direction để team review: Catalog dùng contract ổn định của Identity và Shared, còn hai module đó không cần tham chiếu ngược lại `Book` trong ví dụ này.
+
+Khối `schema` chỉ xuất hiện một lần. Vì root có tên chuẩn `Query`, project có thể bỏ khối này, nhưng giữ một definition tường minh ở file canonical giúp người đọc biết module nào sở hữu root mapping.
+
+### Module Review mở rộng Query
+
+Review không khai báo lại `type Query`. Nó thêm root field bằng `extend type Query`, khai báo type riêng và bổ sung một field thuộc Review vào `Book` đã có:
+
+```graphql title="graphql/review/review.graphqls"
+extend type Query {
+  reviewsForBook(bookId: ID!): [Review!]!
+}
+
+extend type Book {
+  reviews: [Review!]!
+}
+
+type Review {
+  id: ID!
+  rating: Int!
+  comment: String
+}
+```
+
+`extend type Book` là một coupling (liên kết phụ thuộc) có chủ ý. Review cần được owner của Catalog review vì nó làm `Book` có thêm field. Nếu team không muốn domain Review mở rộng object của Catalog, có thể chỉ giữ root field `reviewsForBook` hoặc tạo một read model riêng. Không dùng extension như cách né ownership.
+
+### Module Identity dùng type ổn định
+
+Identity định nghĩa `Author` và thêm một root field của domain mình:
+
+```graphql title="graphql/identity/identity.graphqls"
+type Author {
+  id: ID!
+  displayName: String!
+}
+
+extend type Query {
+  author(id: ID!): Author
+}
+```
+
+Catalog có thể lấy `Book.author` từ Identity service hoặc một projection (dữ liệu chiếu phục vụ read model), nhưng SDL không tự quyết định cách gọi đó. Resolver/service cần bảo đảm field `author: Author!` không trả `null`, hoặc team phải sửa nullability theo quy tắc dữ liệu thật.
+
+### Schema sau khi hợp nhất
+
+`shared/common.graphqls` hoàn tất các reference còn lại:
+
+```graphql title="graphql/shared/common.graphqls"
+enum SortDirection {
+  ASC
+  DESC
+}
+
+type PageInfo {
+  hasNextPage: Boolean!
+}
+```
+
+Sau khi bốn resource được nạp, logical schema (schema ở góc nhìn client) có thể được đọc tương đương như sau. Đây là **một** SDL hoàn chỉnh để kiểm tra shape; không cần tạo thêm file này nếu các definition đã nằm đúng trong module:
+
+```graphql title="Logical schema sau merge"
+schema {
+  query: Query
+}
+
+type Query {
+  book(id: ID!): Book
+  books(filter: BookFilter, sort: SortDirection = ASC): BookConnection!
+  reviewsForBook(bookId: ID!): [Review!]!
+  author(id: ID!): Author
+}
+
+type Book {
+  id: ID!
+  title: String!
+  author: Author!
+  category: BookCategory!
+  publishedAt: String
+  reviews: [Review!]!
+}
+
+type BookConnection {
+  nodes: [Book!]!
+  pageInfo: PageInfo!
+}
+
+input BookFilter {
+  text: String
+  category: BookCategory
+}
+
+enum BookCategory {
+  PROGRAMMING
+  DESIGN
+  ARCHITECTURE
+}
+
+type Review {
+  id: ID!
+  rating: Int!
+  comment: String
+}
+
+type Author {
+  id: ID!
+  displayName: String!
+}
+
+enum SortDirection {
+  ASC
+  DESC
+}
+
+type PageInfo {
+  hasNextPage: Boolean!
+}
+```
+
+Trong logical schema này, `Query` có bốn root field. `Book` có field `reviews` do Review extension đóng góp. Client không cần biết field đến từ file nào, nhưng team cần biết owner để xử lý thay đổi và lỗi resolver.
+
+## Nguyên tắc chia module
+
+Một convention tốt làm cho đường đi của dependency rõ trước khi code resolver. Các quy tắc dưới đây phù hợp với một ứng dụng có một executable schema và nhiều domain owner.
+
+### Chia theo domain, không theo loại syntax
+
+Cách chia theo domain giữ những thay đổi liên quan ở gần nhau:
+
+```text
+graphql/
+├── catalog/
+│   └── catalog.graphqls       # Book, Query.book, Query.books, filter
+├── review/
+│   └── review.graphqls        # Review, Query.reviewsForBook, Book.reviews
+├── identity/
+│   └── identity.graphqls      # Author, Query.author
+└── shared/
+    └── common.graphqls        # Type ít thay đổi, dùng chung có kiểm soát
+```
+
+Tránh cách chia kiểu sau nếu mục tiêu là ownership:
+
+```text
+graphql/
+├── types.graphqls
+├── queries.graphqls
+├── inputs.graphqls
+└── enums.graphqls
+```
+
+Cách thứ hai gom các definition cùng cú pháp nhưng tách các thay đổi của một domain ra nhiều file. Khi review một tính năng Catalog, người đọc phải nhảy giữa `types`, `queries`, `inputs` và `enums`. Nó chỉ phù hợp khi schema rất nhỏ hoặc có một lý do tooling cụ thể.
+
+Một domain lớn vẫn có thể có nhiều file con. Quy tắc là các file đó cùng nằm dưới boundary và cùng có owner, không phải mọi definition của cùng một loại đều phải nằm chung.
+
+### Ownership của type và field
+
+Hãy lập một bảng ownership trước khi mở rộng schema:
+
+| Thành phần | Owner đề xuất | Trách nhiệm cần ghi rõ |
+| --- | --- | --- |
+| `Book` | Catalog | Ngữ nghĩa sách, field nền, nullability và deprecation của field nền. |
+| `Book.reviews` | Review | Nguồn đánh giá, chi phí nested resolver, quyền đọc và lỗi downstream. |
+| `Author` | Identity | Ngữ nghĩa danh tính và dữ liệu được phép công khai. |
+| `PageInfo` | Shared/platform | Shape ổn định, quy ước pagination và compatibility. |
+| `Query.books` | Catalog | Filter, sort, pagination, authorization và resolver root. |
+| `Query.reviewsForBook` | Review | Quy tắc lấy review theo `bookId` và giới hạn chi phí. |
+
+Owner của type nền không tự động sở hữu mọi field do module khác mở rộng. Ngược lại, module mở rộng không được âm thầm đổi semantics, nullability hoặc authorization của field nền.
+
+Khi thêm field, pull request nên nêu tối thiểu: owner, nguồn dữ liệu, kiểu và nullability, expected cost, policy quyền, resolver/service, test contract và kế hoạch deprecation nếu thay thế field cũ.
+
+### Shared types và dependency direction
+
+**Shared type** là type dùng bởi nhiều domain và được đặt ở một nơi ổn định. `PageInfo` hoặc một custom scalar đã được thống nhất có thể là shared type. Shared không phải “thùng chứa mọi thứ chưa biết đặt ở đâu”.
+
+Một shared type tốt có các đặc điểm:
+
+- ngữ nghĩa nhỏ, ổn định và không chứa quy tắc riêng của một domain;
+- có owner platform hoặc owner được chỉ định rõ;
+- thay đổi được review như breaking change của nhiều module;
+- không tham chiếu ngược vào `Book`, `Review` hay một type domain cụ thể;
+- có tên đủ tổng quát nhưng không mơ hồ như `Data` hoặc `Payload`.
+
+**Dependency direction** nên đi từ module cần dùng tới contract ổn định hơn. Với ví dụ trên, có thể mô tả hướng logic như sau:
+
+```text
+Catalog ─────► Identity (Author contract)
+Catalog ─────► Shared (PageInfo, SortDirection)
+Review ──────► Catalog (Book contract)
+Identity ────► Shared (nếu cần)
+```
+
+Mũi tên này là quan hệ ownership/contract, không nhất thiết là import Java trực tiếp. Điều cần tránh là `Catalog` phải hiểu implementation nội bộ của `Review`, rồi `Review` lại phải import mọi chi tiết nội bộ của `Catalog`. Nếu hai module cần nhau theo cả hai chiều, hãy xem xét:
+
+1. trích một type nhỏ, ổn định vào Shared;
+2. đổi một nhánh thành root field hoặc composition use case;
+3. dùng DTO/read model riêng thay vì mở rộng object của nhau;
+4. đưa business rule về service/domain boundary thay vì để SDL tạo vòng phụ thuộc.
+
+Schema graph có thể có quan hệ quay lại, chẳng hạn `Author.books: [Book!]!`. Điều đó không tự tạo circular module dependency. Vấn đề là code ownership và dependency build/runtime có đi vòng hay không. Đây là lý do cần phân biệt graph dữ liệu với hướng phụ thuộc của module.
+
+### Naming và mô tả contract
+
+Tên GraphQL nằm trong một namespace chung, nên naming cần nhất quán:
+
+- Object type và input type dùng `PascalCase`: `Book`, `BookFilter`, `BookConnection`.
+- Field, argument và enum value tuân theo convention đã chọn; ví dụ field dùng `camelCase`, enum dùng `UPPER_SNAKE_CASE`.
+- Input có hậu tố `Input` khi cần phân biệt rõ với output object, chẳng hạn `CreateBookInput`.
+- Connection, edge và pagination dùng một vocabulary xuyên suốt thay vì mỗi module đặt một kiểu.
+- Tên field nên mô tả ngữ nghĩa API, không sao chép tên cột database hoặc tên class persistence một cách máy móc.
+- Thêm description SDL cho type/field public khi ngữ nghĩa không hiển nhiên.
+
+Đừng dùng folder để giải quyết trùng tên. Hai domain cùng muốn type `Status` nên thảo luận xem đó có thật sự là một vocabulary chung hay cần tên cụ thể như `BookStatus` và `ReviewStatus`. Đổi tên sau khi client đã dùng khó hơn chọn tên rõ ngay từ đầu.
+
+Các quyết định về scalar, object, field, list và nullability nên thống nhất với [Scalar, object và field](/docs/schema-va-type-system/scalar-object-field), [List và nullable](/docs/schema-va-type-system/list-va-nullable) và [SDL và nguyên tắc thiết kế schema](/docs/schema-va-type-system/sdl-va-thiet-ke-schema).
+
+### Tránh vòng phụ thuộc và trùng field
+
+Có hai lớp lỗi dễ bị gọi chung là “schema bị rối”:
+
+1. **Vòng phụ thuộc module:** Catalog cần implementation của Review, Review lại cần implementation của Catalog. Đây là vấn đề architecture và ownership.
+2. **Trùng definition/field:** nhiều resource cùng định nghĩa `Book` hoặc cùng thêm `Query.search`. Đây là lỗi schema merge, thường được phát hiện khi build schema.
+
+Ví dụ không hợp lệ:
+
+```graphql title="Không hợp lệ: định nghĩa lại root"
+# catalog.graphqls
+type Query {
+  books: [Book!]!
+}
+
+# review.graphqls
+type Query {
+  reviews: [Review!]!
+}
+```
+
+Sửa bằng một definition nền và một extension:
+
+```graphql title="Hợp lệ: một owner nền, một extension"
+# catalog.graphqls
+type Query {
+  books: [Book!]!
+}
+
+# review.graphqls
+extend type Query {
+  reviews: [Review!]!
+}
+```
+
+Nhưng extension sau vẫn không hợp lệ nếu một file khác cũng khai báo `reviews` trên `Query`:
+
+```graphql
+extend type Query {
+  reviews: [Review!]!
+}
+```
+
+GraphQL không có overload field theo module. Nếu hai use case có ý nghĩa khác nhau, đặt tên khác hoặc hợp nhất contract có chủ đích. Không giải quyết ambiguity bằng cách đổi folder.
+
+## Pattern mở rộng root và object type
+
+`extend type` là công cụ để nhiều domain đóng góp vào một graph. Nó cần convention rõ để không biến root thành nơi ai cũng thêm field tùy ý.
+
+### Chọn file định nghĩa và file mở rộng
+
+Dùng bảng quyết định sau:
+
+| Tình huống | Cú pháp nên dùng | Lý do |
+| --- | --- | --- |
+| Type mới có một owner chính | `type Book { ... }` | Tạo definition nền và toàn bộ contract cốt lõi. |
+| Domain khác thêm root field của mình | `extend type Query { ... }` | Giữ một root nền, tránh duplicate `type Query`. |
+| Domain bổ sung field có ý nghĩa trên object đã có | `extend type Book { ... }` | Thể hiện contribution có chủ đích, cần owner nền review. |
+| Muốn tạo type hoàn toàn mới | `type Review { ... }` | Extension không dùng để tạo type chưa tồn tại. |
+| Muốn đổi field đã có | Không sửa bằng extension | Cần thay đổi definition/owner và review compatibility. |
+
+Một extension nên nằm gần các type mà nó phục vụ. Ví dụ `review.graphqls` chứa cả `type Review`, `Query.reviewsForBook` và `Book.reviews` giúp reviewer nhìn thấy một vertical slice (lát cắt theo capability) hoàn chỉnh.
+
+### Khi nào dùng `extend type Query`
+
+Dùng extension khi root field thuộc một module khác với module sở hữu root nền:
+
+```graphql
+# catalog.graphqls
+type Query {
+  books: [Book!]!
+}
+
+# identity.graphqls
+extend type Query {
+  author(id: ID!): Author
+}
+```
+
+Các root field vẫn là field cấp API chung. `author` không trở thành `Identity.author` và client không cần một selection set đặc biệt để đi vào module. Resolver mapping cũng dùng tên field GraphQL sau merge; file location không thay đổi cách client gọi field.
+
+`Mutation` và `Subscription` áp dụng cùng pattern:
+
+```graphql
+# một module canonical
+type Mutation {
+  createBook(input: CreateBookInput!): Book!
+}
+
+# module khác
+extend type Mutation {
+  submitReview(input: SubmitReviewInput!): Review!
+}
+```
+
+Chỉ đưa ví dụ này vào project nếu operation root tương ứng thật sự được dùng. Một schema có `Mutation` nhưng không có mutation cần thiết không mang lại lợi ích chỉ vì muốn đồng nhất cấu trúc file.
+
+### Khi nào không dùng `extend type`
+
+Không dùng extension để:
+
+- tạo một type mới mà chưa có definition nền;
+- né việc chọn owner cho field;
+- ghi đè kiểu, nullability hoặc semantics của field đang tồn tại;
+- tạo một object “dùng chung” chỉ vì hai domain có vài field giống nhau;
+- biến một module thành dependency vòng của module khác.
+
+Nếu một module cần dữ liệu từ module khác nhưng không cần thêm field vào object đó, root field riêng hoặc input/output type riêng thường làm dependency rõ hơn. Nếu cần field lồng, hãy ghi nhận owner, authorization, latency và cách test trước khi dùng `extend type Book`.
+
+## Di chuyển từ một file sang nhiều module
+
+Migration (di chuyển cấu trúc) an toàn là thay đổi cách lưu contract, không đồng thời đổi tên và semantics của toàn API. Làm từng bước giúp lỗi merge dễ định vị.
+
+### Lập inventory trước khi tách
+
+Từ file đơn hiện tại, lập danh sách:
+
+- mọi object, input, enum, interface, union và scalar;
+- root type và toàn bộ root field;
+- field nào là base definition, field nào dự kiến thuộc module khác;
+- reference giữa các type;
+- resolver/controller đang cung cấp từng field;
+- client operation hoặc test đang dùng field đó;
+- type/field có tên trùng hoặc có ownership tranh chấp.
+
+Một bảng inventory nhỏ có thể có dạng:
+
+| Definition/field | Domain | Owner | Definition nền hay extension | Phụ thuộc |
+| --- | --- | --- | --- | --- |
+| `Book` | Catalog | Catalog | Definition nền | `Author`, `PageInfo` |
+| `Query.books` | Catalog | Catalog | Trong `type Query` | `BookConnection` |
+| `Query.reviewsForBook` | Review | Review | `extend type Query` | `Review`, `Book` |
+| `Book.reviews` | Review | Review | `extend type Book` | `Review` |
+| `PageInfo` | Shared | Platform | Definition nền | Không |
+
+Đừng bắt đầu bằng cách tạo thư mục rồi copy toàn bộ `schema.graphqls` vào từng file. Copy làm duplicate definition ngay khi Spring vẫn quét file cũ.
+
+### Di chuyển theo lát cắt domain
+
+Một trình tự thực dụng:
+
+1. **Ghi baseline contract.** Lưu snapshot SDL/introspection và danh sách operation quan trọng. Đây là mốc để so sánh tên, kiểu và nullability; repository docs-only không có snapshot runtime để xác nhận thay bạn.
+2. **Chọn canonical owner.** Chọn file sẽ giữ definition nền của `Query`, `Mutation`, `Subscription` và từng domain type.
+3. **Tạo cây thư mục.** Đặt file mới dưới `src/main/resources/graphql/` hoặc location thực tế của project.
+4. **Di chuyển definition, không nhân bản.** Cắt `type Book`, input và enum ra khỏi file cũ rồi đặt vào Catalog. Nếu file cũ còn nằm trong wildcard, nó không được chứa bản sao.
+5. **Chuyển root thứ hai thành extension.** Các nhóm field trước đây nằm trong nhiều khối `type Query` phải trở thành `extend type Query`, chỉ giữ một `type Query` nền.
+6. **Đưa shared type ra sau khi đã xác định owner.** Chỉ chuyển `PageInfo`, scalar hoặc vocabulary thật sự dùng chung; đừng gom type domain vào `shared` để che dependency.
+7. **Giữ resolver và tên field ổn định.** Tách file không cần đổi `@QueryMapping`, `@SchemaMapping`, operation hoặc response shape.
+8. **Kiểm tra tập resource thực tế.** Đảm bảo file cũ đã bị xóa khỏi location được quét hoặc không còn chứa definition trùng.
+9. **Kiểm tra schema hợp nhất rồi mới dọn naming.** Nếu muốn đổi tên field, nullability hoặc semantics, thực hiện ở một thay đổi contract riêng để lỗi dễ phân loại.
+
+### Giữ behavior và rollback
+
+Sau khi tách, so sánh các bằng chứng sau trong backend thật:
+
+- introspection có cùng type, field, argument, enum và nullability không;
+- operation đọc/ghi quan trọng có còn validate không;
+- resolver mapping có còn trỏ đúng field không;
+- authorization, timeout, error mapping và metrics có giữ nguyên không;
+- schema startup có nạp đủ resource trong artifact đóng gói không.
+
+Nếu schema fail ở bước load, kiểm tra trước location, extension, file cũ và definition nền. Nếu schema load thành công nhưng query lỗi, kiểm tra resolver/service; đó không còn là lỗi tổ chức file thuần túy.
+
+Rollback đơn giản nhất là đưa tập resource về trạng thái canonical trước đó, không đồng thời đổi implementation. Trong một repository có CI schema check, giữ migration thành thay đổi nhỏ để có thể xác định file nào làm graph không hợp lệ. Không coi việc application khởi động thành công là bằng chứng mọi resolver nghiệp vụ đúng; hai lớp đó cần kiểm tra riêng.
+
+## Kiểm tra schema và startup
+
+Nhiều file làm tăng nhu cầu kiểm tra, không thay đổi bản chất của contract. Hãy kiểm tra từ tĩnh đến runtime.
+
+### Các lớp kiểm tra nên có
+
+| Lớp kiểm tra | Câu hỏi | Bằng chứng mong đợi |
+| --- | --- | --- |
+| File/resource | Tất cả file có nằm trong classpath location và đúng extension không? | Resource listing hoặc artifact inspection trong backend thật. |
+| Parse SDL | Mỗi file có cú pháp SDL hợp lệ không? | Parser/linter không báo lỗi. |
+| Merge/type system | Definition có trùng không? Reference có thiếu không? Root và extension có hợp lệ không? | Schema check trên toàn bộ resource set. |
+| Compatibility | Thay đổi có phá operation/client hoặc nullability không? | Schema diff/compatibility check hoặc review có bằng chứng. |
+| Spring startup | Spring for GraphQL có tạo được application context và executable schema không? | Log startup thành công của project backend thật. |
+| Resolver execution | Field đã merge có handler và data source đúng không? | Integration/contract test, không chỉ introspection. |
+| Request smoke | Endpoint, auth, `data` và `errors` có đúng policy không? | Request test sau khi backend chạy. |
+
+Trong migration, đừng dùng một phép thử duy nhất. Parser có thể xác nhận cú pháp nhưng không xác nhận resolver. Introspection có thể xác nhận type/field nhưng không xác nhận query trả dữ liệu đúng. Startup có thể xác nhận schema wiring nhưng không chứng minh mọi nhánh downstream hoạt động.
+
+Nếu project có CI, nên chạy schema check trên **toàn bộ** `graphql/**/`, không chỉ file vừa sửa. Một extension hợp lệ khi đứng cạnh base type có thể thất bại nếu pipeline vô tình bỏ qua file canonical.
+
+### Lỗi thường gặp khi merge
+
+Thông báo cụ thể phụ thuộc GraphQL Java và wrapper của Spring, nhưng các nguyên nhân thường có hình dạng sau:
+
+| Dấu hiệu minh họa | Nguyên nhân thường gặp | Cách kiểm tra |
+| --- | --- | --- |
+| `There can be only one type named "Query"` | Hai file cùng dùng `type Query`. | Giữ một `type Query`, đổi các file còn lại thành `extend type Query`. |
+| `There can be only one type named "Book"` | Hai module copy cùng một object definition. | Xác định canonical owner và bỏ bản sao khỏi location được quét. |
+| `Field "reviews" can only be defined once` | Hai definition/extension cùng thêm một field. | Tìm toàn bộ occurrence của `Query.reviews` hoặc `Book.reviews`. |
+| `Cannot extend type "Query" because it is not defined` | File nền không được nạp, bị đổi tên/extension hoặc chỉ còn extension. | Kiểm tra resource path, file extension và `type Query` nền. |
+| `Unknown type "PageInfo"` | Shared type không nằm trong tập resource hoặc bị tách ra ngoài wildcard. | Kiểm tra `common.graphqls` và schema location. |
+| Không tìm thấy schema | Location trỏ sai classpath hoặc file extension không khớp. | Đối chiếu `src/main/resources`, `classpath:` và version property. |
+| Schema load được nhưng query có `Cannot query field` | Client đang gọi tên field không có trong schema cuối, hoặc đang dùng endpoint/schema khác. | Dùng introspection và kiểm tra operation thực tế. |
+
+Các message trên là ví dụ định hướng, không phải contract về câu chữ. Khi đọc log, ưu tiên exception đầu tiên liên quan đến schema và dòng/file được nêu.
+
+### Version caveat của Spring Boot
+
+Các bài nhập môn trong repository dùng Spring Boot 3.5.x làm giả định. Ở dòng này, có thể đặt schema location như sau:
+
+```yaml
+spring:
+  graphql:
+    schema:
+      locations:
+        - "classpath:graphql/**/"
+      file-extensions:
+        - ".graphqls"
+```
+
+Điểm cần giữ ổn định qua các version là ý tưởng: resource SDL phải nằm trên classpath, được location chọn, rồi được đưa vào cùng schema builder. Điểm cần kiểm tra lại theo version là:
+
+- default `spring.graphql.schema.locations`;
+- tên và format của `spring.graphql.schema.file-extensions`;
+- cách resource pattern được resolve trong classpath hoặc packaged jar;
+- property endpoint HTTP, dù property endpoint không quyết định việc merge SDL;
+- version tương thích giữa Spring Boot, Spring for GraphQL và GraphQL Java.
+
+Đừng suy ra property từ một blog cũ. Bài [Thêm dependency và cấu hình](/docs/bat-dau/them-dependency-va-cau-hinh) đã ghi rõ caveat endpoint `spring.graphql.http.path` cho Spring Boot 3.5+ và `spring.graphql.path` cho dòng cũ hơn; schema location vẫn cần đối chiếu tài liệu version thực tế. Bài [Tạo schema đầu tiên](/docs/bat-dau/tao-schema-dau-tien) giải thích thêm sự khác nhau giữa source path và classpath path.
+
+<Callout type="warn" title="Không kết luận từ repository tài liệu">
+  Repository này không có backend Spring Boot để xác nhận startup, merge hoặc resolver. Khi áp dụng vào project thật, hãy chạy schema check/startup trong chính version của project và ghi lại bằng chứng. Trang này chỉ mô tả flow và các failure mode cần kiểm tra.
+</Callout>
+
+## Tách file không phải federation
+
+Hai ý tưởng đều dùng từ “module” hoặc “domain” nên dễ bị đồng nhất. Chúng giải quyết các bài toán khác nhau.
+
+### So sánh nhanh
+
+| Góc nhìn | Nhiều file SDL trong một app | Federation hoặc schema composition phân tán |
+| --- | --- | --- |
+| Boundary chính | Folder/resource và ownership logic trong một codebase hoặc artifact. | Subgraph/service có boundary runtime, team và thường có repository/deploy riêng. |
+| Số executable schema | Một schema được xây dựng cho application/server đó. | Router/gateway compose nhiều subgraph hoặc supergraph theo công cụ federation. |
+| Network call | Merge SDL xảy ra lúc build/startup; file không tạo network hop. | Request có thể đi qua router tới nhiều subgraph và chịu timeout/partial failure. |
+| Deploy | Thường deploy cùng một artifact/process. | Có thể deploy subgraph độc lập, cần compatibility và rollout policy. |
+| Cú pháp | `type` và `extend type` của GraphQL SDL. | Thường có thêm directive, entity key và quy tắc của federation tool. |
+| Mục tiêu | Giảm conflict, làm rõ ownership và giữ schema dễ bảo trì. | Phân quyền sở hữu và thực thi graph qua nhiều service runtime. |
+
+`extend type` trong SDL thông thường chỉ là GraphQL type extension. Nó không tự biến `review.graphqls` thành một federated subgraph, không thêm entity resolution và không tạo router.
+
+Một ứng dụng modular monolith có thể có nhiều module Java, nhiều folder SDL và một process. Ngược lại, một microservice system có thể vẫn giữ schema một file ở từng service hoặc dùng gateway. Số file không nói cho ta biết số service.
+
+### Khi nào cần federation hoặc gateway
+
+Chỉ cân nhắc federation/router khi có yêu cầu runtime rõ ràng, chẳng hạn:
+
+- nhiều team cần deploy subgraph độc lập;
+- data ownership và lifecycle thực sự nằm ở các service khác nhau;
+- cần một router làm composition, routing, auth hoặc policy ở biên;
+- latency, failure isolation và observability cross-service đã được thiết kế;
+- team chấp nhận schema compatibility, rollout và incident handling phân tán.
+
+Nếu vấn đề hiện tại chỉ là `schema.graphqls` quá dài hoặc conflict trong một Spring Boot app, bắt đầu bằng file organization. Đọc [Federation và schema stitching](/docs/client-va-tich-hop/federation-va-schema-stitching) khi hệ thống đã có nhu cầu compose schema ở gateway; đừng thêm federation chỉ vì muốn đặt mỗi domain vào một folder.
+
+## Checklist review module
+
+Dùng checklist này khi mở module mới hoặc review một thay đổi SDL:
+
+- [ ] File nằm dưới `src/main/resources/graphql/` hoặc location classpath đã cấu hình.
+- [ ] Tên file và folder phản ánh domain/capability, không tạo ảo giác namespace GraphQL.
+- [ ] Module có owner chính và owner đã được ghi trong review hoặc catalog nội bộ.
+- [ ] Mỗi type có đúng một definition nền; không copy definition cũ vào file mới.
+- [ ] `Query`, `Mutation` và `Subscription` chỉ có một definition nền tương ứng.
+- [ ] Module bổ sung root field dùng `extend type Query`, `extend type Mutation` hoặc `extend type Subscription` đúng nơi.
+- [ ] Mọi `extend type` đều nhắm tới type nền thực sự được nạp.
+- [ ] Không có duplicate field giữa base definition và các extension.
+- [ ] Shared type có semantics nhỏ, ổn định, owner rõ và không chứa logic domain ngẫu nhiên.
+- [ ] Dependency direction có thể vẽ thành hướng một chiều; vòng phụ thuộc được xử lý bằng contract/read model khác.
+- [ ] Type, field, argument, enum và input tuân theo naming convention chung.
+- [ ] Nullability, description, authorization và expected cost đã được review.
+- [ ] Resolver/service owner đã biết field mới và không bị hiểu nhầm rằng SDL tự tạo dữ liệu.
+- [ ] Schema check chạy trên toàn bộ resource set, không chỉ file thay đổi.
+- [ ] Có compatibility/operation check cho client quan trọng nếu field đã được công khai.
+- [ ] Startup/integration test được chạy trong backend thật; không dùng việc docs build thành bằng chứng runtime.
+- [ ] Team đã xác nhận đây là file organization, chưa phải quyết định federation/microservice.
+
+<Callout type="idea" title="Một câu hỏi review hữu ích">
+  Nếu xóa tên folder khỏi diff, người review còn xác định được owner, hướng phụ thuộc, definition nền và field extension chỉ bằng SDL hay không? Nếu không, hãy bổ sung description, ownership note hoặc cấu trúc file trước khi merge.
+</Callout>
+
+## Liên hệ với resolver và kiến trúc
+
+Tách SDL không thay đổi flow execution của GraphQL. Client vẫn gửi operation, runtime vẫn validate toàn schema, rồi resolver cung cấp giá trị cho các field được chọn. Chỉ nơi lưu contract và cách team sở hữu contract thay đổi.
+
+Trong Spring for GraphQL, có thể hình dung trách nhiệm như sau:
+
+```text
+Nhiều resource SDL trên classpath
+              │
+              ▼
+GraphQL schema hợp nhất: Query, Book, Review, Author...
+              │
+              ├── @QueryMapping → Query.book / Query.books / Query.author
+              └── @SchemaMapping → Book.reviews
+                              │
+                              ▼
+                     service / repository / downstream
+```
+
+`@QueryMapping` cần map tới root field đã có trong schema sau merge. `@SchemaMapping` có thể xử lý field nested như `Book.reviews`. Việc file nằm trong `review/` không tự đăng ký controller; component scan, annotation, tên field và resolver implementation vẫn phải đúng.
+
+Để đặt quyết định module vào mental model rộng hơn, đọc [Kiến trúc GraphQL](/docs/nen-tang/kien-truc-graphql) về boundary giữa schema, resolver, service và data source. Khi cần nối field với Java, xem [Viết query đầu tiên](/docs/bat-dau/viet-query-dau-tien), [Query, mutation và subscription mapping](/docs/tich-hop-spring-for-graphql/query-mutation-subscription-mapping) và [Schema mapping và nested field](/docs/tich-hop-spring-for-graphql/schema-mapping-va-nested-field). Khi cần configuration/runtime, xem [Thêm dependency và cấu hình](/docs/bat-dau/them-dependency-va-cau-hinh) và [Tạo schema đầu tiên](/docs/bat-dau/tao-schema-dau-tien).
 
 ## Bước tiếp theo
 
-Sau khi trang được điền nội dung, đọc bài kế tiếp trong nhóm để tiếp tục lộ trình.
+Nếu đây là lần đầu thiết kế contract, đọc [Schema và type system](/docs/schema-va-type-system) để nối module boundary với scalar, object, input, list và nullability. Sau đó đi qua [SDL và nguyên tắc thiết kế schema](/docs/schema-va-type-system/sdl-va-thiet-ke-schema) trước khi chia file thật.
+
+Nếu đã có schema một file, hãy dùng inventory và checklist trong bài này để tách một domain nhỏ trước. Giữ tên field và resolver ổn định, kiểm tra toàn bộ resource set, rồi mới mở rộng pattern sang domain khác.
+
+<Cards>
+  <Card title="SDL và nguyên tắc thiết kế schema" href="/docs/schema-va-type-system/sdl-va-thiet-ke-schema" description="Thiết kế contract, naming, ownership và boundary trước khi tách file." />
+  <Card title="Tạo schema đầu tiên" href="/docs/bat-dau/tao-schema-dau-tien" description="Đặt SDL trên classpath và hiểu schema location trong Spring Boot." />
+  <Card title="Viết query đầu tiên" href="/docs/bat-dau/viet-query-dau-tien" description="Nối root field và nested field với resolver Spring for GraphQL." />
+  <Card title="Kiến trúc GraphQL" href="/docs/nen-tang/kien-truc-graphql" description="Đặt schema, resolver, service và data source vào đúng boundary." />
+  <Card title="Thêm dependency và cấu hình" href="/docs/bat-dau/them-dependency-va-cau-hinh" description="Đối chiếu schema location và version property của Spring Boot." />
+</Cards>

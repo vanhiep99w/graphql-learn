@@ -1,23 +1,862 @@
 ---
 title: "SDL và nguyên tắc thiết kế schema"
-description: "Giới thiệu GraphQL SDL và các nguyên tắc đặt tên, ownership, boundary cho schema."
+description: "Đọc và viết GraphQL SDL theo hướng contract-first, với naming, nullability, evolution và governance."
 ---
 
-Trang này sẽ trình bày **SDL và nguyên tắc thiết kế schema** trong bối cảnh xây dựng GraphQL API với Spring Boot.
+SDL (*Schema Definition Language*, ngôn ngữ định nghĩa schema) là cách viết contract của GraphQL bằng văn bản. Trang này hướng dẫn đọc và viết SDL theo hướng **contract-first** (thiết kế contract trước implementation), rồi dùng các nguyên tắc về domain, nullability, **ownership** (trách nhiệm sở hữu ngữ nghĩa và vòng đời) và **boundary** (ranh giới giữa các domain hoặc hệ thống) để schema vẫn dễ dùng khi hệ thống lớn lên.
+
+Ví dụ xuyên suốt giữ lại `hello` và `Book` từ [Tạo schema đầu tiên](/docs/bat-dau/tao-schema-dau-tien). Những đoạn SDL, query và JSON ở đây là ví dụ tĩnh để đọc contract. Repository hiện là docs-only, không có backend Spring Boot để chạy; vì vậy không có ví dụ nào được tuyên bố là đã kiểm chứng ở runtime.
+
+<Callout type="info" title="Cách đọc trang này">
+Hãy đọc schema như một hợp đồng giữa client và server. SDL mô tả client được yêu cầu gì, còn resolver, service, repository và database là implementation phía sau. Một SDL hợp lệ chưa tự tạo dữ liệu và cũng chưa chứng minh resolver đã được wiring.
+</Callout>
 
 ## Mục lục
 
-- [Nội dung dự kiến](#nội-dung-dự-kiến)
+- [SDL là contract của API](#sdl-là-contract-của-api)
+- [Đọc schema theo hướng contract-first](#đọc-schema-theo-hướng-contract-first)
+  - [Bắt đầu từ use case và ngôn ngữ domain](#bắt-đầu-từ-use-case-và-ngôn-ngữ-domain)
+  - [Root operation là cửa vào của graph](#root-operation-là-cửa-vào-của-graph)
+  - [Output type input type và field](#output-type-input-type-và-field)
+  - [Directive là metadata có ngữ nghĩa](#directive-là-metadata-có-ngữ-nghĩa)
+- [Ví dụ SDL hoàn chỉnh cho hello và Book](#ví-dụ-sdl-hoàn-chỉnh-cho-hello-và-book)
+  - [Naming trong ví dụ](#naming-trong-ví-dụ)
+  - [SDL của catalog](#sdl-của-catalog)
+  - [Đọc query mutation và arguments](#đọc-query-mutation-và-arguments)
+- [Nguyên tắc thiết kế type và field](#nguyên-tắc-thiết-kế-type-và-field)
+  - [Dùng ngôn ngữ domain](#dùng-ngôn-ngữ-domain)
+  - [Chọn output và input riêng](#chọn-output-và-input-riêng)
+  - [Chọn nullability như một cam kết](#chọn-nullability-như-một-cam-kết)
+  - [Viết mô tả có ích](#viết-mô-tả-có-ích)
+  - [Không làm lộ persistence model](#không-làm-lộ-persistence-model)
+- [Thiết kế query mutation và arguments](#thiết-kế-query-mutation-và-arguments)
+  - [Phân biệt query và mutation](#phân-biệt-query-và-mutation)
+  - [Đặt arguments theo ý định](#đặt-arguments-theo-ý-định)
+  - [Dùng directive đúng chỗ](#dùng-directive-đúng-chỗ)
+- [Từ SDL đến executable schema trong Spring for GraphQL](#từ-sdl-đến-executable-schema-trong-spring-for-graphql)
+  - [Schema location trên classpath](#schema-location-trên-classpath)
+  - [Nối SDL với resolver](#nối-sdl-với-resolver)
+  - [Chia file mà vẫn là một graph](#chia-file-mà-vẫn-là-một-graph)
+- [Ownership và boundary của schema](#ownership-và-boundary-của-schema)
+  - [Ai sở hữu type và field](#ai-sở-hữu-type-và-field)
+  - [Boundary domain không phải boundary persistence](#boundary-domain-không-phải-boundary-persistence)
+  - [Governance tối thiểu](#governance-tối-thiểu)
+- [Tiến hóa schema không phá client](#tiến-hóa-schema-không-phá-client)
+  - [Ưu tiên thay đổi additive](#ưu-tiên-thay-đổi-additive)
+  - [Deprecation và lộ trình thay thế](#deprecation-và-lộ-trình-thay-thế)
+  - [Nhận diện breaking change](#nhận-diện-breaking-change)
+- [Checklist review schema](#checklist-review-schema)
+- [Lỗi thường gặp khi viết SDL](#lỗi-thường-gặp-khi-viết-sdl)
+  - [Trùng type hoặc field](#trùng-type-hoặc-field)
+  - [Root operation không hợp lệ](#root-operation-không-hợp-lệ)
+  - [Tên mơ hồ](#tên-mơ-hồ)
+  - [Dùng JSON để né thiết kế](#dùng-json-để-né-thiết-kế)
 - [Bước tiếp theo](#bước-tiếp-theo)
 
-## Nội dung dự kiến
+## SDL là contract của API
 
-Nội dung chi tiết sẽ bao gồm khái niệm chính, ví dụ code và các lưu ý thực hành liên quan đến chủ đề này.
+**Schema** là contract (hợp đồng có kiểu) giữa client và server. Nó trả lời các câu hỏi: client bắt đầu ở đâu, được chọn **field** (trường mà client có thể yêu cầu) nào, phải gửi **input type** (kiểu dữ liệu nhận vào) gì, và nhận **output type** (kiểu dữ liệu trả về) có hình dạng nào. SDL là văn bản dùng để mô tả contract đó.
 
-<Callout type="info" title="Trang placeholder">
-Đây là trang khung. Hãy dùng skill `fumadocs-technical-writer` để viết đầy đủ trang này trong bước tiếp theo.
+Schema không phải **database schema** (lược đồ lưu trữ). Database schema mô tả bảng, cột, khóa và index. GraphQL schema mô tả khả năng API công khai. Schema cũng không phải **code implementation** (phần code thực hiện contract). Resolver, service, repository và data source thuộc implementation.
+
+| Lớp | Câu hỏi | Ví dụ |
+| --- | --- | --- |
+| GraphQL schema | Client được phép yêu cầu gì? | `Book.title: String!` |
+| Resolver | Ai cung cấp giá trị cho field? | Method map vào `Book.title` |
+| Service | Quy tắc nghiệp vụ nào phải được giữ? | Chỉ hiển thị sách đã xuất bản |
+| Database schema | Dữ liệu được lưu ra sao? | Bảng `books`, cột `book_title` |
+
+Một `Book.title` có thể được ghép từ một cột database, một REST service hoặc dữ liệu trong bộ nhớ. Client không cần biết nguồn đó nếu contract và ngữ nghĩa của field được giữ ổn định. Ngược lại, việc có cột `book_title` không buộc API phải công khai field cùng tên.
+
+<Callout type="idea" title="Nguyên tắc contract-first">
+Viết use case, tên type, field, input, output và nullability trước. Sau đó mới chọn DTO, resolver hoặc repository để thực hiện. Cách này giúp team phát hiện tên mơ hồ, ranh giới sở hữu và breaking change trước khi chúng bị khóa vào code.
 </Callout>
+
+## Đọc schema theo hướng contract-first
+
+Đừng đọc SDL như một danh sách class. Hãy đi từ nhu cầu của client đến điểm vào của graph, rồi theo từng field đến kiểu dữ liệu ở lá. Với mỗi dòng, hỏi: field này phục vụ use case nào, ai sở hữu ngữ nghĩa và điều gì được cam kết khi field vắng mặt?
+
+### Bắt đầu từ use case và ngôn ngữ domain
+
+Trước khi đặt tên type, hãy viết một câu mà người dùng nghiệp vụ có thể hiểu. Ví dụ: “Nhân viên catalog tìm một cuốn sách theo ID và tạo một sách mới.” Từ câu đó, các tên `book`, `books`, `createBook` và `CreateBookInput` có ý nghĩa hơn một nhóm field chung như `data` hoặc `process`.
+
+Quy tắc đặt tên nên làm lộ ngữ nghĩa ngay tại nơi client dùng field:
+
+- Type và input type dùng `PascalCase`: `Book`, `CreateBookInput`, `CreateBookPayload`.
+- Field và argument dùng `camelCase`: `publishedYear`, `book`, `input`.
+- Enum value dùng tên ổn định, thường là `UPPER_SNAKE_CASE`: `IN_STOCK`, `OUT_OF_STOCK`.
+- Tên Boolean nên gợi ra câu hỏi đúng/sai, chẳng hạn `isAvailable` hoặc `hasSummary`.
+- Tên có đơn vị hoặc phạm vi rõ hơn tên ngắn. `publishedYear` dễ hiểu hơn `year`, còn `priceInCents` rõ hơn `price` nếu API dùng cent.
+
+Ví dụ, hai field sau đều có thể parse được, nhưng chỉ một field nói rõ ý định:
+
+```graphql
+type Book {
+  title: String!
+  publishedYear: Int
+}
+
+type AmbiguousBook {
+  data: String
+  value: Int
+}
+```
+
+`title` và `publishedYear` cho client biết dữ liệu là gì. `data` và `value` buộc client phải tìm tài liệu ngoài schema để đoán ý nghĩa. Nếu một field chỉ có nghĩa trong một ngữ cảnh, đưa ngữ cảnh vào tên thay vì dùng một tên chung.
+
+### Root operation là cửa vào của graph
+
+**Root operation** (operation gốc, điểm vào của graph) là type mà GraphQL dùng để bắt đầu thực thi một loại operation. Ba loại chuẩn là `query` để đọc, `mutation` để thay đổi trạng thái và `subscription` để nhận sự kiện. Root type thường được đặt tên `Query`, `Mutation` và `Subscription`, nhưng tên thật do khối `schema` quyết định.
+
+```graphql
+schema {
+  query: Query
+  mutation: Mutation
+}
+
+type Query {
+  hello: String!
+}
+
+type Mutation {
+  createBook(input: CreateBookInput!): Book!
+}
+```
+
+Trong ví dụ này, client bắt đầu bằng `hello` hoặc `createBook`. Client không gửi query trực tiếp vào `Book`; `Book` là output type được đi tới từ một field root. Khối `schema` cũng không phải URL HTTP. URL `/graphql` thuộc transport và cấu hình server.
+
+Chỉ khai báo một root type cho mỗi operation trong schema hợp nhất. Nếu ứng dụng chưa có thao tác realtime, không cần thêm `subscription` chỉ để làm schema dài hơn. Root type phải là object type có field hợp lệ; một scalar hoặc một input object không thể làm root operation.
+
+### Output type input type và field
+
+**Output type** (kiểu dữ liệu trả về) mô tả giá trị server trả cho client. **Input type** (kiểu dữ liệu nhận vào) mô tả dữ liệu client gửi trong argument. **Field** (trường) là đơn vị client chọn trên một output type; field có tên, kiểu trả về và có thể có argument.
+
+```graphql
+type Book {
+  id: ID!
+  title: String!
+}
+
+input CreateBookInput {
+  title: String!
+}
+
+type Mutation {
+  createBook(input: CreateBookInput!): Book!
+}
+```
+
+`Book` là output object type nên client có thể chọn `id` và `title`. `CreateBookInput` là input object type nên client truyền nó vào `createBook`; client không thể mở selection set để đọc field của input. `createBook` là field của root `Mutation`, có argument `input` và trả về `Book`.
+
+Hãy tách hai hướng này ngay cả khi dữ liệu có vẻ giống nhau. Output thường có `id`, field tính toán hoặc quan hệ đọc. Input thường có field được phép ghi, field bắt buộc khi tạo và quy tắc validation khác. Việc dùng một `BookInput` cho cả create, update và response thường làm contract mơ hồ.
+
+### Directive là metadata có ngữ nghĩa
+
+**Directive** (chỉ thị) là metadata gắn vào schema hoặc operation để mô tả một quy tắc cho GraphQL engine, tooling hoặc implementation. Directive bắt đầu bằng `@`, nhưng không phải mọi directive đều có cùng phạm vi.
+
+- `@deprecated` gắn vào output field hoặc enum value để báo hướng thay thế.
+- `@include` và `@skip` gắn vào field trong operation để điều khiển việc chọn field theo biến.
+- Custom directive có thể biểu diễn policy như authorization hoặc caching, nhưng chỉ có ý nghĩa khi server đăng ký và thực thi nó.
+
+Directive không thay thế thiết kế type. Thêm `@include` không làm một field mơ hồ trở nên rõ ràng, và thêm một custom directive không biến một database entity thành contract tốt. Hãy xem directive là metadata bổ sung cho một field/type đã có ngữ nghĩa.
+
+## Ví dụ SDL hoàn chỉnh cho hello và Book
+
+Ví dụ dưới đây mô tả một catalog nhỏ. Nó có root query, mutation, argument, input object, output object, description và deprecation trong cùng một schema. Khối này là SDL hoàn chỉnh ở mức GraphQL type system; resolver và data source vẫn là phần implementation riêng.
+
+### Naming trong ví dụ
+
+| Thành phần | Tên | Vì sao tên này ổn định hơn |
+| --- | --- | --- |
+| Root output type | `Query` | Tên quy ước, dễ nhận diện điểm vào của query. |
+| Object type | `Book` | Dùng danh từ domain, không gắn với tên bảng hay entity persistence. |
+| Input type | `CreateBookInput` | Nói rõ input dùng cho use case tạo sách. |
+| Mutation payload | `CreateBookPayload` | Có thể mở rộng thêm metadata mà không đổi trực tiếp kiểu mutation. |
+| Field | `publishedYear` | Nêu rõ giá trị là năm, không phải một ngày đầy đủ. |
+| Argument | `id`, `limit`, `input` | Gắn với mục đích tìm kiếm, giới hạn hoặc ghi dữ liệu. |
+
+Tên `Book` trong schema không yêu cầu code phải có class tên `Book`. Ở ứng dụng thật, resolver có thể map một projection hoặc một DTO khác tên vào output type này.
+
+### SDL của catalog
+
+```graphql title="schema.graphqls"
+"""Các điểm vào để đọc catalog."""
+schema {
+  query: Query
+  mutation: Mutation
+}
+
+"""Các thao tác đọc không làm thay đổi trạng thái server."""
+type Query {
+  """Trả về lời chào dùng để kiểm tra API."""
+  hello: String!
+
+  """Tìm một cuốn sách theo định danh công khai."""
+  book(id: ID!): Book
+
+  """Trả về tối đa limit cuốn sách đầu tiên trong catalog."""
+  books(limit: Int = 20): [Book!]!
+}
+
+"""Các thao tác làm thay đổi catalog."""
+type Mutation {
+  """Tạo một cuốn sách và trả về payload của thao tác."""
+  createBook(input: CreateBookInput!): CreateBookPayload!
+}
+
+"""Dữ liệu mà client được phép gửi khi tạo sách."""
+input CreateBookInput {
+  """Tên sách hiển thị cho người đọc."""
+  title: String!
+
+  """Tên tác giả theo cách catalog muốn công khai."""
+  author: String!
+
+  """Năm xuất bản nếu catalog đã biết giá trị này."""
+  publishedYear: Int
+}
+
+"""Kết quả của mutation createBook."""
+type CreateBookPayload {
+  """Cuốn sách vừa được tạo."""
+  book: Book!
+}
+
+"""Thông tin sách mà catalog công khai cho client."""
+type Book {
+  """Định danh ổn định của sách trong API."""
+  id: ID!
+
+  """Tên sách hiển thị."""
+  title: String!
+
+  """Tên tác giả ở dạng chuỗi của ví dụ nhập môn."""
+  author: String!
+
+  """Năm xuất bản có thể chưa được catalog biết."""
+  publishedYear: Int
+
+  """Tên cũ; client mới nên dùng title."""
+  name: String @deprecated(reason: "Dùng title thay thế.")
+}
+```
+
+Đây là schema có kiểu rõ ràng:
+
+- `Query.hello` là scalar non-null. Client chỉ cần chọn `hello`.
+- `Query.book` nhận argument `id: ID!` và có thể trả `Book` hoặc `null` nếu không tìm thấy.
+- `Query.books` nhận `limit` có giá trị mặc định `20`, rồi trả về list `Book`.
+- `CreateBookInput` chỉ đi vào server. `CreateBookPayload` và `Book` đi ra response.
+- `Book.name` vẫn tồn tại để hỗ trợ migration, nhưng `@deprecated` hướng client sang `title`.
+
+Description viết bằng chuỗi ba dấu nháy là một phần của SDL. Nó có thể xuất hiện trong introspection và Docs explorer. Description không làm thay đổi dữ liệu, nhưng giúp contract tự giải thích hơn.
+
+### Đọc query mutation và arguments
+
+Từ schema trên, client có thể viết query đọc lời chào, một sách và danh sách sách như sau:
+
+```graphql
+query Catalog($bookId: ID!, $limit: Int = 20) {
+  hello
+  book(id: $bookId) {
+    id
+    title
+    author
+    publishedYear
+  }
+  books(limit: $limit) {
+    id
+    title
+    author
+  }
+}
+```
+
+Variables là JSON tách khỏi query document:
+
+```json
+{
+  "bookId": "book-1",
+  "limit": 10
+}
+```
+
+`$bookId` phải có giá trị vì argument `id` là `ID!`. `$limit` có giá trị mặc định nên client có thể bỏ key này. Vì `book` trả về object, query phải chọn field con. Vì `hello` là scalar, query dừng ngay ở `hello`.
+
+Mutation cũng có selection set riêng cho output:
+
+```graphql
+mutation CreateCatalogBook($input: CreateBookInput!) {
+  createBook(input: $input) {
+    book {
+      id
+      title
+      author
+      publishedYear
+    }
+  }
+}
+```
+
+Variables tương ứng:
+
+```json
+{
+  "input": {
+    "title": "GraphQL in Action",
+    "author": "Samer Buna",
+    "publishedYear": 2022
+  }
+}
+```
+
+Mutation này không nói server lưu dữ liệu bằng SQL, JPA hay API khác. Nó chỉ nói client gửi một `CreateBookInput` và nhận `CreateBookPayload` theo selection set. Quy tắc tạo sách, kiểm tra trùng lặp và lưu bền vững thuộc service/resolver.
+
+## Nguyên tắc thiết kế type và field
+
+Một type tốt không cố phản chiếu mọi thuộc tính của object phía sau. Nó công khai đúng vocabulary mà client cần, giữ cam kết rõ ràng và để implementation có thể thay đổi.
+
+### Dùng ngôn ngữ domain
+
+Hãy bắt đầu với tên mà product owner, backend và frontend đều dùng cho cùng một khái niệm. Ví dụ, nếu nghiệp vụ gọi là “sách nổi bật”, `featuredBook` tốt hơn `primaryRecord`. Nếu “năm xuất bản” có thể trống, `publishedYear: Int` diễn đạt rõ trạng thái đó hơn `metadata: String`.
+
+```graphql
+type Query {
+  featuredBook: Book
+}
+
+type Book {
+  id: ID!
+  title: String!
+  publishedYear: Int
+}
+```
+
+Tên domain giúp client không phải biết cấu trúc bên trong. Nếu database đổi từ `featured_book_id` sang một quy tắc xếp hạng, field `featuredBook` vẫn có thể giữ nguyên nếu ngữ nghĩa “sách nổi bật” không đổi.
+
+Khi hai team dùng cùng một từ cho hai khái niệm khác nhau, hãy tách tên hoặc boundary. `status` có thể là trạng thái xuất bản, trạng thái đơn hàng hoặc trạng thái đồng bộ. `publicationStatus`, `orderStatus` và `syncStatus` giúp tránh việc mỗi client hiểu một nghĩa.
+
+### Chọn output và input riêng
+
+Một output object thường được tối ưu cho việc đọc. Một input object thường được tối ưu cho việc ghi và validation. Ví dụ, client được phép đọc `id` và `name` cũ của `Book`, nhưng không nên gửi `id` do server cấp khi tạo sách.
+
+```graphql
+type Book {
+  id: ID!
+  title: String!
+  author: String!
+}
+
+input CreateBookInput {
+  title: String!
+  author: String!
+}
+
+input UpdateBookInput {
+  id: ID!
+  title: String
+  author: String
+}
+```
+
+`CreateBookInput` và `UpdateBookInput` có quy tắc khác nhau. `title` bắt buộc khi tạo nhưng có thể nullable khi update để biểu diễn “không thay đổi”. Đây là lý do không nên dùng `Book` làm input chỉ vì các field hiện tại trùng tên.
+
+Nếu input cần lựa chọn hữu hạn, dùng enum thay vì chuỗi tự do. Nếu input có cấu trúc lồng nhau, dùng input object. Xem [Enum, input object và arguments](/docs/schema-va-type-system/enum-input-arguments) để chọn đúng kiểu thay vì gom mọi thứ vào một string.
+
+### Chọn nullability như một cam kết
+
+Dấu `!` là lời hứa tại ranh giới API, không phải trang trí cho SDL. Chỉ dùng non-null khi server thực sự có thể bảo đảm giá trị đó trong mọi trạng thái được công khai.
+
+```graphql
+type Query {
+  featuredBook: Book
+  books: [Book!]!
+}
+
+type Book {
+  id: ID!
+  title: String!
+  publishedYear: Int
+}
+```
+
+`featuredBook: Book` cho phép không có sách nổi bật. `books: [Book!]!` cam kết luôn có một list, nhưng list có thể rỗng; từng phần tử `Book` không được `null`. `publishedYear: Int` cho phép catalog chưa biết năm xuất bản.
+
+| Kiểu | Cam kết |
+| --- | --- |
+| `Book` | Một `Book` hoặc `null`. |
+| `Book!` | Luôn có một `Book`. |
+| `[Book]` | List có thể `null`, phần tử cũng có thể `null`. |
+| `[Book!]` | List có thể `null`, phần tử không được `null`. |
+| `[Book]!` | List không được `null`, phần tử có thể `null`. |
+| `[Book!]!` | List và mọi phần tử đều không được `null`; list rỗng vẫn hợp lệ. |
+
+Đừng chọn `!` chỉ vì Java field đang là primitive hoặc database column được đánh dấu `NOT NULL`. Resolver có thể gọi downstream đang tạm thời không sẵn sàng, và quy tắc domain có thể cho phép dữ liệu chưa hoàn chỉnh. Ngược lại, đừng biến mọi field thành nullable để che một invariant đáng lẽ service phải bảo đảm.
+
+Nullability cũng ảnh hưởng tiến hóa schema. Đổi một output field từ nullable thành non-null có thể làm client cũ bất ngờ khi xử lý dữ liệu và buộc mọi resolver giữ cam kết chặt hơn. Thêm một input field non-null vào mutation có thể khiến request cũ không còn hợp lệ. Xem [List và nullable](/docs/schema-va-type-system/list-va-nullable) để phân tích sâu hơn các wrapper và null propagation.
+
+<Callout type="warn" title="Non-null không tự sửa được dữ liệu">
+Nếu resolver trả `null` cho field khai báo non-null, execution có thể tạo lỗi và lan truyền `null` lên object cha. Schema chỉ công bố cam kết; implementation phải thực hiện cam kết đó. Các ví dụ trên chưa được chạy với một backend cụ thể.
+</Callout>
+
+### Viết mô tả có ích
+
+Description nên trả lời điều mà tên field không nói được: đơn vị, phạm vi, điều kiện vắng mặt, ý nghĩa của giá trị và hướng thay thế khi deprecated.
+
+```graphql
+type Book {
+  """Năm theo lịch Gregorian; null khi catalog chưa xác minh nguồn."""
+  publishedYear: Int
+}
+
+type Query {
+  """Tối đa limit sách theo thứ tự catalog công bố."""
+  books(limit: Int = 20): [Book!]!
+}
+```
+
+Mô tả tốt giúp người dùng GraphiQL đọc contract qua Docs explorer và giúp reviewer phát hiện field đang có nhiều cách hiểu. Mô tả không nên sao chép tên field, hứa điều implementation không bảo đảm hoặc chứa secret nội bộ.
+
+Với field có chi phí hoặc quyền đặc biệt, mô tả nên nói đủ để client biết cách dùng an toàn. Ví dụ, `books` nên nói rõ ý nghĩa của `limit` và thứ tự kết quả; một field có dữ liệu theo tenant cần được ghi trong tài liệu API và policy authorization tương ứng.
+
+### Không làm lộ persistence model
+
+**Persistence model** (mô hình lưu trữ) là entity, bảng, cột và quan hệ mà ứng dụng dùng để lưu dữ liệu. Nó thường có mục đích khác với output API. Bê nguyên persistence model vào SDL làm tên kỹ thuật và chi tiết nội bộ trở thành contract công khai.
+
+```graphql
+type BookRecord {
+  bookId: ID!
+  bookTitle: String!
+  authorId: ID!
+  deletedAt: String
+}
+```
+
+`bookTitle`, `authorId` và `deletedAt` có thể là chi tiết của bảng hoặc soft delete. Client có thể chỉ cần `title`, `author` và những sách còn được công khai. Một output hướng domain có thể là:
+
+```graphql
+type Book {
+  id: ID!
+  title: String!
+  author: String!
+}
+```
+
+Hai schema trên có thể được thực hiện bằng cùng một entity, bằng nhiều entity hoặc bằng một projection từ nhiều service. Schema không cần biết quyết định đó. Chỉ công khai khóa kỹ thuật, cột audit hoặc trạng thái nội bộ khi đó thật sự là một khái niệm API có owner, mô tả và policy rõ ràng.
+
+## Thiết kế query mutation và arguments
+
+Root field là lời hứa về hành vi API. Đặt semantics đúng ngay từ đầu giúp client và tooling hiểu operation mà không phải đọc implementation.
+
+### Phân biệt query và mutation
+
+`query` dành cho đọc dữ liệu và không nên tạo side effect. `mutation` dành cho thao tác thay đổi trạng thái, như tạo sách hoặc cập nhật trạng thái xuất bản. `subscription` dành cho luồng sự kiện dài hơn khi hệ thống thật sự có nhu cầu realtime.
+
+Ví dụ, đọc catalog và tạo sách nên có hai root field riêng:
+
+```graphql
+type Query {
+  books(limit: Int = 20): [Book!]!
+}
+
+type Mutation {
+  createBook(input: CreateBookInput!): CreateBookPayload!
+}
+```
+
+Không đặt thao tác ghi sau tên nghe như query, chẳng hạn `Query.saveBook`, chỉ vì resolver hiện đang gọi một method đọc/ghi chung. Tên operation là một phần contract và ảnh hưởng cách client retry, cache, authorization và audit.
+
+Mutation nên trả về payload có kiểu thay vì chỉ trả `Boolean` khi client cần biết object nào đã thay đổi hoặc cần nhận warning. `CreateBookPayload` trong ví dụ có thể mở rộng thêm `book`, `warnings` hoặc `clientMutationId` mà không biến root field thành một kiểu không có ngữ nghĩa.
+
+### Đặt arguments theo ý định
+
+Argument là input gắn với một field. Mỗi argument nên giải thích field cần gì để thực hiện use case, không nên phơi ra các tham số query database như `whereClause` hoặc `joinMode`.
+
+```graphql
+type Query {
+  book(id: ID!): Book
+  books(limit: Int = 20): [Book!]!
+}
+```
+
+`id` xác định sách cần tìm. `limit` giới hạn số kết quả. Nếu việc lọc có nhiều điều kiện, gom chúng vào một input object có tên theo mục đích:
+
+```graphql
+input BookSearchInput {
+  text: String
+  publishedAfter: Int
+  limit: Int = 20
+}
+
+type Query {
+  searchBooks(input: BookSearchInput!): [Book!]!
+}
+```
+
+`BookSearchInput` tốt hơn một field có hàng chục argument rời rạc khi các điều kiện có thể phát triển cùng nhau. Tuy nhiên, đừng tạo input chỉ để bọc một giá trị duy nhất nếu nó không mang lại ngữ nghĩa hoặc khả năng tiến hóa.
+
+Giá trị mặc định cần phản ánh quy tắc API, không phải một magic number ẩn trong resolver. Mô tả rõ giới hạn tối đa, thứ tự và cách xử lý giá trị không hợp lệ. Validation nghiệp vụ như “limit không vượt quá 100” vẫn thuộc implementation hoặc policy; việc khai báo `Int` chỉ bảo đảm kiểu số nguyên.
+
+### Dùng directive đúng chỗ
+
+Directive `@deprecated` là cách tiến hóa output field mà không xóa ngay field cũ:
+
+```graphql
+type Book {
+  name: String @deprecated(reason: "Dùng title thay thế.")
+  title: String!
+}
+```
+
+Directive `@include` điều khiển selection set theo biến ở phía client:
+
+```graphql
+query BookCards($showAuthor: Boolean!) {
+  books(limit: 10) {
+    id
+    title
+    author @include(if: $showAuthor)
+  }
+}
+```
+
+Hai directive này tác động ở hai nơi khác nhau. `@deprecated` là metadata trên schema. `@include` là chỉ thị trên operation. Custom directive như `@requiresRole` chỉ nên được thêm khi team đã xác định owner, semantics và cách wiring trong server; tên directive tự nó không thực thi authorization.
+
+## Từ SDL đến executable schema trong Spring for GraphQL
+
+**Executable schema** (schema có thể thực thi) là schema sau khi SDL đã được nạp, parse, kiểm tra và nối với các data fetcher hoặc resolver phù hợp. Spring for GraphQL giúp đưa schema đó vào lifecycle Spring Boot, nhưng không biến SDL thành database hoặc tự viết resolver.
+
+### Schema location trên classpath
+
+Trong project Spring Boot theo convention của lộ trình, đặt file SDL dưới classpath resource:
+
+```text
+src/main/resources/
+└── graphql/
+    └── schema.graphqls
+```
+
+Spring for GraphQL thường tìm schema trong `classpath:graphql/**/` và nhận file `.graphqls` hoặc `.gqls` tùy cấu hình/version. Nếu project đổi location, property schema location cũng phải trỏ đến classpath location, chẳng hạn:
+
+```yaml
+spring:
+  graphql:
+    schema:
+      locations: classpath:graphql/**/
+      file-extensions:
+        - .graphqls
+```
+
+Đường dẫn `src/main/resources/graphql/` là đường dẫn source trong project. Trong cấu hình runtime, dùng `classpath:graphql/**/`, không dùng một đường dẫn tuyệt đối trên máy phát triển. Chi tiết property có thể khác theo dòng Spring Boot; đối chiếu [Thêm dependency và cấu hình](/docs/bat-dau/them-dependency-va-cau-hinh) với version đang dùng.
+
+Schema hợp lệ là điều kiện để runtime xây dựng executable schema. Nhưng schema đã được nạp chỉ chứng minh contract parse được. Để query trả dữ liệu, root field và nested field còn cần mapping, service và data source phù hợp.
+
+### Nối SDL với resolver
+
+Spring for GraphQL thường map root field vào method bằng annotation:
+
+```java
+@Controller
+public class CatalogController {
+
+    @QueryMapping
+    public String hello() {
+        return "Xin chào từ Spring for GraphQL!";
+    }
+
+    @QueryMapping
+    public Book book(@Argument String id) {
+        return catalogService.findById(id).orElse(null);
+    }
+
+    @MutationMapping
+    public CreateBookPayload createBook(@Argument CreateBookInput input) {
+        return catalogService.create(input);
+    }
+}
+```
+
+Đây là fragment minh họa, không phải code runtime có sẵn trong repository. `@QueryMapping` và `@MutationMapping` nối method với root field; `@SchemaMapping` có thể nối một nested field như `Book.author` khi property mặc định không đủ.
+
+Annotation không tạo field mà SDL chưa khai báo. Chiều ngược lại, SDL có `book` nhưng không có resolver phù hợp cũng chưa đủ để query thành công. Cách viết resolver nhập môn nằm ở [Viết query đầu tiên](/docs/bat-dau/viet-query-dau-tien), còn [Schema mapping và nested field](/docs/tich-hop-spring-for-graphql/schema-mapping-va-nested-field) đi sâu vào field lồng nhau.
+
+### Chia file mà vẫn là một graph
+
+Tách SDL theo module là cách tổ chức source, không phải cách tạo nhiều API graph độc lập cho client. Sau khi Spring for GraphQL nạp các resource, các file phải được hợp nhất thành một executable schema duy nhất.
+
+```graphql title="catalog.graphqls"
+type Query {
+  hello: String!
+  books(limit: Int = 20): [Book!]!
+}
+
+type Book {
+  id: ID!
+  title: String!
+}
+```
+
+```graphql title="book-detail.graphqls"
+extend type Query {
+  book(id: ID!): Book
+}
+```
+
+Fragment thứ hai dùng `extend type Query` vì `Query` đã được định nghĩa ở fragment thứ nhất. Nó chỉ thêm field mới; không lặp lại toàn bộ `type Query` và không thêm lại `books`. Nếu hai file cùng định nghĩa `type Book` hoặc cùng thêm `Query.book`, schema hợp nhất sẽ có xung đột hoặc ownership mơ hồ.
+
+Khi schema bắt đầu có nhiều domain, đọc [Tách schema theo module](/docs/schema-va-type-system/tach-schema-theo-module) để tổ chức file, hướng phụ thuộc và root extension có kiểm soát.
+
+## Ownership và boundary của schema
+
+**Ownership** (quyền sở hữu trách nhiệm) là việc một team hoặc module chịu trách nhiệm cuối cùng về ngữ nghĩa, dữ liệu, chất lượng và vòng đời của type/field. **Boundary** (ranh giới) là đường phân chia trách nhiệm giữa các domain, module hoặc hệ thống. Một schema dùng chung cần cả hai khái niệm này.
+
+### Ai sở hữu type và field
+
+Một rule thực dụng là mỗi type có một steward chính, còn mỗi field quan trọng có owner cụ thể. Owner không nhất thiết là người viết resolver; owner là người có thể trả lời khi field sai nghĩa, chậm, thiếu quyền hoặc cần deprecate.
+
+| Thành phần | Câu hỏi owner phải trả lời |
+| --- | --- |
+| `Book.title` | Title có nghĩa gì, nguồn nào là sự thật và khi nào có thể null? |
+| `Query.books` | Thứ tự, giới hạn, chi phí và quyền đọc danh sách là gì? |
+| `Mutation.createBook` | Ai kiểm tra input, invariant và tác động ghi dữ liệu? |
+| `Book.name` deprecated | Còn client nào dùng, thay thế là gì và thời điểm xóa ra sao? |
+
+Ví dụ, team Catalog có thể sở hữu `Book` và `Query.books`, còn team Identity sở hữu `Author` nếu schema có type đó. Một team API platform có thể sở hữu quy tắc naming, schema check và công cụ, nhưng không nên tự quyết định ngữ nghĩa domain thay cho owner.
+
+Không để hai module cùng công bố hai field có tên giống nhau nhưng semantics khác nhau. Nếu hai khái niệm thật sự khác, đặt tên hoặc boundary khác. Nếu cùng một khái niệm, thống nhất một owner và một contract thay vì tạo `BookSummaryA` và `BookSummaryB` chỉ để né review.
+
+### Boundary domain không phải boundary persistence
+
+Boundary domain phân chia trách nhiệm nghiệp vụ. Boundary persistence phân chia bảng, entity hoặc database. Hai đường này có thể liên quan nhưng không cần trùng nhau.
+
+Một field `Book.reviews` có thể nối Catalog với Review service. GraphQL server có thể composition dữ liệu từ hai nguồn, nhưng không nên công khai `review_table`, tên database hoặc transaction nội bộ để mô tả quan hệ đó. Resolver/service chịu trách nhiệm điều phối; schema chỉ công khai quan hệ mà client cần.
+
+```text
+Client
+  │ chọn Book.title và Book.reviews
+  ▼
+GraphQL schema và resolver boundary
+  ├── Catalog service ──► Catalog data source
+  └── Review service  ──► Review data source
+```
+
+Một domain boundary tốt trả lời được ba câu hỏi: ai sở hữu ngữ nghĩa, ai chịu chi phí và ai xử lý authorization. Nếu field cần nhiều nguồn, hãy ghi rõ owner điều phối và owner của từng nguồn phía sau. Đừng để client phải biết một field đang được ghép từ bao nhiêu bảng hoặc service.
+
+### Governance tối thiểu
+
+**Governance** (cơ chế quản trị) là quy trình giúp schema dùng chung không tiến hóa tùy ý. Team nhỏ không cần một hội đồng nặng nề, nhưng nên có các điểm kiểm soát sau:
+
+1. Mỗi type/field mới có owner và use case cụ thể.
+2. Review naming, description, input/output, nullability và authorization cùng lúc.
+3. Kiểm tra schema sau khi merge các file, không chỉ kiểm tra từng file riêng.
+4. So sánh schema thay đổi với operation thực tế của client trước khi release.
+5. Ghi reason và hướng thay thế cho field deprecated.
+6. Theo dõi chi phí field list/nested và đặt giới hạn khi cần.
+7. Lưu quyết định boundary để biết thay đổi cần mời team nào review.
+
+Governance không phải là cấm thay đổi. Mục tiêu là làm cho thay đổi có owner, có bằng chứng tương thích và có đường rollback/migration rõ ràng.
+
+## Tiến hóa schema không phá client
+
+GraphQL thường tiến hóa theo hướng additive: thêm khả năng mới mà không đổi hoặc xóa khả năng client cũ đang dùng. Tuy nhiên, additive không có nghĩa mọi thay đổi thêm đều vô hại; input, enum, nullability và semantics vẫn cần review.
+
+### Ưu tiên thay đổi additive
+
+Thêm output field nullable thường là lựa chọn ít phá vỡ hơn đổi tên field cũ:
+
+```graphql
+type Book {
+  id: ID!
+  title: String!
+  summary: String
+}
+```
+
+Client cũ vẫn có thể chỉ chọn `id` và `title`. Client mới có thể chọn `summary` khi cần. Nếu muốn đổi `name` thành `title`, giữ `name` một thời gian, thêm `title`, đánh dấu `name` deprecated và đo usage trước khi xóa.
+
+Các thay đổi additive thường hữu ích gồm:
+
+- thêm output field hoặc output type mới;
+- thêm query root field mới cho use case mới;
+- thêm input field **nullable hoặc có default** khi server có thể xử lý request cũ;
+- thêm enum value khi client đã có chiến lược xử lý giá trị chưa biết;
+- thêm description hoặc metadata không đổi semantics.
+
+Không đổi ý nghĩa field đang có để “tái sử dụng” tên cũ. `title` từng là tên sách không nên bất ngờ trở thành tiêu đề marketing chỉ vì database đã thêm cột mới. Nếu semantics đổi, tạo field mới với migration rõ ràng.
+
+### Deprecation và lộ trình thay thế
+
+Deprecation (đánh dấu không khuyến nghị dùng nữa) là một giai đoạn migration, không phải lệnh xóa ngay. Một deprecation tốt có reason có thể hành động:
+
+```graphql
+type Book {
+  name: String @deprecated(reason: "Dùng title thay thế.")
+  title: String!
+}
+```
+
+Quy trình nên gồm:
+
+1. Thêm field thay thế và mô tả sự khác nhau nếu có.
+2. Đánh dấu field cũ bằng `@deprecated` với reason rõ ràng.
+3. Thông báo client, cập nhật ví dụ và hướng dẫn migration.
+4. Theo dõi usage của field cũ qua telemetry, operation check hoặc registry nếu hệ thống có.
+5. Chỉ xóa sau khi owner xác nhận client đã chuyển và thời hạn hỗ trợ đã hết.
+
+Introspection và GraphiQL có thể hiển thị trạng thái deprecated, nhưng không tự sửa query của client. Deprecation cũng không làm resolver cũ biến mất; implementation vẫn phải phục vụ field trong thời gian migration.
+
+### Nhận diện breaking change
+
+Một breaking change là thay đổi có thể làm query cũ không validate được, làm dữ liệu cũ không còn đáp ứng contract hoặc làm client hiểu sai semantics. Bảng sau là các tín hiệu cần review:
+
+| Thay đổi | Rủi ro |
+| --- | --- |
+| Xóa hoặc đổi tên output field/type | Query cũ không còn hợp lệ. |
+| Đổi kiểu `String` thành object hoặc ngược lại | Selection set, codegen và cách parse response phải đổi. |
+| Đổi nullable thành non-null | Tăng cam kết output; dữ liệu thiếu có thể biến thành lỗi lan truyền. |
+| Thêm input field non-null không có default | Request cũ có thể thiếu field bắt buộc. |
+| Đổi hoặc xóa enum value | Client có thể có nhánh xử lý exhaustive hoặc lưu giá trị cũ. |
+| Đổi ý nghĩa, đơn vị hoặc thứ tự field | Query vẫn hợp lệ nhưng client nhận semantics khác. |
+| Đổi root operation hoặc schema location sai | Runtime không tạo được graph như contract đã công bố. |
+
+Không chỉ tìm breaking change bằng cách so sánh tên. Hãy đọc cả description, nullability, default, enum và semantics nghiệp vụ. [Tiến hóa schema và deprecation](/docs/production/schema-evolution-va-deprecation) có quy trình rộng hơn cho compatibility và versioning.
+
+## Checklist review schema
+
+Dùng checklist này trước khi merge một thay đổi SDL. Đây là checklist review contract, không thay thế test resolver hoặc test integration:
+
+- [ ] Use case và client sử dụng field đã được mô tả bằng một ví dụ cụ thể.
+- [ ] Type, field và argument dùng ngôn ngữ domain; không có tên chung như `data`, `info` hoặc `value` nếu không có ngữ nghĩa rõ.
+- [ ] Mỗi type và field có owner, boundary và data source chịu trách nhiệm.
+- [ ] Output type và input type được tách; không dùng entity hoặc `Book` output làm input chỉ vì tên field giống nhau.
+- [ ] Root `Query`, `Mutation` hoặc `Subscription` được nối đúng trong khối `schema` hoặc theo convention hợp lệ.
+- [ ] Không có type trùng tên, field trùng tên hoặc hai module cùng sở hữu một field sau khi SDL được hợp nhất.
+- [ ] Argument có tên theo ý định, kiểu đúng, default rõ và giới hạn nghiệp vụ được tài liệu hóa.
+- [ ] Nullability của field, list và phần tử list phản ánh domain; đã xét list rỗng, `null` và lỗi lan truyền.
+- [ ] Description nói rõ đơn vị, điều kiện vắng mặt, thứ tự, quyền hoặc hướng thay thế khi cần.
+- [ ] Directive được dùng cho metadata/policy có semantics rõ; custom directive đã có kế hoạch wiring.
+- [ ] Schema không làm lộ tên bảng, cột, khóa ngoại, soft delete hoặc persistence detail không phải contract.
+- [ ] Không dùng `JSON`/scalar mờ đục chỉ để trì hoãn việc thiết kế object, enum hoặc input.
+- [ ] Thay đổi được phân loại additive hay breaking; field cũ có deprecation plan nếu cần.
+- [ ] Schema location và file extension khớp cấu hình Spring for GraphQL; resolver mapping dự kiến đã có owner.
+- [ ] Có kế hoạch schema check và operation/client compatibility phù hợp với mức độ quan trọng của API.
+
+Một review đạt checklist vẫn không khẳng định runtime đã chạy. Nó chỉ cho thấy contract đã có cơ sở để được parse, wiring và kiểm thử ở các bước tiếp theo.
+
+## Lỗi thường gặp khi viết SDL
+
+Các lỗi dưới đây thường xuất hiện khi schema được chia file hoặc được thiết kế từ entity thay vì từ use case.
+
+### Trùng type hoặc field
+
+GraphQL yêu cầu tên type trong schema hợp nhất là duy nhất, và mỗi object type không được có hai field cùng tên. Ví dụ sau là **SDL sai về mặt hợp nhất**:
+
+```graphql title="Ví dụ sai"
+type Book {
+  id: ID!
+}
+
+type Book {
+  title: String!
+}
+
+type Query {
+  book(id: ID!): Book
+}
+
+extend type Query {
+  book(id: ID!): Book
+}
+```
+
+Hai module có thể cùng đề cập `Book`, nhưng không được cùng định nghĩa `type Book`. Tương tự, `extend type Query` chỉ nên thêm field mới. Cách sửa là chọn một file làm owner định nghĩa `Book`, một file định nghĩa `Query` gốc, rồi để module khác extend root bằng field không trùng.
+
+### Root operation không hợp lệ
+
+Root operation phải trỏ đến một object type đã tồn tại và có field. Ví dụ sau trỏ `query` vào `RootQuery` nhưng không định nghĩa type đó:
+
+```graphql title="Ví dụ sai"
+schema {
+  query: RootQuery
+}
+
+type Query {
+  hello: String!
+}
+```
+
+Cách sửa là trỏ về `Query` hoặc định nghĩa `type RootQuery` có field và giữ tên đó nhất quán:
+
+```graphql
+schema {
+  query: Query
+}
+
+type Query {
+  hello: String!
+}
+```
+
+Một lỗi khác là chỉ viết `type Book` mà không có `Query` root. `Book` có thể là output type hợp lệ, nhưng client không có điểm bắt đầu để query nếu schema không công khai root operation phù hợp.
+
+### Tên mơ hồ
+
+Tên mơ hồ làm schema parse được nhưng contract khó dùng. Ví dụ, client không biết `status` là trạng thái nào, `value` có đơn vị gì hoặc `data` chứa object nào.
+
+| Tên nên tránh khi thiếu ngữ cảnh | Tên cụ thể hơn |
+| --- | --- |
+| `data` | `book`, `books`, `searchResults` |
+| `info` | `publicationInfo`, `authorProfile` |
+| `value` | `priceInCents`, `publishedYear` |
+| `status` | `publicationStatus`, `availabilityStatus` |
+| `result` | `createBookPayload`, `searchPage` |
+
+Không cần làm tên dài một cách máy móc. Chỉ thêm phần ngữ nghĩa mà client cần để không phải đoán. Description bổ sung cho tên, nhưng không nên dùng description để cứu một field có tên sai bản chất.
+
+### Dùng JSON để né thiết kế
+
+Một custom scalar `JSON` có thể chứa gần như bất kỳ cấu trúc nào:
+
+```graphql
+scalar JSON
+
+type Query {
+  books: JSON
+}
+```
+
+Đoạn này có thể parse nếu runtime đăng ký scalar `JSON`, nhưng nó làm client mất nhiều lợi ích của GraphQL: introspection không biết shape bên trong, validation không biết field nào hợp lệ, code generation không có type cụ thể và selection set không thể đi sâu vào `books` như một object.
+
+Nếu catalog trả danh sách sách, thiết kế type rõ ràng:
+
+```graphql
+type Query {
+  books: [Book!]!
+}
+
+type Book {
+  id: ID!
+  title: String!
+  author: String!
+}
+```
+
+Chỉ dùng JSON cho dữ liệu thật sự opaque (không có contract nội bộ ổn định), chẳng hạn metadata do hệ thống bên ngoài chuyển tiếp. Khi dùng, phải ghi rõ owner, giới hạn kích thước, semantics và lý do không thể mô hình hóa bằng object, enum, input hoặc custom scalar có quy tắc. Xem [Scalar, object và field](/docs/schema-va-type-system/scalar-object-field) và [Enum, input object và arguments](/docs/schema-va-type-system/enum-input-arguments) để chọn kiểu có cấu trúc trước.
 
 ## Bước tiếp theo
 
-Sau khi trang được điền nội dung, đọc bài kế tiếp trong nhóm để tiếp tục lộ trình.
+Sau khi đọc và review SDL, đi tiếp theo nhu cầu:
+
+- [Tạo schema đầu tiên](/docs/bat-dau/tao-schema-dau-tien) để đặt file `.graphqls` trên classpath và nối schema nhập môn với Spring Boot.
+- [Scalar, object và field](/docs/schema-va-type-system/scalar-object-field) để phân biệt scalar ở lá với object cần selection set.
+- [Enum, input object và arguments](/docs/schema-va-type-system/enum-input-arguments) để thiết kế input có cấu trúc và lựa chọn hữu hạn.
+- [List và nullable](/docs/schema-va-type-system/list-va-nullable) để phân tích `[Book!]!`, list rỗng và null propagation.
+- [Tách schema theo module](/docs/schema-va-type-system/tach-schema-theo-module) để chia SDL theo domain mà vẫn giữ một graph và ownership rõ ràng.
+- [Tiến hóa schema và deprecation](/docs/production/schema-evolution-va-deprecation) để quản lý thay đổi sau khi client bắt đầu sử dụng contract.
+
+<Cards>
+  <Card title="Tạo schema đầu tiên" href="/docs/bat-dau/tao-schema-dau-tien" description="Viết SDL hello và Book trong vị trí schema của Spring Boot." />
+  <Card title="Scalar, object và field" href="/docs/schema-va-type-system/scalar-object-field" description="Đọc các mảnh ghép tạo nên graph và selection set." />
+  <Card title="Tách schema theo module" href="/docs/schema-va-type-system/tach-schema-theo-module" description="Tổ chức file SDL theo domain, root extension và ownership." />
+  <Card title="Tiến hóa schema và deprecation" href="/docs/production/schema-evolution-va-deprecation" description="Mở rộng contract mà không làm client cũ bất ngờ." />
+</Cards>

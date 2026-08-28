@@ -1,23 +1,478 @@
 ---
 title: "List và nullable"
-description: "Đọc ký hiệu list/non-null và chọn nullability phù hợp cho dữ liệu trả về."
+description: "Giải mã wrapper list/non-null và chọn nullability phù hợp cho contract GraphQL."
 ---
 
-Trang này sẽ trình bày **List và nullable** trong bối cảnh xây dựng GraphQL API với Spring Boot.
+import { Accordion, Accordions } from 'fumadocs-ui/components/accordion';
+
+Trong GraphQL, `books: [Book!]!` không chỉ có nghĩa là “một danh sách sách”. Dấu `!` nằm ở những vị trí khác nhau tạo ra những cam kết khác nhau cho list và từng phần tử. **Nullable** nghĩa là có thể nhận `null`; **non-null** nghĩa là không được nhận `null`, được viết bằng dấu `!`. **List wrapper** là wrapper danh sách viết bằng `[ ... ]`, còn **element** là từng giá trị bên trong list. **Null bubbling** là quy tắc để lỗi ở field non-null lan truyền lên field cha gần nhất có thể nhận `null`.
+
+<Callout type="info" title="Phạm vi và giả định">
+Các ví dụ dùng `Book` và `Catalog` như những type minh họa độc lập. Một số trang lân cận trong nhóm Schema và type system có thể vẫn là trang khung, nên không giả định schema của repository đã có sẵn các field này. Repository hiện là docs-only, không có backend Spring Boot để chạy; mọi query, JSON response và đoạn Java trong bài đều là ví dụ tài liệu, chưa được kiểm chứng ở runtime.
+</Callout>
 
 ## Mục lục
 
-- [Nội dung dự kiến](#nội-dung-dự-kiến)
+- [Bức tranh tổng thể](#bức-tranh-tổng-thể)
+  - [Một field có hai vị trí cần đọc](#một-field-có-hai-vị-trí-cần-đọc)
+- [Đọc wrapper từ trong ra ngoài](#đọc-wrapper-từ-trong-ra-ngoài)
+  - [Nullable và non null](#nullable-và-non-null)
+  - [List và element](#list-và-element)
+- [Bốn dạng wrapper list phổ biến](#bốn-dạng-wrapper-list-phổ-biến)
+  - [Dạng nullable cả list và element](#dạng-nullable-cả-list-và-element)
+  - [Dạng chỉ bắt buộc element](#dạng-chỉ-bắt-buộc-element)
+  - [Dạng chỉ bắt buộc list](#dạng-chỉ-bắt-buộc-list)
+  - [Dạng bắt buộc cả list và element](#dạng-bắt-buộc-cả-list-và-element)
+- [List rỗng không phải null](#list-rỗng-không-phải-null)
+- [Từ SDL đến query và JSON](#từ-sdl-đến-query-và-json)
+  - [Schema minh họa](#schema-minh-họa)
+  - [Query và response cho list rỗng](#query-và-response-cho-list-rỗng)
+  - [Query và response có list hoặc phần tử null](#query-và-response-có-list-hoặc-phần-tử-null)
+  - [Query và response khi field non null lỗi](#query-và-response-khi-field-non-null-lỗi)
+- [Null bubbling và lỗi lan truyền](#null-bubbling-và-lỗi-lan-truyền)
+  - [Theo dõi đường lan truyền](#theo-dõi-đường-lan-truyền)
+  - [Phân biệt null hợp lệ và null do lỗi](#phân-biệt-null-hợp-lệ-và-null-do-lỗi)
+- [Liên hệ Java và Spring for GraphQL](#liên-hệ-java-và-spring-for-graphql)
+  - [List Java không tự quyết định SDL](#list-java-không-tự-quyết-định-sdl)
+  - [Resolver Spring và giá trị trả về](#resolver-spring-và-giá-trị-trả-về)
+  - [Khi data source trả lỗi](#khi-data-source-trả-lỗi)
+- [Chọn nullability theo domain](#chọn-nullability-theo-domain)
+  - [Không có kết quả và lỗi không giống nhau](#không-có-kết-quả-và-lỗi-không-giống-nhau)
+  - [Câu hỏi cho từng field](#câu-hỏi-cho-từng-field)
+- [Ảnh hưởng tới client và compatibility](#ảnh-hưởng-tới-client-và-compatibility)
+  - [Client cần xử lý những trạng thái nào](#client-cần-xử-lý-những-trạng-thái-nào)
+  - [Thay đổi wrapper là thay đổi contract](#thay-đổi-wrapper-là-thay-đổi-contract)
+- [Checklist chọn wrapper](#checklist-chọn-wrapper)
 - [Bước tiếp theo](#bước-tiếp-theo)
 
-## Nội dung dự kiến
+## Bức tranh tổng thể
 
-Nội dung chi tiết sẽ bao gồm khái niệm chính, ví dụ code và các lưu ý thực hành liên quan đến chủ đề này.
+Hãy đọc một kiểu list từ trong ra ngoài. Với `books: [Book!]!`, bắt đầu ở `Book`, sau đó đọc dấu `!` của phần tử, dấu `[...]` của list và dấu `!` bên ngoài list. Cách đọc này tránh nhầm rằng một dấu `!` duy nhất đang bảo vệ mọi vị trí.
 
-<Callout type="info" title="Trang placeholder">
-Đây là trang khung. Hãy dùng skill `fumadocs-technical-writer` để viết đầy đủ trang này trong bước tiếp theo.
-</Callout>
+```graphql
+type Query {
+  books: [Book!]!
+}
+```
+
+Kiểu trên cam kết hai điều: field `books` luôn trả về một list, và nếu list có phần tử thì mỗi phần tử phải là một `Book` không `null`. List rỗng `[]` vẫn tuân thủ cả hai cam kết đó.
+
+### Một field có hai vị trí cần đọc
+
+Một list có ít nhất hai câu hỏi độc lập:
+
+1. **Bản thân list có thể là `null` không?** Dấu `!` sau `]` trả lời câu hỏi này.
+2. **Một element có thể là `null` không?** Dấu `!` bên trong `[...]` trả lời câu hỏi này.
+
+`[Book!]!` không nói rằng mọi field bên trong `Book` đều non-null. Ví dụ, `Book.title` vẫn có thể là `String` nullable nếu SDL khai báo như vậy. Nullability của object, list, element và field con là các quyết định lồng nhau, cần được đọc ở đúng vị trí.
+
+## Đọc wrapper từ trong ra ngoài
+
+GraphQL tạo kiểu phức hợp bằng cách bọc một kiểu cơ sở. `Book` có thể là object, `String` có thể là scalar, và cả hai đều có thể được bọc bằng non-null hoặc list. Wrapper không thay đổi bản chất của kiểu bên trong; nó chỉ thêm quy tắc về hình dạng và `null`.
+
+### Nullable và non null
+
+Nếu một kiểu không có `!`, kiểu đó là **nullable**: giá trị có thể là `null`. Nếu có `!`, kiểu đó là **non-null**: resolver phải cung cấp một giá trị khác `null`.
+
+```graphql
+type Book {
+  title: String
+  id: ID!
+}
+```
+
+Trong ví dụ này, `title` có thể vắng mặt dưới dạng `null`, còn `id` phải có giá trị. Dấu `!` là một phần của contract, không phải gợi ý cho client và cũng không phải annotation Java tự động được suy ra từ database.
+
+Với object, `featuredBook: Book` cho phép cả field `featuredBook` là `null`. `featuredBook: Book!` yêu cầu luôn có object. Khi object tồn tại, các field bên trong vẫn tuân theo nullability riêng của chúng.
+
+### List và element
+
+Ngoặc vuông tạo **list wrapper**. Hãy đọc hai ví dụ sau:
+
+- `[Book]`: list có thể `null`, và mỗi element `Book` cũng có thể `null`.
+- `[Book!]`: list có thể `null`, nhưng một list đã tồn tại không được chứa element `null`.
+
+Thêm `!` sau ngoặc vuông chỉ siết bản thân list:
+
+- `[Book]!`: list phải tồn tại, nhưng element có thể `null`.
+- `[Book!]!`: list phải tồn tại và element cũng phải tồn tại.
+
+Quy tắc này lặp lại với scalar. `[String!]!` là list không `null` gồm các chuỗi không `null`; nó không biến chuỗi thành object có field con. List cũng có thể lồng nhau, chẳng hạn `[[Int!]!]!`, nhưng mỗi cặp `[]` vẫn phải được đọc riêng từ trong ra ngoài.
+
+## Bốn dạng wrapper list phổ biến
+
+Bảng dưới đây dùng `T` để đại diện cho một kiểu bất kỳ, như `Book` hoặc `String`. Cột “giá trị hợp lệ” chỉ là các trạng thái minh họa; dữ liệu cụ thể vẫn do domain quyết định.
+
+| Kiểu SDL | Bản thân list | Element | Một số giá trị hợp lệ |
+| --- | --- | --- | --- |
+| `[T]` | Có thể `null` | Có thể `null` | `null`, `[]`, `[null, value]` |
+| `[T!]` | Có thể `null` | Không `null` nếu list tồn tại | `null`, `[]`, `[value]` |
+| `[T]!` | Không `null` | Có thể `null` | `[]`, `[null, value]` |
+| `[T!]!` | Không `null` | Không `null` | `[]`, `[value]` |
+
+Bốn dạng này không xếp hạng từ “xấu” đến “tốt”. Dạng chặt hơn làm client có ít trạng thái `null` hơn khi dữ liệu hợp lệ, nhưng lỗi ở một phần tử có thể làm mất cả list hoặc object cha. Hãy chọn theo ngữ nghĩa và khả năng bảo đảm của data source.
+
+### Dạng nullable cả list và element
+
+`[T]` cho phép cả hai lớp vắng mặt. Ví dụ `relatedBooks: [Book]` có thể dùng khi quan hệ thật sự không áp dụng cho một số bản ghi, hoặc dữ liệu legacy chưa phân biệt được “không có list” và “list có phần tử thiếu”.
+
+Dạng này tạo nhiều trạng thái cho client: list là `null`, list rỗng, element là `null`, hoặc element có giá trị. Nếu domain chỉ cần biểu diễn “không có kết quả”, `[T]!` hoặc `[T!]!` thường diễn tả ý định rõ hơn, nhưng đó là lựa chọn cần kiểm tra với nguồn dữ liệu.
+
+### Dạng chỉ bắt buộc element
+
+`[T!]` cho phép bản thân list là `null`, nhưng không cho phép element `null` khi list tồn tại. Dạng này phù hợp khi có sự khác nhau giữa “chưa có hoặc không áp dụng danh sách” và “đã có danh sách thì từng phần tử phải là một giá trị đầy đủ”.
+
+Ví dụ `recommendations: [Book!]` có thể là `null` khi tính năng đề xuất chưa áp dụng cho user, nhưng nếu service trả list thì không được chèn một phần tử `null` vào list đó.
+
+### Dạng chỉ bắt buộc list
+
+`[T]!` cam kết luôn có một container list, kể cả khi không có phần tử. Tuy nhiên, element có thể `null`. Dạng này có thể phù hợp với dữ liệu dạng vị trí, dữ liệu ghép từ nhiều nguồn hoặc một collection mà một số slot chưa thể resolve.
+
+Nếu `slots: [Book]!` trả `[null, book]`, client phải xử lý slot rỗng. Nếu một slot `null` thực chất là lỗi đọc dữ liệu chứ không phải trạng thái domain, hãy cân nhắc để resolver tạo `errors` thay vì im lặng coi lỗi là giá trị hợp lệ.
+
+### Dạng bắt buộc cả list và element
+
+`[T!]!` là cam kết mạnh nhất trong bốn dạng: list luôn tồn tại và không có element `null`. Đây là ứng viên tự nhiên cho một collection mà “không có kết quả” được biểu diễn bằng `[]`, còn mỗi record được trả về phải đầy đủ ở cấp object mà contract yêu cầu.
+
+Cam kết này không làm service luôn thành công. Nếu data source timeout hoặc một field non-null của element bị lỗi, GraphQL vẫn tạo execution error và có thể làm `null` lan lên list. Non-null giảm số trạng thái dữ liệu hợp lệ; nó không loại bỏ failure của hệ thống.
+
+## List rỗng không phải null
+
+Với cả bốn dạng wrapper, `[]` đều là list hợp lệ khi list được trả về. Khác biệt nằm ở việc list có được phép là `null` hay không, chứ không nằm ở số lượng phần tử.
+
+Ví dụ, một tìm kiếm sách không có kết quả thường có thể trả `books: []` nếu operation đã chạy thành công và domain coi “không có sách khớp” là kết quả bình thường. `books: null` lại có thể mang nghĩa chưa áp dụng, không thể xác định hoặc không có dữ liệu tại thời điểm đó. Không có ý nghĩa nào tự động đúng cho mọi domain; schema và tài liệu phải nói rõ.
+
+Cũng cần phân biệt `null` hợp lệ với lỗi. Một field nullable có thể trả `null` mà không có `errors` khi dữ liệu thật sự vắng mặt. Nếu resolver gặp timeout và trả `null` để che lỗi, client có thể hiểu nhầm outage thành “không có kết quả”. Lỗi hạ tầng nên được giữ lại trong error contract, trừ khi sản phẩm chủ động thiết kế một chế độ degraded (suy giảm có chủ đích) và mô tả rõ cho client.
+
+## Từ SDL đến query và JSON
+
+Các ví dụ dưới đây dùng chung một SDL để có thể so sánh bốn wrapper trong cùng một graph. Tên `Book`, dữ liệu sách và `Catalog` chỉ là giả định minh họa, không phải schema đã có trong repository.
+
+### Schema minh họa
+
+```graphql title="schema.graphqls"
+schema {
+  query: Query
+}
+
+type Query {
+  # Cả list và từng Book đều có thể null.
+  looseBooks: [Book]
+
+  # List có thể null, nhưng element không thể null.
+  requiredElements: [Book!]
+
+  # List không thể null, nhưng element có thể null.
+  requiredList: [Book]!
+
+  # List và element đều không thể null.
+  books: [Book!]!
+
+  # Catalog nullable để minh họa partial data khi nested field lỗi.
+  catalog: Catalog
+  health: String!
+}
+
+type Catalog {
+  books: [Book!]!
+}
+
+type Book {
+  id: ID!
+  title: String!
+  author: String
+}
+```
+
+`Book.title` là `String!`, nên một `Book` có `title` `null` cũng vi phạm contract dù wrapper của list có thể cho phép element `null`. `Book.author` là nullable để nhấn mạnh rằng nullability của field con phải được đánh giá riêng.
+
+### Query và response cho list rỗng
+
+Query sau yêu cầu hai scalar field của từng `Book`:
+
+```graphql
+query EmptyBooks {
+  books {
+    id
+    title
+  }
+}
+```
+
+Một response thành công với zero kết quả có thể là:
+
+```json
+{
+  "data": {
+    "books": []
+  }
+}
+```
+
+Response này hợp lệ với `books: [Book!]!`. List đã tồn tại, nhưng không có element để kiểm tra điều kiện `Book!`. Không nên đổi `[]` thành `null` chỉ vì muốn báo rằng tìm kiếm không tìm thấy bản ghi; nếu đó là kết quả bình thường, list rỗng truyền đạt ý nghĩa rõ hơn.
+
+### Query và response có list hoặc phần tử null
+
+Query sau đọc một field cho phép list `null` và một field bắt buộc list nhưng cho phép element `null`:
+
+```graphql
+query NullableList {
+  looseBooks {
+    id
+    title
+  }
+  requiredList {
+    id
+    title
+  }
+}
+```
+
+Một response hợp lệ có thể là:
+
+```json
+{
+  "data": {
+    "looseBooks": null,
+    "requiredList": [
+      null,
+      {
+        "id": "book-2",
+        "title": "Designing Data-Intensive Applications"
+      }
+    ]
+  }
+}
+```
+
+`looseBooks: null` hợp lệ vì `[Book]` cho phép list `null`. `requiredList` phải là một list, nhưng `[Book]!` vẫn cho phép element đầu tiên là `null`. Ngược lại, response có `null` bên trong `requiredElements: [Book!]` hoặc `books: [Book!]!` sẽ vi phạm schema và tạo lỗi execution; đó không phải là một response thành công hợp lệ.
+
+### Query và response khi field non null lỗi
+
+Query dưới đây hợp lệ theo SDL. Giả sử resolver lấy được `Catalog` nhưng việc resolve `title` của phần tử đầu tiên trả về `null`, dù `Book.title` là `String!`:
+
+```graphql
+query CatalogBooks {
+  catalog {
+    books {
+      id
+      title
+    }
+  }
+  health
+}
+```
+
+Một execution result minh họa có thể là:
+
+```json
+{
+  "data": {
+    "catalog": null,
+    "health": "ok"
+  },
+  "errors": [
+    {
+      "message": "Cannot return null for non-nullable field Book.title.",
+      "path": ["catalog", "books", 0, "title"]
+    }
+  ]
+}
+```
+
+`catalog` là nullable nên lỗi có thể lan đến `catalog` và để lại `health` trong `data`. Message cụ thể, HTTP status, `locations` và các trường trong `extensions` phụ thuộc GraphQL implementation và error handler; ví dụ trên chỉ minh họa shape cùng `path`, không phải output đã chạy trong repository.
+
+## Null bubbling và lỗi lan truyền
+
+**Null bubbling** xảy ra khi GraphQL không thể đặt `null` tại một field non-null. Engine ghi lỗi, rồi lan trạng thái thất bại lên field cha theo chuỗi wrapper cho đến khi gặp vị trí nullable hoặc đến root `data`.
+
+### Theo dõi đường lan truyền
+
+Trong query `CatalogBooks`, có thể lần theo chuỗi sau:
+
+```text
+Book.title: String!
+        │  title lỗi hoặc trả null
+        ▼
+Book đầu tiên trong Catalog.books: Book!
+        │  element không được null
+        ▼
+Catalog.books: [Book!]!
+        │  list không được null
+        ▼
+Query.catalog: Catalog
+        │  catalog nullable, dừng bubbling tại đây
+        ▼
+health vẫn có thể xuất hiện trong data
+```
+
+Nếu cùng lỗi xảy ra ở root field `Query.books: [Book!]!`, không có field nullable nào ở phía trên field đó trong ví dụ. Khi ấy, `data` ở cấp root có thể trở thành `null` thay vì chỉ mất một element. Đây là lý do chọn `[T!]!` vừa giúp client có contract gọn hơn, vừa làm blast radius (phạm vi ảnh hưởng) của lỗi lớn hơn.
+
+Các biến thể làm đường lan truyền khác nhau:
+
+- Với `[T]`, một element lỗi có thể trở thành `null` trong list; các element khác có thể tiếp tục xuất hiện.
+- Với `[T!]`, lỗi ở một element có thể làm cả list thành `null`, nhưng object cha vẫn có thể giữ lại nếu field list nullable.
+- Với `[T]!`, list không được `null`; nếu một element nullable hợp lệ thì list vẫn tồn tại và giữ element `null`.
+- Với `[T!]!`, lỗi ở element có thể lan qua cả list và tiếp tục lên parent nullable gần nhất.
+
+### Phân biệt null hợp lệ và null do lỗi
+
+Có hai response nhìn giống nhau ở một vị trí nhưng mang nghĩa khác:
+
+- Resolver trả `null` cho field nullable vì bản ghi không tồn tại. Trường hợp này có thể không có `errors`.
+- Resolver ném exception hoặc trả `null` cho field non-null. Trường hợp này phải có lỗi execution, và `null` có thể bubble lên parent.
+
+Ví dụ `looseBooks: [Book]` có thể hợp lệ khi trả `[null, book]` mà không có lỗi nếu `null` của phần tử là trạng thái domain được cho phép. Nhưng nếu resolver không đọc được phần tử vì database timeout, trả `null` im lặng sẽ làm mất nguyên nhân. Hãy để error handler ghi nhận lỗi, map message an toàn và để client đọc cả `data` lẫn `errors`.
+
+## Liên hệ Java và Spring for GraphQL
+
+SDL là nguồn contract. Java return type giúp implementation dễ đọc hơn, nhưng không thể thay thế quyết định nullability trong SDL.
+
+### List Java không tự quyết định SDL
+
+Cùng một kiểu Java `List<Book>` có thể được dùng để thực hiện cả bốn dạng SDL. Generic `Book` không nói list reference có thể `null`, và cũng không tự ngăn code chèn `null` vào giữa list.
+
+| SDL | Trạng thái mà resolver phải tôn trọng | `List<Book>` có tự bảo đảm không? |
+| --- | --- | --- |
+| `[Book]` | List và element đều có thể `null` | Không cần bảo đảm; Java vẫn cho phép nhiều trạng thái hơn hoặc khác ý định domain. |
+| `[Book!]` | List có thể `null`, element không được `null` | Không; generic Java không cấm phần tử `null`. |
+| `[Book]!` | List không được `null`, element có thể `null` | Không; method vẫn có thể trả reference `null`. |
+| `[Book!]!` | List không được `null`, element cũng không được `null` | Không; cần invariant ở service/resolver và data source. |
+
+Các annotation như `@Nullable` có thể hỗ trợ static analysis, nhưng GraphQL runtime vẫn thực thi theo SDL và giá trị thật. `Optional<List<Book>>` cũng không tự biến thành một quy tắc GraphQL tương đương; hãy công bố ý nghĩa bằng schema.
+
+### Resolver Spring và giá trị trả về
+
+Trong Spring for GraphQL, `@QueryMapping` thường map method vào field của root `Query`. `@SchemaMapping` có thể map field nested khi cơ chế đọc property mặc định không đủ. Đoạn code sau chỉ là wiring minh họa với `CatalogService` và `Book` giả định:
+
+```java
+import java.util.List;
+
+import org.springframework.graphql.data.method.annotation.QueryMapping;
+import org.springframework.stereotype.Controller;
+
+@Controller
+public class CatalogController {
+
+    private final CatalogService catalogService;
+
+    public CatalogController(CatalogService catalogService) {
+        this.catalogService = catalogService;
+    }
+
+    @QueryMapping
+    public List<Book> books() {
+        return catalogService.findAll();
+    }
+}
+```
+
+Method `books()` không tự tạo field `Query.books`; field đó phải có trong SDL. Nếu SDL là `[Book!]!`, method và các lớp phía sau phải trả một list khác `null` và không có phần tử `null` trong mọi trường hợp được coi là thành công. Khi không có sách và đó là kết quả bình thường, `List.of()` hoặc một empty list tương đương có thể phù hợp. Không dùng cách này để che một database outage hoặc timeout.
+
+Với field nested `Catalog.books`, có thể dùng `@SchemaMapping(typeName = "Catalog", field = "books")` để gọi service riêng. Nullability của method nested vẫn phải khớp SDL. Xem [Viết query đầu tiên](/docs/bat-dau/viet-query-dau-tien) để nối query với resolver cơ bản; phần mapping nested thuộc [@SchemaMapping và nested field](/docs/tich-hop-spring-for-graphql/schema-mapping-va-nested-field).
+
+### Khi data source trả lỗi
+
+Resolver nên phân biệt kết quả nghiệp vụ với failure kỹ thuật trước khi trả về GraphQL:
+
+| Tình huống ở data source | Cách biểu diễn có thể phù hợp | Điều cần tránh |
+| --- | --- | --- |
+| Tìm kiếm thành công nhưng không có bản ghi | `[]` cho collection có ý nghĩa “không có kết quả” | Trả `null` chỉ vì list không có phần tử. |
+| Quan hệ không áp dụng hoặc chưa được tính | `null` nếu field nullable và semantics đã được tài liệu hóa | Bắt client đoán `null` nghĩa là không áp dụng, chưa tải hay lỗi. |
+| Timeout, exception hoặc downstream unavailable | Lỗi execution trong `errors`, với bubbling theo SDL | Nuốt exception rồi trả `[]`/`null` như thể không có dữ liệu. |
+| Một record vi phạm `Book.title: String!` | Sửa dữ liệu, map lỗi có chủ đích hoặc điều chỉnh contract sau review | Ép `null` vào field non-null và hy vọng GraphQL tự bỏ qua. |
+
+GraphQL không thể tự biết `null` từ repository là “không tìm thấy” hay “query database thất bại”. Service hoặc resolver phải giữ ngữ nghĩa đó, còn error handler nên cung cấp message an toàn và metadata ổn định nếu client cần.
+
+## Chọn nullability theo domain
+
+Không có một công thức bắt buộc cho mọi list. Hãy bắt đầu từ trạng thái mà domain muốn client phân biệt, sau đó kiểm tra data source có thực sự bảo đảm trạng thái đó không.
+
+### Không có kết quả và lỗi không giống nhau
+
+Một search query thường có thể phân biệt ba trường hợp:
+
+1. **Có kết quả:** trả list chứa các element hợp lệ.
+2. **Không có kết quả:** trả `[]` nếu việc tìm kiếm thành công và không tìm thấy record.
+3. **Không thể tìm kiếm:** trả lỗi execution, hoặc một payload degraded được thiết kế riêng nếu sản phẩm có nhu cầu đó.
+
+`featuredBook: Book` lại là một bài toán khác. Không có sách nổi bật có thể là `null` hợp lệ, vì đây là một object tùy chọn chứ không phải collection search. Một field list có thể nullable nếu “chưa áp dụng” khác với “đã tìm và không có phần tử”, nhưng team phải ghi semantics này vào description và tài liệu client.
+
+Khi cần trả cả dữ liệu và trạng thái xử lý, có thể thiết kế payload object như `SearchPayload { items, warnings, status }` hoặc dùng interface/union cho các outcome có ý nghĩa domain. Đừng dùng nullability để nhồi mọi loại lỗi vào một giá trị không giải thích được.
+
+### Câu hỏi cho từng field
+
+Trước khi viết `[T]`, hãy trả lời lần lượt:
+
+1. **List có thể không áp dụng hoặc không thể xác định không?** Nếu không, cân nhắc dấu `!` bên ngoài `]`.
+2. **List rỗng có phải kết quả bình thường không?** Nếu có, đừng dùng `null` chỉ để biểu diễn zero item.
+3. **Mỗi element có phải là một giá trị hoàn chỉnh không?** Nếu có, cân nhắc `T!` bên trong list.
+4. **Nếu một element lỗi, client có thể dùng các element còn lại không?** `[T]` giữ được nhiều dữ liệu hơn; `[T!]` bảo vệ tính toàn vẹn của list bằng cách bubble cả list khi một element không thể hoàn tất.
+5. **Data source có thể giữ cam kết trong legacy data, partial outage và mapping lỗi không?** Nếu không, wrapper chặt hơn có thể làm response mất nhiều dữ liệu hơn thay vì làm hệ thống đáng tin hơn.
+
+Một collection đọc thành công và luôn trả các record hợp lệ có thể bắt đầu với `[Book!]!`. Một quan hệ tùy chọn có thể cần `[Book!]`. Một danh sách vị trí cho phép slot thiếu có thể cần `[Book]!`. Đây là các điểm bắt đầu để review, không phải quy tắc tuyệt đối. Khi semantics không rõ, hãy viết hai hoặc ba response mẫu trước rồi mới chốt SDL.
+
+## Ảnh hưởng tới client và compatibility
+
+Nullability là thông tin mà client dùng để sinh type, viết guard và quyết định có hiển thị partial data hay không. Vì vậy, thay đổi wrapper không chỉ là sửa một ký tự trong schema.
+
+### Client cần xử lý những trạng thái nào
+
+| Kiểu SDL | Client phải chuẩn bị |
+| --- | --- |
+| `[T]` | Kiểm tra list có `null` không, rồi kiểm tra từng element trước khi đọc field con. |
+| `[T!]` | Kiểm tra list có `null` không; nếu list tồn tại, element không `null` theo contract. |
+| `[T]!` | Có thể dùng list trực tiếp, nhưng phải xử lý element `null`. |
+| `[T!]!` | Có thể coi list và element không `null` trong dữ liệu hợp lệ, nhưng vẫn phải xử lý `errors` và trường hợp bubbling làm mất parent. |
+
+Code generation ở TypeScript, Kotlin, Java hoặc ngôn ngữ khác có thể biểu diễn các trạng thái này bằng kiểu nullable khác nhau. Tên kiểu cụ thể phụ thuộc công cụ. Dù generated type chặt đến đâu, nó không biến timeout, authorization failure hoặc lỗi resolver thành dữ liệu thành công.
+
+Client nên đọc đồng thời `data`, `errors` và `path`. Ví dụ response `data.catalog: null` cùng `errors.path = ["catalog", "books", 0, "title"]` khác với response `data.looseBooks: null` không có lỗi. [Mô hình request/response](/docs/nen-tang/mo-hinh-request-response) giải thích thêm cách đọc execution result và partial data.
+
+### Thay đổi wrapper là thay đổi contract
+
+Khi review schema evolution, hãy coi các thay đổi sau là thay đổi cần kiểm tra compatibility:
+
+- Đổi `T` thành `T!` hoặc ngược lại làm thay đổi số trạng thái `null` mà client có thể nhận. Đổi sang non-null có thể làm codegen chặt hơn, nhưng nếu dữ liệu cũ vẫn trả `null` thì execution error và bubbling sẽ xuất hiện.
+- Đổi `[T]` thành `[T!]` thay đổi cách một element lỗi ảnh hưởng đến cả list. Đổi `[T!]!` thành `[T]` mở thêm nhiều trạng thái mà client cũ có thể chưa xử lý.
+- Đổi nullability của field con như `Book.title` có thể làm hỏng nhiều query hơn việc chỉ thay đổi field list, vì lỗi ở field con có thể bubble qua element và list.
+- Thêm field mới thường là thay đổi additive, nhưng thay đổi semantics của `null`, `[]` hoặc lỗi vẫn có thể làm client thay đổi logic.
+
+Không có hướng thay đổi nào tự động an toàn chỉ vì nó “chặt hơn” hoặc “linh hoạt hơn”. Hãy kiểm tra schema compatibility, operation thật của client, dữ liệu legacy và khả năng resolver giữ cam kết. Với field đang được dùng rộng, một field mới kèm thời hạn deprecation đôi khi an toàn hơn việc đổi wrapper ngay tại chỗ. Nullability của input cũng có quy tắc tương thích riêng; đừng áp dụng máy móc kết luận của output list cho input object.
+
+<Accordions type="single">
+  <Accordion title="Có nên dùng [T!]! cho mọi list không?">
+    Không. `[T!]!` phù hợp khi list luôn có thể trả về, list rỗng là trạng thái hợp lệ và từng element phải hoàn chỉnh. Nếu upstream thường xuyên không sẵn sàng, hoặc một phần tử có thể hợp lệ ở trạng thái chưa đủ dữ liệu, wrapper này có thể làm lỗi lan rộng hơn mức client cần. Hãy chọn sau khi xác định semantics của `null`, `[]` và lỗi.
+  </Accordion>
+  <Accordion title="Có nên đổi mọi null từ data source thành list rỗng không?">
+    Chỉ khi `null` từ data source thực sự có nghĩa là “không có kết quả”. Nếu `null` xuất phát từ timeout, exception hoặc lỗi mapping, đổi thành `[]` sẽ che nguyên nhân và khiến client hiển thị dữ liệu sai. Tách kết quả nghiệp vụ khỏi failure kỹ thuật ở service hoặc resolver trước khi hoàn tất field GraphQL.
+  </Accordion>
+</Accordions>
+
+## Checklist chọn wrapper
+
+Dùng checklist này trong schema review:
+
+1. Đọc kiểu từ trong ra ngoài: `T`, element, list, rồi list nullable/non-null.
+2. Viết rõ ý nghĩa của `[]`, `null` và lỗi cho field này bằng một câu cụ thể.
+3. Liệt kê response hợp lệ cho list có phần tử, list rỗng, list `null` và element `null`; loại bỏ các trạng thái SDL không cho phép.
+4. Kiểm tra nullability của field con trên `T`, không suy ra từ wrapper list.
+5. Xác định một element lỗi sẽ làm mất element, cả list, object cha hay root `data`.
+6. Đối chiếu invariant của Java `List`, service, repository và downstream với SDL; không để `List<Book>` tạo cảm giác an toàn giả.
+7. Viết query và JSON mẫu cho positive case, empty case và execution error. Message lỗi cụ thể cần được đánh dấu là phụ thuộc implementation.
+8. Kiểm tra generated client, operation đang dùng và kế hoạch compatibility trước khi đổi nullability field hiện hữu.
 
 ## Bước tiếp theo
 
-Sau khi trang được điền nội dung, đọc bài kế tiếp trong nhóm để tiếp tục lộ trình.
+- Đọc [Tạo schema đầu tiên](/docs/bat-dau/tao-schema-dau-tien) để xem list và nullable trong một schema Spring Boot nhập môn.
+- Xem [Scalar, object và field](/docs/schema-va-type-system/scalar-object-field) để phân biệt wrapper trên scalar với wrapper trên object cần selection set.
+- Đọc [SDL và nguyên tắc thiết kế schema](/docs/schema-va-type-system/sdl-va-thiet-ke-schema) khi cần đặt nullability vào quy trình thiết kế contract và tiến hóa schema.
+- Học [Enum, input object và arguments](/docs/schema-va-type-system/enum-input-arguments) để tách dữ liệu input khỏi output list và object.
+- Xem [Interface và union](/docs/schema-va-type-system/interface-va-union) nếu list chứa nhiều biến thể object và client cần xử lý theo `__typename`.
+- Thực hành resolver qua [Viết query đầu tiên](/docs/bat-dau/viet-query-dau-tien), sau đó đối chiếu partial data và `errors` bằng [Mô hình request/response](/docs/nen-tang/mo-hinh-request-response).
+
+<Cards>
+  <Card title="Tạo schema đầu tiên" href="/docs/bat-dau/tao-schema-dau-tien" description="Đọc SDL, list và nullable trong một schema nhỏ." />
+  <Card title="Scalar, object và field" href="/docs/schema-va-type-system/scalar-object-field" description="Hiểu kiểu ở lá, object và selection set trước khi bọc list." />
+  <Card title="Viết query đầu tiên" href="/docs/bat-dau/viet-query-dau-tien" description="Nối field GraphQL với resolver Spring for GraphQL." />
+</Cards>

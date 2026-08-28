@@ -1,23 +1,977 @@
 ---
 title: "Enum, input object và arguments"
-description: "Mô hình hóa lựa chọn hữu hạn, input gửi vào mutation/query và arguments có kiểu rõ ràng."
+description: "Mô hình hóa lựa chọn hữu hạn, input có cấu trúc và tham số có kiểu rõ trong GraphQL."
 ---
 
-Trang này sẽ trình bày **Enum, input object và arguments** trong bối cảnh xây dựng GraphQL API với Spring Boot.
+GraphQL dùng type system để làm rõ cả dữ liệu trả về lẫn dữ liệu client gửi vào. Trang này tập trung vào ba công cụ thiết kế input thường gặp: **enum** (*kiểu liệt kê*, tập các giá trị hữu hạn), **input object** (*đối tượng đầu vào*, một cấu trúc chỉ dùng để nhận dữ liệu), và **argument** (*tham số có tên của một field*).
+
+Client thường truyền các giá trị đó qua **variable** (*biến runtime của operation*) thay vì nối chuỗi vào query. Trước khi resolver chạy, GraphQL thực hiện **coercion** (*chuẩn hóa và kiểm tra giá trị theo kiểu đã khai báo*). Khi một field hoặc argument bị bỏ qua, **default value** (*giá trị mặc định*) có thể được dùng nếu schema khai báo giá trị đó.
+
+<Callout type="info" title="Phạm vi và giả định">
+Các SDL, query, variables và JSON trong bài là ví dụ minh họa độc lập. Chúng giữ các field `id`, `title`, `author` và `publishedYear` của `Book` trong [Tạo schema đầu tiên](/docs/bat-dau/tao-schema-dau-tien), rồi mở rộng thêm `genre`, filter và mutation để minh họa input. Repository này là docs-only, không có backend Spring Boot để chạy; response và thông báo lỗi trong bài không phải output đã được kiểm chứng runtime.
+</Callout>
 
 ## Mục lục
 
-- [Nội dung dự kiến](#nội-dung-dự-kiến)
+- [Bức tranh tổng thể](#bức-tranh-tổng-thể)
+  - [Luồng một input đi qua API](#luồng-một-input-đi-qua-api)
+  - [Các thuật ngữ cần nhớ](#các-thuật-ngữ-cần-nhớ)
+- [Schema minh họa với Book](#schema-minh-họa-với-book)
+  - [Enum biểu diễn lựa chọn hữu hạn](#enum-biểu-diễn-lựa-chọn-hữu-hạn)
+  - [Input object mô tả dữ liệu đi vào](#input-object-mô-tả-dữ-liệu-đi-vào)
+  - [Argument là tham số có tên](#argument-là-tham-số-có-tên)
+  - [Bắt buộc, nullable và default value](#bắt-buộc-nullable-và-default-value)
+- [Literal và variables](#literal-và-variables)
+  - [Literal nằm trong query document](#literal-nằm-trong-query-document)
+  - [Variables tách giá trị runtime](#variables-tách-giá-trị-runtime)
+  - [So sánh hai cách truyền input](#so-sánh-hai-cách-truyền-input)
+- [Ví dụ lọc Book bằng enum](#ví-dụ-lọc-book-bằng-enum)
+  - [Query dùng literal](#query-dùng-literal)
+  - [Query dùng variables](#query-dùng-variables)
+  - [Response JSON minh họa](#response-json-minh-họa)
+- [Ví dụ CreateBookInput](#ví-dụ-createbookinput)
+  - [Mutation và selection set](#mutation-và-selection-set)
+  - [Variables cho mutation](#variables-cho-mutation)
+  - [Response sau khi tạo sách](#response-sau-khi-tạo-sách)
+- [Coercion và các lớp validation](#coercion-và-các-lớp-validation)
+  - [Unknown enum value](#unknown-enum-value)
+  - [Missing required field hoặc argument](#missing-required-field-hoặc-argument)
+  - [Unknown input field và sai kiểu](#unknown-input-field-và-sai-kiểu)
+  - [Validation nghiệp vụ ở service](#validation-nghiệp-vụ-ở-service)
+- [Mapping nhập môn với Java và Spring for GraphQL](#mapping-nhập-môn-với-java-và-spring-for-graphql)
+  - [Map argument đơn giản](#map-argument-đơn-giản)
+  - [Map enum và input object](#map-enum-và-input-object)
+  - [Giữ ranh giới validation](#giữ-ranh-giới-validation)
+- [Nguyên tắc chọn enum, input object và argument](#nguyên-tắc-chọn-enum-input-object-và-argument)
+  - [Khi nên dùng enum](#khi-nên-dùng-enum)
+  - [Khi nên dùng input object](#khi-nên-dùng-input-object)
+  - [Khi nên dùng argument trực tiếp](#khi-nên-dùng-argument-trực-tiếp)
+  - [Vì sao không dùng string hoặc JSON cho mọi thứ](#vì-sao-không-dùng-string-hoặc-json-cho-mọi-thứ)
+- [Tiến hóa enum và input an toàn](#tiến-hóa-enum-và-input-an-toàn)
+  - [Tiến hóa enum](#tiến-hóa-enum)
+  - [Tiến hóa input object và arguments](#tiến-hóa-input-object-và-arguments)
+- [Checklist trước khi đưa schema vào review](#checklist-trước-khi-đưa-schema-vào-review)
 - [Bước tiếp theo](#bước-tiếp-theo)
 
-## Nội dung dự kiến
+## Bức tranh tổng thể
 
-Nội dung chi tiết sẽ bao gồm khái niệm chính, ví dụ code và các lưu ý thực hành liên quan đến chủ đề này.
+Một field GraphQL có thể nhận một giá trị đơn, nhiều arguments hoặc một input object lồng nhau. Schema phải mô tả rõ các giá trị đó trước khi resolver biết cách xử lý chúng.
 
-<Callout type="info" title="Trang placeholder">
-Đây là trang khung. Hãy dùng skill `fumadocs-technical-writer` để viết đầy đủ trang này trong bước tiếp theo.
-</Callout>
+### Luồng một input đi qua API
+
+Với `books(search: BookSearchInput)`, client gửi một operation và có thể gửi variables kèm theo. GraphQL xử lý khái quát như sau:
+
+```text
+Client: operation + variables
+              │
+              ▼
+Schema: argument + input object + enum + nullability
+              │ parse, validate, coerce
+              ▼
+Resolver: nhận giá trị đã được bind theo kiểu
+              │
+              ▼
+Service: áp dụng filter, quyền và quy tắc nghiệp vụ
+              │
+              ▼
+Execution result: data và errors theo selection set
+```
+
+Coercion xảy ra trước khi resolver xử lý nghiệp vụ. Vì vậy, một enum không tồn tại hoặc một field bắt buộc bị thiếu thường bị từ chối trước khi gọi service. Ngược lại, điều kiện như “user chỉ được tìm sách trong tenant của mình” thuộc authorization hoặc validation nghiệp vụ, không thể được mô tả chỉ bằng `BookGenre`.
+
+### Các thuật ngữ cần nhớ
+
+| Thuật ngữ | Vai trò | Ví dụ |
+| --- | --- | --- |
+| **Enum** | Tập token có tên và hữu hạn. Có thể dùng ở input lẫn output. | `BookGenre.PROGRAMMING` |
+| **Input object** | Cấu trúc chỉ dùng để nhận input; các field bên trong có thể là scalar, enum, list hoặc input object khác. | `BookSearchInput` |
+| **Argument** | Tham số có tên gắn với một field. | `books(search: $search)` |
+| **Variable** | Giá trị runtime được khai báo ở đầu operation và truyền riêng trong request envelope. | `$search` và `variables.search` |
+| **Coercion** | Quá trình GraphQL đọc, chuẩn hóa và kiểm tra literal hoặc variable theo kiểu schema. | `"PROGRAMMING"` → `BookGenre.PROGRAMMING` |
+| **Default value** | Giá trị dùng khi argument hoặc input field bị bỏ qua, nếu schema khai báo nó. | `limit: Int = 20` |
+
+Một cách nhớ ngắn gọn là: enum giới hạn **giá trị nào được phép**, input object mô tả **hình dạng dữ liệu**, argument nói **field nhận dữ liệu ở đâu**, còn variable nói **giá trị runtime đến từ request nào**.
+
+## Schema minh họa với Book
+
+Các bài nhập môn dùng `Book` với `id`, `title`, `author` và `publishedYear`. Trang này giữ các field đó, thêm `genre` để minh họa enum và thêm `Query.books` có filter cùng `Mutation.createBook` có input object. Một file SDL hoàn chỉnh cho các ví dụ trong bài có thể là:
+
+```graphql title="schema.graphqls"
+schema {
+  query: Query
+  mutation: Mutation
+}
+
+type Query {
+  book(id: ID!): Book
+  books(search: BookSearchInput): [Book!]!
+}
+
+type Mutation {
+  createBook(input: CreateBookInput!): Book!
+}
+
+type Book {
+  id: ID!
+  title: String!
+  author: String!
+  publishedYear: Int!
+  genre: BookGenre!
+  isbn: String
+}
+
+enum BookGenre {
+  PROGRAMMING
+  DATABASE
+  SOFTWARE_DESIGN
+}
+
+enum BookSortField {
+  TITLE
+  PUBLISHED_YEAR
+}
+
+enum SortDirection {
+  ASC
+  DESC
+}
+
+input BookFilter {
+  text: String
+  genre: BookGenre
+  minPublishedYear: Int
+}
+
+input BookSort {
+  field: BookSortField = TITLE
+  direction: SortDirection = ASC
+}
+
+input BookSearchInput {
+  filter: BookFilter
+  sort: BookSort
+  limit: Int = 20
+}
+
+input CreateBookInput {
+  title: String!
+  author: String!
+  publishedYear: Int!
+  genre: BookGenre!
+  isbn: String
+}
+```
+
+Các block SDL ở những phần sau rút gọn từng nhóm field để giải thích. Nếu ghép vào một file thật, chỉ giữ một lần khai báo cho mỗi type.
+
+### Enum biểu diễn lựa chọn hữu hạn
+
+Đoạn SDL sau khai báo ba genre được phép:
+
+```graphql
+enum BookGenre {
+  PROGRAMMING
+  DATABASE
+  SOFTWARE_DESIGN
+}
+```
+
+`BookGenre` không phải là một chuỗi tùy ý. Client chỉ được dùng một trong ba token `PROGRAMMING`, `DATABASE` hoặc `SOFTWARE_DESIGN`. Enum phù hợp với domain đã biết tập lựa chọn và muốn typo bị phát hiện sớm.
+
+Enum có thể xuất hiện ở cả hai hướng của contract:
+
+- Ở output, `Book.genre: BookGenre!` cho biết server trả về một giá trị trong tập enum.
+- Ở input, `BookFilter.genre: BookGenre` giới hạn lựa chọn mà client gửi cho filter.
+
+Trong GraphQL document, enum literal không đặt trong dấu ngoặc kép. Khi được serialize ra JSON response, enum thường xuất hiện như một string token, chẳng hạn `"PROGRAMMING"`. Đây là hai lớp biểu diễn khác nhau: query là GraphQL, còn response là JSON.
+
+### Input object mô tả dữ liệu đi vào
+
+Input object giúp gom những điều kiện có liên quan thành một cấu trúc có tên:
+
+```graphql
+input BookFilter {
+  text: String
+  genre: BookGenre
+  minPublishedYear: Int
+}
+
+input BookSort {
+  field: BookSortField = TITLE
+  direction: SortDirection = ASC
+}
+
+input BookSearchInput {
+  filter: BookFilter
+  sort: BookSort
+  limit: Int = 20
+}
+```
+
+`BookFilter`, `BookSort` và `BookSearchInput` đều là **input type**. Chúng có thể chứa scalar, enum, list hoặc input object khác. Chúng không thể chứa output object như `Book`, `Author`, `interface` hoặc `union`.
+
+Ngược lại, `Book` là output object. Client có thể chọn `id`, `title` và `genre` của `Book` trong selection set, nhưng không thể viết `Book` vào vị trí input chỉ vì hai cấu trúc có field trùng tên. Tách `Book` khỏi `CreateBookInput` cũng ngăn client gửi nhầm những field server chỉ nên trả về, như `id` được server tạo ra.
+
+`BookSort.field` và `BookSort.direction` minh họa default value ở cấp input field. Nếu client gửi một `sort` nhưng bỏ qua `direction`, GraphQL dùng `ASC`. Nếu client gửi `direction: null`, giá trị `null` được giữ lại vì field nullable; default không ghi đè một `null` được gửi tường minh.
+
+### Argument là tham số có tên
+
+Các argument được gắn trực tiếp vào field:
+
+```graphql
+enum BookSortField {
+  TITLE
+  PUBLISHED_YEAR
+}
+
+enum SortDirection {
+  ASC
+  DESC
+}
+
+type Query {
+  book(id: ID!): Book
+  books(search: BookSearchInput): [Book!]!
+}
+
+type Mutation {
+  createBook(input: CreateBookInput!): Book!
+}
+```
+
+Trong `books(search: BookSearchInput)`, `search` là **tên argument** và `BookSearchInput` là kiểu của argument. Trong `createBook(input: CreateBookInput!)`, `input` là tên argument bắt buộc. Argument luôn có tên; GraphQL không truyền argument theo vị trí như một hàm có tham số positional.
+
+Tên và kiểu argument là một phần contract. Hai operation sau truyền cùng dữ liệu theo hai thứ tự khác nhau nhưng đều có cùng ý nghĩa nếu schema giả định có field scalar `someField` với hai argument đó:
+
+```graphql
+query FirstOrder {
+  someField(first: 10, after: "cursor")
+}
+
+query SecondOrder {
+  someField(after: "cursor", first: 10)
+}
+```
+
+Với một filter có nhiều phần, một argument `search` thường dễ tiến hóa hơn danh sách dài như `genre`, `minPublishedYear`, `sortField`, `direction` và `limit` trên cùng field. Tuy nhiên, với một giá trị đơn giản, `book(id: ID!)` rõ ràng hơn việc tạo một input object chỉ chứa `id`.
+
+### Bắt buộc, nullable và default value
+
+Dưới đây là phần schema liên quan đến `Book` và input tạo sách:
+
+```graphql
+type Book {
+  id: ID!
+  title: String!
+  author: String!
+  publishedYear: Int!
+  genre: BookGenre!
+  isbn: String
+}
+
+input CreateBookInput {
+  title: String!
+  author: String!
+  publishedYear: Int!
+  genre: BookGenre!
+  isbn: String
+}
+```
+
+Dấu `!` có cùng ý nghĩa non-null ở input và output: giá trị không được là `null`. Nhưng cần đọc nó theo vị trí:
+
+| Vị trí | Khai báo | Ý nghĩa |
+| --- | --- | --- |
+| Argument | `input: CreateBookInput!` | Client phải gửi argument `input` và giá trị không được `null`. |
+| Input field | `title: String!` | Object input phải có `title` khác `null`. Bỏ field hoặc gửi `null` đều không hợp lệ. |
+| Input field nullable | `isbn: String` | Client có thể bỏ qua hoặc gửi `null`; domain quyết định hai trạng thái đó có cùng ý nghĩa hay không. |
+| Argument nullable | `search: BookSearchInput` | Client có thể bỏ qua filter hoặc gửi `null`; resolver cần quy định cách hiểu. |
+| Output field | `genre: BookGenre!` | Khi trả một `Book`, server cam kết `genre` luôn có giá trị hợp lệ. |
+| List output | `[Book!]!` | List không `null` và từng `Book` trong list cũng không `null`. List rỗng vẫn hợp lệ. |
+
+Input object có ba trạng thái thường cần phân biệt:
+
+1. **Bị bỏ qua:** field không xuất hiện trong input. Nếu có default value, GraphQL dùng default; nếu không, field nullable thường không có giá trị.
+2. **Gửi `null`:** hợp lệ với field nullable, nhưng không hợp lệ với field có `!`. `null` không tự kích hoạt default value.
+3. **Có giá trị:** GraphQL kiểm tra giá trị đó theo kiểu field, chẳng hạn enum phải là một token đã khai báo.
+
+Ví dụ `limit: Int = 20` dùng `20` khi `limit` bị bỏ qua. Nếu cần phân biệt “người dùng không đặt limit” với “người dùng cố tình gửi null”, đừng chỉ dựa vào default; hãy chọn contract và kiểu binding thể hiện rõ ý nghĩa đó. Phần [List và nullable](/docs/schema-va-type-system/list-va-nullable) phân tích thêm các wrapper list/non-null ở output.
+
+## Literal và variables
+
+GraphQL có hai cách đưa input vào operation. **Literal** nằm trực tiếp trong query document. **Variable** được khai báo trong operation nhưng nhận giá trị từ JSON variables của request.
+
+### Literal nằm trong query document
+
+Literal phù hợp với giá trị cố định, ví dụ một query dùng trong tài liệu hoặc smoke test. Enum literal phải viết không có dấu ngoặc kép:
+
+```graphql
+query ProgrammingBooks {
+  books(
+    search: {
+      filter: { genre: PROGRAMMING }
+      sort: { field: TITLE, direction: ASC }
+      limit: 10
+    }
+  ) {
+    id
+    title
+    author
+    publishedYear
+    genre
+  }
+}
+```
+
+Ở đây `PROGRAMMING` là enum literal, `TITLE` và `ASC` cũng là enum literal, còn `10` là integer literal. GraphQL cho phép dấu phẩy tùy chọn giữa các field trong input object; dấu phẩy không làm thay đổi ý nghĩa document.
+
+Các literal phổ biến có cách viết khác nhau:
+
+| Kiểu schema | Literal trong GraphQL document | Ghi chú |
+| --- | --- | --- |
+| `BookGenre` | `PROGRAMMING` | Không đặt trong dấu ngoặc kép. |
+| `String` | `"Effective Java"` | Chuỗi phải đặt trong dấu ngoặc kép. |
+| `Int` | `10` | Không viết `"10"`. |
+| `Boolean` | `true` hoặc `false` | Không viết `"true"`. |
+| Nullable | `null` | Chỉ hợp lệ nếu kiểu cho phép `null`. |
+| Input object | `{ genre: PROGRAMMING }` | Field phải tồn tại trong input type. |
+
+Nếu viết `genre: "PROGRAMMING"` trong query, giá trị đó là String literal chứ không phải enum literal. GraphQL có thể từ chối operation vì kiểu không khớp; đừng sửa bằng cách đổi enum thành `String` chỉ để chấp nhận cú pháp sai.
+
+### Variables tách giá trị runtime
+
+Với UI, mobile app hoặc service gọi lại nhiều lần, variables thường phù hợp hơn literal. Operation khai báo kiểu của variable ở đầu document:
+
+```graphql
+query SearchBooks($search: BookSearchInput) {
+  books(search: $search) {
+    id
+    title
+    author
+    publishedYear
+    genre
+  }
+}
+```
+
+Giá trị variables được gửi riêng dưới dạng JSON object. Trong JSON, enum được biểu diễn bằng **string có giá trị đúng tên enum**:
+
+```json
+{
+  "search": {
+    "filter": {
+      "genre": "PROGRAMMING"
+    },
+    "sort": {
+      "field": "PUBLISHED_YEAR",
+      "direction": "DESC"
+    },
+    "limit": 10
+  }
+}
+```
+
+Đừng nhầm hai quy tắc sau:
+
+- Trong GraphQL document: `genre: PROGRAMMING` không có dấu ngoặc kép.
+- Trong JSON variables: `"genre": "PROGRAMMING"` là string JSON, sau đó GraphQL coercion nó thành giá trị enum.
+
+Một request envelope HTTP minh họa có thể đóng gói operation và variables như sau:
+
+```json
+{
+  "query": "query SearchBooks($search: BookSearchInput) { books(search: $search) { id title author publishedYear genre } }",
+  "operationName": "SearchBooks",
+  "variables": {
+    "search": {
+      "filter": {
+        "genre": "PROGRAMMING"
+      },
+      "sort": {
+        "field": "PUBLISHED_YEAR",
+        "direction": "DESC"
+      },
+      "limit": 10
+    }
+  }
+}
+```
+
+Client gửi `query`, `operationName` và `variables` trong envelope tới GraphQL endpoint. `variables` không phải là một field của `Book`, cũng không phải một argument ẩn; nó là dữ liệu runtime để điền vào `$search`.
+
+### So sánh hai cách truyền input
+
+| Tiêu chí | Literal | Variables |
+| --- | --- | --- |
+| Vị trí giá trị | Nằm trong query document | Nằm trong object `variables` của request |
+| Enum | Token không quote, như `PROGRAMMING` | String JSON, như `"PROGRAMMING"` |
+| Dùng lại query | Phải tạo document mới nếu thay giá trị | Giữ document, thay variables |
+| Kiểm soát kiểu | GraphQL kiểm tra trực tiếp AST literal | GraphQL kiểm tra JSON variable theo kiểu khai báo |
+| Use case phù hợp | Ví dụ cố định, test nhỏ, giá trị tĩnh | UI, mobile, service-to-service, cache và logging theo operation |
+
+Không nên nối giá trị user vào query string để tạo literal động. Cách đó dễ tạo lỗi quote, làm query khó cache và làm log/query operation thiếu ổn định. Khai báo variable với kiểu rõ ràng giúp client và server cùng nhìn thấy contract.
+
+## Ví dụ lọc Book bằng enum
+
+Ví dụ này dùng `BookGenre` và `SortDirection` trong schema ở trên. `books` trả về `[Book!]!`, vì vậy query phải có selection set của `Book`.
+
+### Query dùng literal
+
+Khi filter cố định là sách lập trình, client có thể viết:
+
+```graphql
+query ProgrammingBooks {
+  books(
+    search: {
+      filter: { genre: PROGRAMMING }
+      sort: { field: PUBLISHED_YEAR, direction: DESC }
+      limit: 10
+    }
+  ) {
+    id
+    title
+    author
+    publishedYear
+    genre
+  }
+}
+```
+
+`search` là argument có tên của `books`. `filter`, `sort` và `limit` là các field của input object. `genre`, `field` và `direction` là enum field ở những vị trí tương ứng. Client không thể truyền `genre` như một field output ngoài selection set; nó đang truyền điều kiện vào argument.
+
+### Query dùng variables
+
+Với giá trị thay đổi theo bộ lọc trên giao diện, giữ query ổn định và thay variables:
+
+```graphql
+query SearchBooks($search: BookSearchInput) {
+  books(search: $search) {
+    id
+    title
+    author
+    publishedYear
+    genre
+  }
+}
+```
+
+Variables gửi kèm:
+
+```json
+{
+  "search": {
+    "filter": {
+      "genre": "PROGRAMMING"
+    },
+    "sort": {
+      "field": "PUBLISHED_YEAR",
+      "direction": "DESC"
+    },
+    "limit": 10
+  }
+}
+```
+
+Nếu bỏ `sort.direction`, schema dùng default `ASC` vì field đó có default value. Nếu bỏ toàn bộ `sort`, object `BookSort` không được tạo tự động chỉ từ default của các field con; resolver hoặc schema cần có quy ước rõ ràng cho trường hợp không có sort. Trong ví dụ này, ứng dụng có thể dùng thứ tự mặc định của catalog khi `sort` bị bỏ qua.
+
+### Response JSON minh họa
+
+Giả sử data source có hai sách lập trình phù hợp và sort giảm dần theo năm, response có thể là:
+
+```json
+{
+  "data": {
+    "books": [
+      {
+        "id": "book-3",
+        "title": "GraphQL in Action",
+        "author": "Samer Buna",
+        "publishedYear": 2022,
+        "genre": "PROGRAMMING"
+      },
+      {
+        "id": "book-1",
+        "title": "Effective Java",
+        "author": "Joshua Bloch",
+        "publishedYear": 2018,
+        "genre": "PROGRAMMING"
+      }
+    ]
+  }
+}
+```
+
+Đây là response minh họa, không phải kết quả đã chạy. Nó cho thấy ba điểm:
+
+- JSON response biểu diễn enum bằng string token `"PROGRAMMING"`.
+- Chỉ các field trong selection set xuất hiện; `isbn` không xuất hiện vì query không chọn nó.
+- List có thể rỗng nếu không có sách phù hợp, nhưng theo `[Book!]!` bản thân list vẫn không được là `null`.
+
+## Ví dụ CreateBookInput
+
+Filter thường là input tùy chọn. Mutation tạo dữ liệu thường cần input object bắt buộc và có field bắt buộc rõ ràng.
+
+### Mutation và selection set
+
+`CreateBookInput` trong schema minh họa là:
+
+```graphql
+input CreateBookInput {
+  title: String!
+  author: String!
+  publishedYear: Int!
+  genre: BookGenre!
+  isbn: String
+}
+
+type Mutation {
+  createBook(input: CreateBookInput!): Book!
+}
+```
+
+Mutation tương ứng có thể là:
+
+```graphql
+mutation CreateBook($input: CreateBookInput!) {
+  createBook(input: $input) {
+    id
+    title
+    author
+    publishedYear
+    genre
+    isbn
+  }
+}
+```
+
+Có hai lớp tên cần đọc:
+
+- `$input` là tên variable của operation.
+- `input` trong `createBook(input: $input)` là tên argument mà schema khai báo.
+
+`createBook` trả về `Book!`, là output object. Vì vậy client phải chọn selection set. Input object chỉ mô tả dữ liệu gửi vào; nó không quyết định client được nhận những field nào sau khi mutation thành công.
+
+### Variables cho mutation
+
+Variables hợp lệ cho mutation trên có thể là:
+
+```json
+{
+  "input": {
+    "title": "GraphQL in Action",
+    "author": "Samer Buna",
+    "publishedYear": 2022,
+    "genre": "PROGRAMMING",
+    "isbn": "9781617295680"
+  }
+}
+```
+
+Client gửi cả operation và variables trong request envelope:
+
+```json
+{
+  "query": "mutation CreateBook($input: CreateBookInput!) { createBook(input: $input) { id title author publishedYear genre isbn } }",
+  "operationName": "CreateBook",
+  "variables": {
+    "input": {
+      "title": "GraphQL in Action",
+      "author": "Samer Buna",
+      "publishedYear": 2022,
+      "genre": "PROGRAMMING",
+      "isbn": "9781617295680"
+    }
+  }
+}
+```
+
+`title`, `author`, `publishedYear` và `genre` bắt buộc vì có `!`. `isbn` nullable nên có thể bỏ khỏi object hoặc gửi `null`. Nếu ISBN là định danh cần phân biệt “chưa biết” với “cố tình xóa”, đó là quyết định domain cần được thể hiện ở input hoặc mutation riêng, không nên để binder tự đoán.
+
+### Response sau khi tạo sách
+
+Nếu mutation thành công và server tạo ID `book-3`, response minh họa có thể là:
+
+```json
+{
+  "data": {
+    "createBook": {
+      "id": "book-3",
+      "title": "GraphQL in Action",
+      "author": "Samer Buna",
+      "publishedYear": 2022,
+      "genre": "PROGRAMMING",
+      "isbn": "9781617295680"
+    }
+  }
+}
+```
+
+Đây chỉ là JSON minh họa cho contract. `id`, thứ tự field và dữ liệu thật phụ thuộc resolver/data source. GraphQL không tự lưu sách chỉ vì SDL có `CreateBookInput`; resolver phải gọi service hoặc repository thực hiện use case.
+
+## Coercion và các lớp validation
+
+Coercion của GraphQL kiểm tra cấu trúc input trước execution. Nó xử lý cả literal trong query document lẫn JSON variables. Một số kiểm tra chính là:
+
+- Enum có đúng một value đã khai báo không.
+- Input object có field tồn tại trong schema không.
+- Giá trị có đúng kiểu scalar, list, enum hoặc input object không.
+- Field/argument non-null có bị bỏ qua hoặc nhận `null` không.
+- Default value có được dùng ở vị trí đã khai báo không.
+
+Validation này khác validation nghiệp vụ. `publishedYear: Int!` chỉ yêu cầu một số nguyên khác `null`; nó không nói năm phải nằm trong khoảng hợp lý. `genre: BookGenre!` chỉ giới hạn tập enum; nó không nói user có quyền tạo sách thuộc genre đó.
+
+### Unknown enum value
+
+Literal enum không có trong schema bị từ chối:
+
+```graphql
+query InvalidGenre {
+  books(search: { filter: { genre: FICTION } }) {
+    id
+    title
+  }
+}
+```
+
+`FICTION` không thuộc `BookGenre` trong ví dụ. Variables cũng bị từ chối nếu gửi:
+
+```json
+{
+  "search": {
+    "filter": {
+      "genre": "FICTION"
+    }
+  }
+}
+```
+
+Ở cả hai trường hợp, resolver của `books` thường chưa được gọi vì input không qua coercion. Response lỗi cụ thể phụ thuộc GraphQL engine và error handler, nhưng có thể có hình dạng khái quát:
+
+```json
+{
+  "errors": [
+    {
+      "message": "Giá trị enum không hợp lệ cho BookGenre.",
+      "locations": [
+        {
+          "line": 2,
+          "column": 36
+        }
+      ]
+    }
+  ]
+}
+```
+
+Message ở đây chỉ là minh họa. Khi debug, đọc tên variable, path hoặc location mà implementation trả về, rồi đối chiếu với enum trong schema. Không nên bắt lỗi bằng cách cho phép mọi giá trị String nếu domain thực sự là một tập lựa chọn hữu hạn.
+
+### Missing required field hoặc argument
+
+Với mutation, bỏ `input` hoàn toàn là không hợp lệ vì argument khai báo `CreateBookInput!`:
+
+```graphql
+mutation MissingInput {
+  createBook {
+    id
+  }
+}
+```
+
+Gửi `input: null` cũng không hợp lệ. Tương tự, variables sau thiếu field `title` bắt buộc:
+
+```json
+{
+  "input": {
+    "author": "Samer Buna",
+    "publishedYear": 2022,
+    "genre": "PROGRAMMING"
+  }
+}
+```
+
+GraphQL có thể trả lỗi coercion cho `$input` trước khi gọi `createBook`. Nếu gửi `"title": null`, kết quả cũng bị từ chối vì `title: String!`. Dạng message và HTTP status tùy implementation; đừng coi ví dụ lỗi trong bài là output cố định.
+
+Ngược lại, `isbn` có kiểu `String`, nên hai input sau đều có thể hợp lệ về mặt GraphQL:
+
+```json
+{ "title": "Book A", "author": "Author A", "publishedYear": 2024, "genre": "DATABASE" }
+```
+
+```json
+{ "title": "Book A", "author": "Author A", "publishedYear": 2024, "genre": "DATABASE", "isbn": null }
+```
+
+Ứng dụng vẫn có thể từ chối cả hai vì luật nghiệp vụ, chẳng hạn ISBN là bắt buộc với sách thương mại. Đó là validation ở lớp service, không phải thay đổi cách đọc `String` nullable.
+
+### Unknown input field và sai kiểu
+
+Input object cũng có contract về tên field. Ví dụ `format` không được khai báo trong `CreateBookInput`:
+
+```json
+{
+  "input": {
+    "title": "GraphQL in Action",
+    "author": "Samer Buna",
+    "publishedYear": 2022,
+    "genre": "PROGRAMMING",
+    "format": "HARDCOVER"
+  }
+}
+```
+
+Một GraphQL implementation chuẩn thường báo unknown field thay vì âm thầm bỏ qua `format`. Tương tự, các giá trị sau sai kiểu theo schema:
+
+- `"publishedYear": "2022"` là String JSON, không phải số nguyên.
+- `"genre": "programming"` không khớp tên enum viết hoa.
+- `"limit": true` là Boolean, không phải `Int`.
+- `"filter": "PROGRAMMING"` là String, không phải `BookFilter` object.
+
+Mục tiêu của coercion là làm lỗi contract lộ ra trước khi service nhận dữ liệu mơ hồ. Nếu muốn nhận format khác, hãy thay đổi schema hoặc thêm custom scalar có contract riêng; đừng trông chờ binder tự chuyển mọi string thành mọi kiểu.
+
+### Validation nghiệp vụ ở service
+
+Sau khi input qua coercion, service vẫn cần kiểm tra các điều kiện domain. Ví dụ:
+
+- `title` không được là chuỗi trắng.
+- `publishedYear` phải nằm trong khoảng mà domain chấp nhận.
+- `isbn` không được trùng với một sách đã tồn tại.
+- User phải có quyền tạo sách trong catalog hoặc tenant hiện tại.
+- `limit` phải nằm dưới giới hạn vận hành dù schema đã khai báo kiểu `Int`.
+
+Một lỗi nghiệp vụ xảy ra trong execution có thể đi vào `errors` và có `path` tới `createBook` hoặc `books`. Nếu field output nullable, response có thể giữ lại các nhánh khác. Nếu field non-null lỗi, `null` có thể lan lên parent theo quy tắc GraphQL. Hãy đọc [Mô hình request/response](/docs/nen-tang/mo-hinh-request-response) để phân biệt lỗi parse/validation với lỗi execution.
+
+Có thể dùng Bean Validation hoặc cơ chế validation của Spring để giảm mã lặp, nhưng đó là lớp bổ sung. Việc thêm `@NotBlank` trong Java không biến một field nullable trong SDL thành non-null; SDL, binder và service phải cùng thể hiện một contract thống nhất.
+
+## Mapping nhập môn với Java và Spring for GraphQL
+
+Trong Spring for GraphQL, `@QueryMapping` và `@MutationMapping` nối root field với method controller. `@Argument` lấy argument có tên từ operation. GraphQL engine đã kiểm tra kiểu trước khi method được gọi; Spring tiếp tục bind input vào kiểu Java phù hợp.
+
+Các đoạn Java sau là minh họa, không phải source code có sẵn trong repository. Cách bind chi tiết có thể thay đổi theo version Spring for GraphQL và cách project cấu hình.
+
+### Map argument đơn giản
+
+Với argument `id: ID!`, controller có thể nhận một String:
+
+```java
+@QueryMapping
+public Book book(@Argument("id") String id) {
+    return catalogService.findById(id).orElse(null);
+}
+```
+
+`@Argument("id")` nói rõ method nhận argument GraphQL tên `id`. Nếu tên parameter Java và tên argument đã khớp, một số cấu hình có thể cho phép viết ngắn hơn, nhưng ghi rõ tên giúp contract dễ đọc và tránh phụ thuộc metadata compiler.
+
+Schema tương ứng là:
+
+```graphql
+type Query {
+  book(id: ID!): Book
+}
+```
+
+`ID!` là input non-null, còn kết quả `Book` nullable. Vì vậy method có thể trả `null` khi không tìm thấy sách, nếu đó là semantics đã chọn cho field. Cách `ID` được bind vào Java `String` và cách xử lý not-found cần được thống nhất với version/framework và service thật.
+
+### Map enum và input object
+
+Tên enum trong Java nên khớp tên enum trong SDL khi dùng mapping mặc định:
+
+```java
+public enum BookGenre {
+    PROGRAMMING,
+    DATABASE,
+    SOFTWARE_DESIGN
+}
+
+public enum BookSortField {
+    TITLE,
+    PUBLISHED_YEAR
+}
+
+public enum SortDirection {
+    ASC,
+    DESC
+}
+
+public record BookFilter(
+        String text,
+        BookGenre genre,
+        Integer minPublishedYear
+) {}
+
+public record BookSort(
+        BookSortField field,
+        SortDirection direction
+) {}
+
+public record BookSearchInput(
+        BookFilter filter,
+        BookSort sort,
+        Integer limit
+) {}
+
+public record CreateBookInput(
+        String title,
+        String author,
+        Integer publishedYear,
+        BookGenre genre,
+        String isbn
+) {}
+```
+
+Controller có thể nhận input object đã được bind:
+
+```java
+@QueryMapping
+public List<Book> books(@Argument("search") BookSearchInput search) {
+    return catalogService.search(search);
+}
+
+@MutationMapping
+public Book createBook(@Argument("input") CreateBookInput input) {
+    return catalogService.create(input);
+}
+```
+
+Tên `filter`, `sort`, `limit`, `title`, `genre` và các component Java cần tương ứng với field trong SDL. `Integer` được dùng trong ví dụ để biểu diễn giá trị có thể vắng mặt; với field non-null, GraphQL vẫn phải chặn input thiếu hoặc `null` trước khi service chạy.
+
+Nếu tên enum public trong SDL khác tên Java, hoặc giá trị Java cần mapping sang một vocabulary khác, hãy cấu hình mapping tường minh ở lớp GraphQL/framework. Không nên đổi enum thành String chỉ vì tên giữa hai lớp không thống nhất. Cũng cần nhớ enum Java không tự tạo enum SDL; cả schema và runtime mapping đều phải được khai báo.
+
+### Giữ ranh giới validation
+
+Có thể chia trách nhiệm mapping thành ba lớp:
+
+| Lớp | Kiểm tra chính | Ví dụ lỗi |
+| --- | --- | --- |
+| GraphQL schema/coercion | Cú pháp, field, kiểu, enum, non-null và default | `FICTION`, thiếu `title`, `limit: true` |
+| Spring binding | Chuyển input đã hợp lệ sang target Java | Không bind được property hoặc enum mapping không khớp |
+| Service/domain | Invariant, authorization và quy tắc use case | ISBN trùng, năm không hợp lệ, user không có quyền |
+
+Đừng đặt toàn bộ business validation trong controller chỉ vì controller nhận `@Argument`. Controller nên bind và chuyển input sang use case; service nên bảo vệ rule có thể được gọi từ các đường vào khác. Bean Validation có thể hỗ trợ kiểm tra hình dạng như độ dài hoặc không để trống, nhưng không thay thế authorization, transaction và invariant domain.
+
+Nếu cần biết một input field bị bỏ qua hay được gửi `null`, hãy thiết kế contract cho rõ ngay từ đầu. Một kiểu Java nullable đơn thuần có thể không giữ được sự khác biệt đó sau binding. Trong trường hợp cần semantics omitted/null riêng biệt, kiểm tra API `ArgumentValue` và tài liệu của version Spring for GraphQL đang dùng thay vì đoán hành vi binder.
+
+Xem [Binding arguments và input](/docs/tich-hop-spring-for-graphql/binding-arguments-input) để học riêng về `@Argument`, input object và kiểu Java. Bài này chỉ cần nắm nguyên tắc: schema kiểm tra contract trước, controller nhận đúng tên, service kiểm tra domain sau.
+
+## Nguyên tắc chọn enum, input object và argument
+
+Chọn type theo ngữ nghĩa của domain, không theo việc kiểu Java hoặc JSON nào tiện nhất ở thời điểm viết resolver.
+
+### Khi nên dùng enum
+
+Dùng enum khi domain có tập lựa chọn hữu hạn và mỗi value có ý nghĩa ổn định:
+
+- `BookGenre` như `PROGRAMMING` hoặc `DATABASE`.
+- `SortDirection` như `ASC` hoặc `DESC`.
+- Trạng thái workflow đã được định nghĩa rõ.
+- Loại hành động hoặc phạm vi filter mà client cần autocomplete.
+
+Enum giúp schema tự tài liệu hóa, code generation có thể sinh kiểu, GraphiQL gợi ý giá trị và server chặn typo ở biên. Đừng dùng enum nếu value thực sự là dữ liệu mở như tên người dùng, ISBN hoặc mã do hệ thống bên ngoài tạo ra.
+
+### Khi nên dùng input object
+
+Dùng input object khi một field nhận nhiều giá trị có quan hệ hoặc cần cấu trúc có khả năng mở rộng:
+
+- Filter gồm text, genre và khoảng năm.
+- Sort gồm field và direction.
+- Mutation tạo sách gồm nhiều thuộc tính.
+- Input lồng nhau cần chia rõ nhóm điều kiện.
+
+Input object làm schema dễ đọc hơn một argument dài và cho phép thêm field nullable hoặc có default value mà không đổi chữ ký root field. Tuy nhiên, đừng gom mọi thứ vào một `GenericInput` không có ngữ nghĩa. Mỗi input object nên biểu diễn một mục đích cụ thể như `BookSearchInput` hoặc `CreateBookInput`.
+
+### Khi nên dùng argument trực tiếp
+
+Dùng argument trực tiếp khi field nhận một giá trị đơn giản và tên argument tự nói rõ mục đích:
+
+```graphql
+book(id: ID!): Book
+books(limit: Int = 20): [Book!]!
+```
+
+Argument trực tiếp dễ đọc với query nhỏ. Nếu số điều kiện tăng nhanh, chuyển sang input object có tên thường tốt hơn:
+
+```graphql
+books(search: BookSearchInput): [Book!]!
+```
+
+Dù dùng một argument hay input object, luôn đặt tên theo ngôn ngữ nghiệp vụ. `search` mô tả mục đích tốt hơn `payload`, còn `input` phù hợp cho một mutation có input object đã có tên rõ ràng.
+
+### Vì sao không dùng string hoặc JSON cho mọi thứ
+
+Có thể khai báo mọi filter là `String` hoặc một custom scalar `JSON`, nhưng cách đó làm mất nhiều contract:
+
+| Cách khai báo | Vấn đề khi domain cần kiểu rõ |
+| --- | --- |
+| `genre: String` | Typo như `PROGRAMMINGG` chỉ lộ ra ở runtime hoặc business code; docs và autocomplete kém rõ. |
+| `search: String` chứa JSON | Schema không mô tả field con, client phải tự đồng bộ một format nằm ngoài introspection. |
+| `input: JSON` | Server khó kiểm tra field bắt buộc, enum, nullability và version; codegen cũng không biết shape. |
+| Input object có tên và field typed | Contract hiển thị trực tiếp; lỗi sai kiểu/field lộ ở biên; client có thể sinh type. |
+
+String vẫn đúng cho văn bản tự do như `title` hoặc `text`. JSON/custom scalar có thể phù hợp cho metadata thật sự không có schema ổn định, dữ liệu opaque từ provider bên ngoài hoặc một boundary tạm thời đã được quản lý. Nhưng nếu domain biết `genre` chỉ có vài lựa chọn, hãy dùng enum. Nếu mutation biết chính xác các field được phép ghi, hãy dùng input object.
+
+SDL, object type và field là nền để đặt các quyết định này; xem [SDL và nguyên tắc thiết kế schema](/docs/schema-va-type-system/sdl-va-thiet-ke-schema) và [Scalar, object và field](/docs/schema-va-type-system/scalar-object-field) để nối input contract với toàn schema.
+
+## Tiến hóa enum và input an toàn
+
+Enum, input object và argument đều là public contract. Một thay đổi “chỉ thêm một value” vẫn có thể ảnh hưởng client đã sinh code hoặc xử lý exhaustive switch.
+
+### Tiến hóa enum
+
+Khi mở rộng enum:
+
+- Không đổi tên hoặc xóa value đang được client dùng nếu chưa có kế hoạch migration.
+- Coi việc thêm enum value ở output là thay đổi có khả năng phá client. Client viết exhaustive switch có thể không biết value mới.
+- Trước khi thêm value, thống nhất client fallback cho unknown value và kiểm tra code generation.
+- Có thể deprecate enum value cũ bằng `@deprecated` khi schema/tooling hỗ trợ, rồi theo dõi usage trước khi xóa.
+- Chọn tên enum theo vocabulary public của domain, không nhất thiết sao chép tên cột database hoặc constant nội bộ.
+
+Với enum chỉ dùng ở input, thêm value thường ít gây lỗi cho request cũ vì request cũ không tự gửi value mới. Tuy nhiên, server phải sẵn sàng xử lý value mới, còn client và tài liệu vẫn cần cập nhật. Với enum dùng ở output, client có thể nhận value mới mà không cần sửa query, nên fallback là bắt buộc nếu client không kiểm soát toàn bộ server.
+
+Đừng đổi enum thành String để né khó khăn khi tiến hóa. Cách đó chuyển lỗi từ schema check sang runtime và làm mọi client mất contract.
+
+### Tiến hóa input object và arguments
+
+Các nguyên tắc tương đối an toàn:
+
+- Thêm input field nullable, như `isbn: String`, thường không bắt buộc client cũ phải sửa request.
+- Thêm input field có default value có thể an toàn hơn field non-null không có default.
+- Không thêm argument bắt buộc mới vào field đang được client gọi.
+- Không đổi tên, kiểu hoặc nullability của argument/input field nếu chưa có migration.
+- Không đổi default value một cách âm thầm; client cũ có thể nhận hành vi khác dù query không đổi.
+- Nếu cần thay thế field, giữ field cũ trong thời gian migration và đánh dấu deprecated khi tooling hỗ trợ.
+- Đừng đổi `Book` output thành `CreateBookInput` hoặc dùng lại input object cho output chỉ để giảm số type.
+
+Ví dụ, thêm `language: String = "vi"` vào `CreateBookInput` cho phép client cũ tiếp tục gửi input cũ. Ngược lại, đổi thành `language: String!` không có default buộc mọi client phải sửa ngay. Tương tự, đổi `books(search: BookSearchInput)` thành `books(search: BookSearchInput!)` có thể làm các query cũ đang bỏ qua `search` thất bại.
+
+Mỗi thay đổi nên đi qua schema compatibility check, review owner và telemetry usage nếu hệ thống có nhiều client. [Mutation và input/payload](/docs/query-mutation-subscription/mutation-input-payload) sẽ là bài phù hợp để đi sâu hơn vào thiết kế payload mutation; [Schema evolution và deprecation](/docs/production/schema-evolution-va-deprecation) là nơi đặt các nguyên tắc này vào quy trình versioning rộng hơn.
+
+## Checklist trước khi đưa schema vào review
+
+Trước khi thêm một enum, input hoặc argument, hãy kiểm tra:
+
+- [ ] Domain có thực sự là tập lựa chọn hữu hạn không? Nếu có, dùng enum thay vì String.
+- [ ] Input object có tên theo use case như `BookFilter` hoặc `CreateBookInput`, không phải một payload JSON chung chung không có contract.
+- [ ] Output object và input object có được tách riêng không? `Book` không được dùng như input chỉ vì field trùng tên.
+- [ ] Mỗi argument có tên, mục đích và kiểu rõ ràng không? Nhớ rằng argument là named, không phải positional.
+- [ ] Field/argument nào bắt buộc, nullable hoặc có default value? Hành vi khi bỏ qua và khi gửi `null` đã được ghi rõ chưa?
+- [ ] Literal và variables có được minh họa đúng không? Enum literal không quote; enum trong JSON variables là string đúng tên.
+- [ ] Query có selection set cho `Book` và chỉ chọn field đã khai báo không?
+- [ ] Unknown enum, unknown input field, sai kiểu và missing required field có được phân loại là lỗi trước resolver không?
+- [ ] Validation nghiệp vụ, authorization và giới hạn `limit` có owner ở service phù hợp không?
+- [ ] Tên enum/input public có được map rõ sang Java/Spring không?
+- [ ] Thay đổi tương lai có tránh thêm required field/argument hoặc xóa enum value đột ngột không?
+
+Những quyết định về tên, nullability và ownership nên được review như thay đổi API. Đọc thêm [List và nullable](/docs/schema-va-type-system/list-va-nullable) khi input/output có list lồng nhau, và [Scalar, object và field](/docs/schema-va-type-system/scalar-object-field) khi cần kiểm tra ranh giới giữa leaf value và object có selection set.
 
 ## Bước tiếp theo
 
-Sau khi trang được điền nội dung, đọc bài kế tiếp trong nhóm để tiếp tục lộ trình.
+- Đọc [SDL và nguyên tắc thiết kế schema](/docs/schema-va-type-system/sdl-va-thiet-ke-schema) để đặt enum, input và argument vào quy trình thiết kế contract.
+- Quay lại [Tạo schema đầu tiên](/docs/bat-dau/tao-schema-dau-tien) nếu cần ôn vị trí file SDL, root type và nullability.
+- Học [Mutation và input/payload](/docs/query-mutation-subscription/mutation-input-payload) để thiết kế payload mutation có cấu trúc.
+- Xem [Binding arguments và input](/docs/tich-hop-spring-for-graphql/binding-arguments-input) để đi sâu vào `@Argument` và kiểu Java trong Spring for GraphQL.
+- Tiếp tục với [Variables, arguments và fragments](/docs/query-mutation-subscription/variables-arguments-fragments) khi cần tổ chức operation lớn hơn.
+
+<Cards>
+  <Card title="SDL và nguyên tắc thiết kế schema" href="/docs/schema-va-type-system/sdl-va-thiet-ke-schema" description="Thiết kế contract, naming và ownership trước khi viết resolver." />
+  <Card title="Mutation và input/payload" href="/docs/query-mutation-subscription/mutation-input-payload" description="Mở rộng input object thành mutation và payload dễ dùng cho client." />
+  <Card title="Binding arguments và input" href="/docs/tich-hop-spring-for-graphql/binding-arguments-input" description="Map argument, variables và input object vào method Java." />
+</Cards>
