@@ -1,0 +1,11 @@
+{
+  "title": "Nền tảng",
+  "pages": [
+    "index",
+    "graphql-la-gi",
+    "graphql-va-rest",
+    "mo-hinh-request-response",
+    "kien-truc-graphql",
+    "he-sinh-thai-cong-cu"
+  ]
+}

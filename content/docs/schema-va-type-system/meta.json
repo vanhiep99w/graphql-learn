@@ -1,0 +1,12 @@
+{
+  "title": "Schema và type system",
+  "pages": [
+    "index",
+    "sdl-va-thiet-ke-schema",
+    "scalar-object-field",
+    "enum-input-arguments",
+    "list-va-nullable",
+    "interface-va-union",
+    "tach-schema-theo-module"
+  ]
+}

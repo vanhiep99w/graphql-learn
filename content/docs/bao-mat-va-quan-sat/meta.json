@@ -1,0 +1,12 @@
+{
+  "title": "Bảo mật và quan sát",
+  "pages": [
+    "index",
+    "authentication-jwt-oauth2",
+    "authorization-field-resolver",
+    "introspection-cors-csrf",
+    "depth-va-complexity-limit",
+    "logging-va-tracing",
+    "metrics-va-health-check"
+  ]
+}

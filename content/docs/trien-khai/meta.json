@@ -1,0 +1,12 @@
+{
+  "title": "Triển khai",
+  "pages": [
+    "index",
+    "profile-va-external-config",
+    "docker-image-spring-boot",
+    "reverse-proxy-va-gateway",
+    "subscription-websocket-deployment",
+    "ci-cd",
+    "kubernetes"
+  ]
+}

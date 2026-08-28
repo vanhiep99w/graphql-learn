@@ -1,0 +1,12 @@
+{
+  "title": "Bắt đầu",
+  "pages": [
+    "index",
+    "khoi-tao-spring-boot",
+    "them-dependency-va-cau-hinh",
+    "tao-schema-dau-tien",
+    "viet-query-dau-tien",
+    "graphiql-va-kham-pha-api",
+    "kiem-thu-request-curl-postman"
+  ]
+}

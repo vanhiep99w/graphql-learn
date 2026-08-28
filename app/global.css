@@ -1,0 +1,33 @@
+@import 'tailwindcss';
+@import 'fumadocs-ui/css/style.css';
+
+/* --- layout width / padding tightening, see layout-padding-customization.md --- */
+:root {
+  /* Option A: fill the viewport. */
+  --fd-layout-width: 100%;
+  /* Option B (fallback if Option A misbehaves): --fd-layout-width: 140rem; */
+
+  /* Let the article use the width left by the sidebar and TOC. */
+  --fd-page-width: 100%;
+}
+
+#nd-docs-layout {
+  padding-inline: 0.5rem;
+}
+
+@media (min-width: 768px) {
+  #nd-docs-layout {
+    padding-inline: 1rem;
+  }
+}
+
+/* Keep the article gutters compact on wide layouts. */
+#nd-page article {
+  padding-inline: 0.75rem;
+}
+
+@media (min-width: 768px) {
+  #nd-page article {
+    padding-inline: 1.25rem;
+  }
+}

@@ -1,0 +1,34 @@
+---
+title: "Xử lý sự cố"
+description: "Playbook chẩn đoán các lỗi thường gặp khi phát triển và vận hành GraphQL Spring Boot."
+---
+
+Đây là trang khung của nhóm **Xử lý sự cố** trong lộ trình học GraphQL với Spring Boot. Nội dung chi tiết sẽ được bổ sung theo từng bài bên dưới.
+
+<Callout type="info" title="Trạng thái nội dung">
+Các bài trong nhóm hiện là placeholder. Hãy đi theo thứ tự sidebar để giữ mạch học đề xuất.
+</Callout>
+
+## Mục lục
+
+- [Phạm vi dự kiến](#phạm-vi-dự-kiến)
+- [Các bài trong nhóm](#các-bài-trong-nhóm)
+- [Bước tiếp theo](#bước-tiếp-theo)
+
+## Phạm vi dự kiến
+
+Tập hợp cách đọc lỗi, thu hẹp phạm vi và khôi phục các nhóm sự cố về schema, resolver, auth, hiệu năng và WebSocket.
+
+## Các bài trong nhóm
+
+- [Lỗi schema và startup](/docs/xu-ly-su-co/loi-schema-va-startup) — Chẩn đoán lỗi parse SDL, duplicate type, thiếu field mapping và lỗi khởi động application.
+- [Lỗi mapping resolver](/docs/xu-ly-su-co/loi-mapping-resolver) — Xử lý lỗi annotation, argument binding, return type và nested resolver không được gọi.
+- [Lỗi authentication/authorization](/docs/xu-ly-su-co/loi-authentication-authorization) — Phân biệt lỗi xác thực, thiếu authority, context không có principal và field bị từ chối.
+- [Query chậm và N+1](/docs/xu-ly-su-co/query-cham-va-n-plus-1) — Từng bước xác định resolver hoặc database gây chậm và xác nhận hiệu quả sau khi sửa.
+- [Subscription không kết nối](/docs/xu-ly-su-co/subscription-khong-ket-noi) — Debug handshake, endpoint, proxy, broker và lifecycle của WebSocket subscription.
+- [Debug checklist](/docs/xu-ly-su-co/debug-checklist) — Checklist ngắn để thu thập request, logs, metrics, schema và thông tin môi trường.
+- [FAQ và anti-pattern](/docs/xu-ly-su-co/faq-va-anti-pattern) — Giải đáp câu hỏi phổ biến và chỉ ra các cách thiết kế GraphQL dễ gây nợ kỹ thuật.
+
+## Bước tiếp theo
+
+Bắt đầu từ bài đầu tiên của nhóm hoặc yêu cầu viết chi tiết một trang cụ thể bằng skill `fumadocs-technical-writer`.

@@ -1,0 +1,33 @@
+---
+title: "Schema và type system"
+description: "Cách mô hình hóa API bằng GraphQL SDL và hệ thống type an toàn."
+---
+
+Đây là trang khung của nhóm **Schema và type system** trong lộ trình học GraphQL với Spring Boot. Nội dung chi tiết sẽ được bổ sung theo từng bài bên dưới.
+
+<Callout type="info" title="Trạng thái nội dung">
+Các bài trong nhóm hiện là placeholder. Hãy đi theo thứ tự sidebar để giữ mạch học đề xuất.
+</Callout>
+
+## Mục lục
+
+- [Phạm vi dự kiến](#phạm-vi-dự-kiến)
+- [Các bài trong nhóm](#các-bài-trong-nhóm)
+- [Bước tiếp theo](#bước-tiếp-theo)
+
+## Phạm vi dự kiến
+
+Thiết kế schema có thể đọc được, kiểm soát nullability và tổ chức type để Spring for GraphQL dễ mở rộng.
+
+## Các bài trong nhóm
+
+- [SDL và nguyên tắc thiết kế schema](/docs/schema-va-type-system/sdl-va-thiet-ke-schema) — Giới thiệu GraphQL SDL và các nguyên tắc đặt tên, ownership, boundary cho schema.
+- [Scalar, object và field](/docs/schema-va-type-system/scalar-object-field) — Phân biệt scalar với object type và cách field tạo nên contract của API.
+- [Enum, input object và arguments](/docs/schema-va-type-system/enum-input-arguments) — Mô hình hóa lựa chọn hữu hạn, input gửi vào mutation/query và arguments có kiểu rõ ràng.
+- [List và nullable](/docs/schema-va-type-system/list-va-nullable) — Đọc ký hiệu list/non-null và chọn nullability phù hợp cho dữ liệu trả về.
+- [Interface và union](/docs/schema-va-type-system/interface-va-union) — Dùng interface và union để biểu diễn nhiều loại kết quả trong cùng một field.
+- [Tách schema theo module](/docs/schema-va-type-system/tach-schema-theo-module) — Tổ chức nhiều file SDL theo domain và để Spring for GraphQL hợp nhất thành một schema.
+
+## Bước tiếp theo
+
+Bắt đầu từ bài đầu tiên của nhóm hoặc yêu cầu viết chi tiết một trang cụ thể bằng skill `fumadocs-technical-writer`.

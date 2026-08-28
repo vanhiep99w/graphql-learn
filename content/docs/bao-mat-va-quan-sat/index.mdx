@@ -1,0 +1,33 @@
+---
+title: "Bảo mật và quan sát"
+description: "Bảo vệ GraphQL endpoint và tạo tín hiệu quan sát cho hệ thống Spring Boot."
+---
+
+Đây là trang khung của nhóm **Bảo mật và quan sát** trong lộ trình học GraphQL với Spring Boot. Nội dung chi tiết sẽ được bổ sung theo từng bài bên dưới.
+
+<Callout type="info" title="Trạng thái nội dung">
+Các bài trong nhóm hiện là placeholder. Hãy đi theo thứ tự sidebar để giữ mạch học đề xuất.
+</Callout>
+
+## Mục lục
+
+- [Phạm vi dự kiến](#phạm-vi-dự-kiến)
+- [Các bài trong nhóm](#các-bài-trong-nhóm)
+- [Bước tiếp theo](#bước-tiếp-theo)
+
+## Phạm vi dự kiến
+
+Bao phủ authentication, authorization, giới hạn truy vấn, logging, tracing, metrics và các bề mặt tấn công riêng của GraphQL.
+
+## Các bài trong nhóm
+
+- [Authentication với JWT/OAuth2](/docs/bao-mat-va-quan-sat/authentication-jwt-oauth2) — Xác thực request GraphQL bằng JWT hoặc OAuth2 và truyền principal vào resolver.
+- [Authorization theo field và resolver](/docs/bao-mat-va-quan-sat/authorization-field-resolver) — Áp dụng quyền ở operation, field hoặc service layer mà không làm rò rỉ dữ liệu.
+- [Introspection, CORS và CSRF](/docs/bao-mat-va-quan-sat/introspection-cors-csrf) — Cấu hình các cơ chế bảo vệ endpoint HTTP và quyết định khi nào cho phép introspection.
+- [Giới hạn độ sâu và complexity](/docs/bao-mat-va-quan-sat/depth-va-complexity-limit) — Ngăn query quá sâu hoặc quá đắt bằng depth limit, complexity analysis và timeout.
+- [Logging và tracing](/docs/bao-mat-va-quan-sat/logging-va-tracing) — Ghi nhận operation, variables đã làm sạch và trace xuyên qua resolver đến database.
+- [Metrics và health check](/docs/bao-mat-va-quan-sat/metrics-va-health-check) — Theo dõi latency, error rate, query pattern và trạng thái sẵn sàng của GraphQL service.
+
+## Bước tiếp theo
+
+Bắt đầu từ bài đầu tiên của nhóm hoặc yêu cầu viết chi tiết một trang cụ thể bằng skill `fumadocs-technical-writer`.

@@ -1,0 +1,34 @@
+---
+title: "Truy cập dữ liệu và hiệu năng"
+description: "Kết nối GraphQL resolver với data layer và kiểm soát chi phí truy vấn."
+---
+
+Đây là trang khung của nhóm **Truy cập dữ liệu và hiệu năng** trong lộ trình học GraphQL với Spring Boot. Nội dung chi tiết sẽ được bổ sung theo từng bài bên dưới.
+
+<Callout type="info" title="Trạng thái nội dung">
+Các bài trong nhóm hiện là placeholder. Hãy đi theo thứ tự sidebar để giữ mạch học đề xuất.
+</Callout>
+
+## Mục lục
+
+- [Phạm vi dự kiến](#phạm-vi-dự-kiến)
+- [Các bài trong nhóm](#các-bài-trong-nhóm)
+- [Bước tiếp theo](#bước-tiếp-theo)
+
+## Phạm vi dự kiến
+
+Đi từ service/repository đến các vấn đề thường gặp như N+1, batch loading, cache, transaction và reactive execution.
+
+## Các bài trong nhóm
+
+- [Kết nối service/repository](/docs/truy-cap-du-lieu-va-hieu-nang/ket-noi-service-repository) — Đặt ranh giới giữa resolver, application service và repository khi phục vụ GraphQL.
+- [JPA và transaction boundary](/docs/truy-cap-du-lieu-va-hieu-nang/jpa-va-transaction-boundary) — Xử lý lazy loading, transaction và projection khi resolver đọc dữ liệu JPA.
+- [N+1 query](/docs/truy-cap-du-lieu-va-hieu-nang/n-plus-1-query) — Nhận diện N+1 trong nested field và đo tác động của nó lên database.
+- [Batch loading và DataLoader](/docs/truy-cap-du-lieu-va-hieu-nang/batch-loading-va-dataloader) — Gom nhiều lần đọc thành batch bằng DataLoader để giảm số query xuống data source.
+- [Cursor/offset pagination trong Spring](/docs/truy-cap-du-lieu-va-hieu-nang/cursor-offset-pagination-spring) — Triển khai hai chiến lược pagination và liên kết chúng với repository hoặc query database.
+- [Caching](/docs/truy-cap-du-lieu-va-hieu-nang/caching) — Chọn nơi cache, cache key và invalidation cho dữ liệu được truy cập qua GraphQL.
+- [Async và reactive](/docs/truy-cap-du-lieu-va-hieu-nang/async-va-reactive) — Đánh giá CompletableFuture, reactive type và giới hạn khi dùng bất đồng bộ trong resolver.
+
+## Bước tiếp theo
+
+Bắt đầu từ bài đầu tiên của nhóm hoặc yêu cầu viết chi tiết một trang cụ thể bằng skill `fumadocs-technical-writer`.

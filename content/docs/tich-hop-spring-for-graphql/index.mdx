@@ -1,0 +1,35 @@
+---
+title: "Tích hợp Spring for GraphQL"
+description: "Cách ánh xạ schema GraphQL vào controller, service và lifecycle của Spring Boot."
+---
+
+Đây là trang khung của nhóm **Tích hợp Spring for GraphQL** trong lộ trình học GraphQL với Spring Boot. Nội dung chi tiết sẽ được bổ sung theo từng bài bên dưới.
+
+<Callout type="info" title="Trạng thái nội dung">
+Các bài trong nhóm hiện là placeholder. Hãy đi theo thứ tự sidebar để giữ mạch học đề xuất.
+</Callout>
+
+## Mục lục
+
+- [Phạm vi dự kiến](#phạm-vi-dự-kiến)
+- [Các bài trong nhóm](#các-bài-trong-nhóm)
+- [Bước tiếp theo](#bước-tiếp-theo)
+
+## Phạm vi dự kiến
+
+Tập trung vào API của Spring for GraphQL: annotation mapping, data fetching, context, interceptor và error handling.
+
+## Các bài trong nhóm
+
+- [Kiến trúc Spring for GraphQL](/docs/tich-hop-spring-for-graphql/kien-truc-spring-for-graphql) — Giải thích các lớp chính của Spring for GraphQL và luồng xử lý một request trong Spring Boot.
+- [`@QueryMapping`, `@MutationMapping`, `@SubscriptionMapping`](/docs/tich-hop-spring-for-graphql/query-mutation-subscription-mapping) — Ánh xạ ba loại operation vào method của controller và chọn annotation phù hợp.
+- [Binding arguments và input](/docs/tich-hop-spring-for-graphql/binding-arguments-input) — Bind argument, input object, variables và kiểu Java trong method resolver.
+- [`@SchemaMapping` và nested field](/docs/tich-hop-spring-for-graphql/schema-mapping-va-nested-field) — Resolve nested field và liên kết field trong schema với method hoặc service tương ứng.
+- [DataFetcher và GraphQL context](/docs/tich-hop-spring-for-graphql/datafetcher-va-graphql-context) — Dùng DataFetcher, local context và request context khi resolver cần thêm thông tin runtime.
+- [Xử lý lỗi tập trung](/docs/tich-hop-spring-for-graphql/xu-ly-loi-tap-trung) — Chuẩn hóa GraphQLError, exception resolver và error response trong ứng dụng Spring.
+- [Custom scalar và directive](/docs/tich-hop-spring-for-graphql/custom-scalar-va-directive) — Đăng ký kiểu scalar riêng và áp dụng directive để bổ sung quy tắc cho schema.
+- [Context, interceptor và request lifecycle](/docs/tich-hop-spring-for-graphql/context-interceptor-request-lifecycle) — Theo dõi lifecycle request, truyền metadata và chèn logic dùng chung bằng interceptor.
+
+## Bước tiếp theo
+
+Bắt đầu từ bài đầu tiên của nhóm hoặc yêu cầu viết chi tiết một trang cụ thể bằng skill `fumadocs-technical-writer`.

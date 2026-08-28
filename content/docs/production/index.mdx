@@ -1,0 +1,34 @@
+---
+title: "Production"
+description: "Các quyết định vận hành, mở rộng và tiến hóa GraphQL API trong production."
+---
+
+Đây là trang khung của nhóm **Production** trong lộ trình học GraphQL với Spring Boot. Nội dung chi tiết sẽ được bổ sung theo từng bài bên dưới.
+
+<Callout type="info" title="Trạng thái nội dung">
+Các bài trong nhóm hiện là placeholder. Hãy đi theo thứ tự sidebar để giữ mạch học đề xuất.
+</Callout>
+
+## Mục lục
+
+- [Phạm vi dự kiến](#phạm-vi-dự-kiến)
+- [Các bài trong nhóm](#các-bài-trong-nhóm)
+- [Bước tiếp theo](#bước-tiếp-theo)
+
+## Phạm vi dự kiến
+
+Biến API chạy được thành API bền vững: có contract evolution, kiểm thử, hiệu năng, quan sát và khả năng scale.
+
+## Các bài trong nhóm
+
+- [Schema evolution và deprecation](/docs/production/schema-evolution-va-deprecation) — Thay đổi schema mà không phá client bằng deprecation, migration và contract governance.
+- [Chiến lược kiểm thử](/docs/production/chien-luoc-kiem-thu) — Kết hợp unit, integration, schema, contract và end-to-end test cho GraphQL API.
+- [Tuning hiệu năng](/docs/production/tuning-hieu-nang) — Đo và tối ưu thời gian parse, validate, resolve, database và serialize response.
+- [Cache và persisted operation](/docs/production/cache-va-persisted-operation) — Thiết kế cache nhiều lớp và allowlist operation cho traffic production.
+- [Monitoring và SLO](/docs/production/monitoring-va-slo) — Đặt chỉ số, dashboard và SLO phản ánh trải nghiệm thật của GraphQL client.
+- [Scale ngang](/docs/production/scale-ngang) — Xử lý stateless HTTP, shared state, DataLoader và subscription khi chạy nhiều instance.
+- [Compatibility và versioning](/docs/production/compatibility-va-versioning) — Quản lý tương thích ngược giữa schema, client, server và quy trình phát hành.
+
+## Bước tiếp theo
+
+Bắt đầu từ bài đầu tiên của nhóm hoặc yêu cầu viết chi tiết một trang cụ thể bằng skill `fumadocs-technical-writer`.

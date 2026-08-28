@@ -1,0 +1,33 @@
+---
+title: "Triển khai"
+description: "Đưa ứng dụng GraphQL Spring Boot từ local lên môi trường chạy thật."
+---
+
+Đây là trang khung của nhóm **Triển khai** trong lộ trình học GraphQL với Spring Boot. Nội dung chi tiết sẽ được bổ sung theo từng bài bên dưới.
+
+<Callout type="info" title="Trạng thái nội dung">
+Các bài trong nhóm hiện là placeholder. Hãy đi theo thứ tự sidebar để giữ mạch học đề xuất.
+</Callout>
+
+## Mục lục
+
+- [Phạm vi dự kiến](#phạm-vi-dự-kiến)
+- [Các bài trong nhóm](#các-bài-trong-nhóm)
+- [Bước tiếp theo](#bước-tiếp-theo)
+
+## Phạm vi dự kiến
+
+Chuẩn hóa cấu hình, container, gateway, WebSocket, CI/CD và Kubernetes cho các môi trường triển khai khác nhau.
+
+## Các bài trong nhóm
+
+- [Profile và external configuration](/docs/trien-khai/profile-va-external-config) — Tách cấu hình GraphQL, database và security theo profile mà không hard-code secret.
+- [Docker image cho Spring Boot](/docs/trien-khai/docker-image-spring-boot) — Đóng gói ứng dụng thành image nhỏ, reproducible và phù hợp với runtime production.
+- [Reverse proxy và gateway](/docs/trien-khai/reverse-proxy-va-gateway) — Đặt GraphQL sau reverse proxy hoặc API gateway và xử lý header, timeout, routing.
+- [Subscription qua WebSocket](/docs/trien-khai/subscription-websocket-deployment) — Cấu hình upgrade connection, sticky session và timeout khi deploy subscription.
+- [CI/CD](/docs/trien-khai/ci-cd) — Xây pipeline kiểm thử schema, build image và triển khai ứng dụng an toàn.
+- [Kubernetes](/docs/trien-khai/kubernetes) — Chạy GraphQL Spring Boot trên Kubernetes với service, config, probe và resource limit.
+
+## Bước tiếp theo
+
+Bắt đầu từ bài đầu tiên của nhóm hoặc yêu cầu viết chi tiết một trang cụ thể bằng skill `fumadocs-technical-writer`.
