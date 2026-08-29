@@ -5,7 +5,7 @@ import {
   DocsDescription,
   DocsTitle,
 } from 'fumadocs-ui/page';
-import type { TableOfContents } from 'fumadocs-core/server';
+import type { TableOfContents } from 'fumadocs-core/toc';
 import type { ComponentType } from 'react';
 import type { MDXComponents } from 'mdx/types';
 import { notFound } from 'next/navigation';
@@ -33,7 +33,7 @@ export default async function Page(props: {
     <DocsPage
       toc={pageData.toc}
       full={pageData.full}
-      article={{ className: 'max-w-none px-3 md:px-5' }}
+      className="max-w-none px-3 md:px-5"
     >
       <DocsTitle>{page.data.title}</DocsTitle>
       <DocsDescription>{page.data.description}</DocsDescription>
