@@ -134,16 +134,14 @@ test('terminal copies raw command; protocol native disclosures and copy; span de
 
 test('large D2 opt-in viewer loads, zooms, expands and restores focus', async ({ page }) => {
   await page.goto(architecture);
-  const launch = page.getByRole('button', { name: 'Explore diagram: Spring Boot: transport, runtime và data boundary', exact: true });
-  await launch.click();
   const viewer = page.locator('.d2-interactive').first();
   await expect(viewer.getByRole('button', { name: 'Zoom in', exact: true })).toBeVisible();
   await viewer.getByRole('button', { name: 'Zoom in', exact: true }).click();
-  await viewer.getByRole('button', { name: 'Expand ↗', exact: true }).click();
+  await viewer.getByRole('button', { name: 'Fullscreen', exact: true }).click();
   await expect(page.getByRole('dialog')).toBeVisible();
   await page.keyboard.press('Escape');
   await expect(page.getByRole('dialog')).toBeHidden();
-  await expect(viewer.getByRole('button', { name: 'Expand ↗', exact: true })).toBeFocused();
+  await expect(viewer.getByRole('button', { name: 'Fullscreen', exact: true })).toBeFocused();
 });
 
 test('no JavaScript: diagrams, all walkthrough explanations, protocol variants and timing table readable', async ({ browser }) => {
