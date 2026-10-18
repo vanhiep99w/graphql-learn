@@ -85,26 +85,21 @@ Sort:   publishedYear DESC, title ASC, id ASC
 
 Một request search nên đi qua các ranh giới sau:
 
-```text
-Client
-  │  query + variables có kiểu
-  ▼
-GraphQL validation/coercion
-  │  field, enum, input shape, nullability
-  ▼
-Spring binding
-  │  record/enum/list Java
-  ▼
-Service normalizer + policy validator
-  │  default, max, AND/OR, authorization, tenant
-  ▼
-Typed criteria compiler
-  │  allowlist field/operator + parameter binding
-  ▼
-Repository/database
-  │  filter → sort → cursor/limit
-  ▼
-Connection response
+```d2 title="Từ filter có kiểu đến connection"
+direction: down
+n0: "Client"
+n1: "GraphQL validation/coercion"
+n2: "Spring binding"
+n3: "Service normalizer + policy validator"
+n4: "Typed criteria compiler"
+n5: "Repository/database"
+n6: "Connection response"
+n0 -> n1: "query + variables có kiểu"
+n1 -> n2: "field, enum, input shape, nullability"
+n2 -> n3: "record/enum/list Java"
+n3 -> n4: "default, max, AND/OR, authorization, tenant"
+n4 -> n5: "allowlist field/operator + parameter binding"
+n5 -> n6: "filter; sort; cursor/limit"
 ```
 
 GraphQL chỉ kiểm tra những gì schema có thể mô tả. Nó không biết `contains` có tốn chi phí hay user có được đọc tenant nào. Spring for GraphQL bind input vào method, nhưng không tự tạo predicate an toàn. Service và repository vẫn phải giữ các invariant đó.

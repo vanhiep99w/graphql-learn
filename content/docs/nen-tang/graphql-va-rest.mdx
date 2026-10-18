@@ -518,10 +518,18 @@ GraphQL không tự giải quyết data modeling, N+1 (mẫu gọi lặp một n
 
 **Hybrid** là cách dùng cả hai mô hình ở những boundary khác nhau. Ví dụ, GraphQL BFF phục vụ màn hình web/mobile và gọi các REST service nội bộ; API đối tác, upload file, webhook hoặc download lớn vẫn dùng REST.
 
-```text
-Web/mobile ───────► GraphQL BFF ───────► REST Catalog
-                                      └──► REST Reviews
-Partner/integration ──────────────────► REST public API
+```d2 title="BFF và REST public cùng tồn tại"
+direction: right
+web: "Web/mobile"
+bff: "GraphQL BFF"
+cat: "REST Catalog"
+rev: "REST Reviews"
+partner: "Partner/integration"
+public: "REST public API"
+web -> bff
+bff -> cat
+bff -> rev
+partner -> public
 ```
 
 BFF có thể làm composition (tổng hợp dữ liệu cho một client), nhưng không nên trở thành nơi sao chép toàn bộ business logic. Hybrid cần thống nhất authentication, authorization, correlation ID, timeout, retry, error mapping và cache ownership giữa các lớp.

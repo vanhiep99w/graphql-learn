@@ -92,9 +92,13 @@ Object type dùng cho dữ liệu output. Nó khác **input object type**, kiể
 
 `Query` cũng là một object type, nhưng nó có vai trò đặc biệt: đây là **root type** (kiểu gốc, điểm bắt đầu) của operation `query`. Client không tự query `Book` từ một URL riêng. Client đi từ một field dưới `Query`, rồi mới đi vào các object lồng nhau.
 
-```text
-Query.books ──► Book.authorProfile ──► Author.name
-   root field       nested field          scalar leaf
+```d2 title="Root, nested field và scalar leaf"
+direction: down
+n0: "Query.books\nroot field"
+n1: "Book.authorProfile\nnested field"
+n2: "Author.name\nscalar leaf"
+n0 -> n1
+n1 -> n2
 ```
 
 Trong sơ đồ này:

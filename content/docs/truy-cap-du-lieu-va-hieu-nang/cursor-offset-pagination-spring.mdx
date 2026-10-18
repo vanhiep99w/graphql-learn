@@ -70,23 +70,23 @@ Pagination ở lớp GraphQL không chỉ là đổi một tham số `page` thà
 
 Một request pagination nên đi qua các boundary rõ ràng. Resolver không nên tự ghép SQL, và repository không nên quyết định authorization hoặc shape GraphQL.
 
-```text
-GraphQL input
-    │  parse, coerce, bind
-    ▼
-Resolver Spring
-    │  lấy principal/tenant, gọi use case
-    ▼
-Application service
-    │  validate limit, filter, sort, cursor; áp policy
-    ▼
-Repository/query builder
-    │  WHERE tenant/filter → seek hoặc offset → ORDER BY → LIMIT
-    ▼
-Database
-    │
-    ▼
-DTO mapper → edge/connection hoặc offset page → GraphQL response
+```d2 title="Policy trước pagination"
+direction: down
+n0: "GraphQL input"
+n1: "Resolver Spring"
+n2: "Application service"
+n3: "Repository/query builder"
+n4: "Database" {shape: cylinder}
+n5: "DTO mapper"
+n6: "edge/connection hoặc offset page"
+n7: "GraphQL response"
+n0 -> n1: "parse, coerce, bind"
+n1 -> n2: "lấy principal/tenant, gọi use case"
+n2 -> n3: "validate limit, filter, sort, cursor; áp policy"
+n3 -> n4: "WHERE tenant/filter; seek hoặc offset; ORDER BY; LIMIT"
+n4 -> n5
+n5 -> n6
+n6 -> n7
 ```
 
 | Boundary | Trách nhiệm | Không nên làm |

@@ -44,29 +44,49 @@ Trang này là bản đồ vai trò, không phải hướng dẫn cài đặt. R
 
 Một ứng dụng nhỏ không cần dùng toàn bộ hệ sinh thái. Luồng dưới đây cho thấy các lớp thường gặp và các lựa chọn có thể thay thế cho nhau trong cùng một vai trò:
 
-```text
-Schema SDL + ownership + review
-             │
-             ├──────────────► schema checks / schema registry
-             │
-             ▼
-GraphQL server application
-Spring for GraphQL ──► graphql-java ──► resolver ──► data source
-             │
-             ▼
-GraphQL endpoint trực tiếp hoặc qua gateway/router
-             │
-       ┌─────┼────────────┬─────────────────┐
-       ▼     ▼            ▼                 ▼
-   GraphiQL  curl      Postman      Apollo / urql / Java client
-       │     │            │                 │
-       └─────┴────────────┴─────────────────┘
-             │
-             ▼
-authentication ── caching ── tests ── telemetry ── production policy
+```d2 title="Từ SDL tới công cụ và production policy" interactive
+direction: down
+s: "Schema SDL + ownership + review"
+checks: "schema checks / schema registry"
+app: "GraphQL server application"
+spring: "Spring for GraphQL"
+java: "graphql-java" {
+  icon: ../../assets/d2/java.svg
+}
+r: "resolver"
+d: "data source"
+ep: "GraphQL endpoint trực tiếp hoặc qua gateway/router"
+g: "GraphiQL"
+c: "curl"
+p: "Postman"
+a: "Apollo / urql / Java client"
+auth: "authentication"
+cache: "caching"
+tests: "tests"
+tele: "telemetry"
+policy: "production policy"
+s -> checks
+s -> app
+app -> spring
+spring -> java
+java -> r
+r -> d
+app -> ep
+ep -> g: "công cụ truy cập"
+ep -> c: "công cụ truy cập"
+ep -> p: "công cụ truy cập"
+ep -> a: "công cụ truy cập"
+g -> auth: "cần xét policy"
+c -> auth: "cần xét policy"
+p -> auth: "cần xét policy"
+a -> auth: "cần xét policy"
+auth -> cache
+cache -> tests
+tests -> tele
+tele -> policy
 ```
 
-Sơ đồ dùng code block `text` để không phụ thuộc renderer. Repo chưa cấu hình Mermaid renderer, nên không giả định rằng một fence `mermaid` sẽ được dựng thành diagram khi build docs.
+Sơ đồ D2 được dựng thành SVG lúc build, đọc được cả khi tắt JavaScript. Các nhánh công cụ là lựa chọn theo vai trò, không phải yêu cầu phải cài tất cả.
 
 Có thể đọc sơ đồ theo hai chiều. Từ trên xuống, schema và ownership định hình contract, server thực thi contract, rồi các client gửi operation. Từ dưới lên, telemetry và test cung cấp bằng chứng rằng request thật phù hợp với contract và chính sách vận hành. Gateway, registry, cache hoặc code generation là các lớp bổ sung theo nhu cầu; chúng không tự biến một project chưa có server thành GraphQL API.
 

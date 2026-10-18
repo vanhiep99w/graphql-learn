@@ -56,20 +56,17 @@ Trang này đi từ một contract `createBook` hoàn chỉnh đến request, re
 
 Một mutation có thể được đọc qua bốn lớp: client gửi input, GraphQL kiểm tra contract, resolver chuyển yêu cầu vào use case, rồi payload đưa kết quả trở lại client.
 
-```text
-Client: mutation + variables + selection set
-                    │
-                    ▼
-GraphQL: parse, validate và coerce input theo SDL
-                    │
-                    ▼
-@MutationMapping: bind argument và gọi service/use case
-                    │
-                    ▼
-Service: validation nghiệp vụ, authorization, transaction hoặc downstream
-                    │
-                    ▼
-CreateBookPayload: book + errors + warnings theo selection set
+```d2 title="Luồng mutation và payload"
+direction: down
+n0: "Client: mutation + variables + selection set"
+n1: "GraphQL: parse, validate và coerce input theo SDL"
+n2: "@MutationMapping: bind argument và gọi service/use case"
+n3: "Service: validation nghiệp vụ, authorization, transaction hoặc downstream"
+n4: "CreateBookPayload: book + errors + warnings theo selection set"
+n0 -> n1
+n1 -> n2
+n2 -> n3
+n3 -> n4
 ```
 
 GraphQL engine chịu trách nhiệm về cú pháp, kiểu dữ liệu, field và hình dạng response. Nó không tự biết “tạo sách” có nghĩa là ghi vào database nào, gửi email hay phát message. Những quyết định đó thuộc service và boundary nghiệp vụ.
@@ -213,9 +210,14 @@ Các enum trong input được kiểm tra ở biên GraphQL. Trong GraphQL docum
 
 Tên `errors` ở đây dễ bị nhầm với top-level `errors` của execution result. Hai lớp này khác nhau:
 
-```text
-Top-level errors  → parse, validation, binding hoặc execution failure
-Payload.errors    → kết quả nghiệp vụ có chủ đích của createBook
+```d2 title="Hai vị trí báo lỗi mutation"
+direction: right
+a0: "Top-level errors"
+b0: "parse, validation, binding hoặc execution failure"
+a1: "Payload.errors"
+b1: "kết quả nghiệp vụ có chủ đích của createBook"
+a0 -> b0
+a1 -> b1
 ```
 
 Nếu resolver ném exception không được xử lý, GraphQL có thể trả top-level `errors` và `data.createBook` có thể là `null` vì field root là non-null. Nếu service chủ động trả `CreateBookPayload` có `errors`, đó là một response theo contract và client có thể đọc cả `book` lẫn danh sách lỗi.

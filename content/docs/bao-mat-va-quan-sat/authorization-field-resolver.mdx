@@ -87,28 +87,25 @@ HTTP security có thể chặn request trước GraphQL execution. Nhưng HTTP U
 
 Một flow bảo vệ nhiều lớp có thể được đọc như sau:
 
-```text
-HTTP hoặc WebSocket boundary
-        │  kiểm tra credential và tạo Authentication
-        ▼
-GraphQL context theo execution
-        │  principal đã verify, tenant hiệu lực, correlation ID
-        ▼
-Parse và validate operation
-        │
-        ├── operation policy: có được gọi use case này không?
-        ▼
-Root resolver
-        │
-        ├── field policy: field nhạy cảm có được chọn không?
-        ▼
-Nested resolver hoặc DataLoader
-        │  kiểm tra source/resource và lọc theo tenant
-        ▼
-Service/domain/repository
-        │  invariant và predicate phòng thủ cuối cùng
-        ▼
-GraphQL result: data, errors và null bubbling
+```d2 title="Authorization ở từng boundary"
+direction: down
+n0: "HTTP hoặc WebSocket boundary"
+n1: "GraphQL context theo execution"
+n2: "Parse và validate operation"
+n3: "Operation policy"
+n4: "Root resolver"
+n5: "Field policy"
+n6: "Nested resolver hoặc DataLoader"
+n7: "Service/domain/repository"
+n8: "GraphQL result: data, errors và null bubbling"
+n0 -> n1: "kiểm tra credential và tạo Authentication"
+n1 -> n2: "principal đã verify, tenant hiệu lực, correlation ID"
+n2 -> n3
+n3 -> n4: "có được gọi use case này không?"
+n4 -> n5
+n5 -> n6: "field nhạy cảm có được chọn không?"
+n6 -> n7: "kiểm tra source/resource và lọc theo tenant"
+n7 -> n8: "invariant và predicate phòng thủ cuối cùng"
 ```
 
 Có thể kiểm tra operation ở root để loại sớm request không có quyền. Tuy nhiên, một operation được phép không có nghĩa mọi field trong selection set đều được phép. Service vẫn phải bảo vệ invariant nếu cùng use case được gọi từ REST, batch job, message consumer hoặc một resolver khác.
@@ -687,14 +684,15 @@ Viết rõ ba trạng thái cho mỗi field nhạy cảm:
 
 Nested resolver nhận source object của field cha. Source phải được tạo từ server, không phải object client gửi để tự mô tả quyền.
 
-```text
-Query.document
-      │  trả DocumentView không chứa plaintext secret
-      ▼
-Document.secret
-      │  source = DocumentView của document-17
-      ├── policy principal + tenant + owner + classification
-      └── SecretService hoặc DataLoader đọc projection được phép
+```d2 title="Không đưa plaintext secret vào parent DTO"
+direction: down
+n0: "Query.document"
+n1: "Document.secret\nsource = DocumentView của document-17"
+n2: "Policy principal + tenant + owner + classification"
+n3: "SecretService hoặc DataLoader đọc projection được phép"
+n0 -> n1: "trả DocumentView không chứa plaintext secret"
+n1 -> n2: "kiểm tra quyền"
+n2 -> n3: "chỉ đọc projection được phép"
 ```
 
 `DocumentView.tenantId`, `ownerId` và `classification` là dữ liệu resource đã được data source trả về. Resolver đối chiếu chúng với tenant/principal trong context. Không lấy `ownerId` từ variables và không coi source là identity của request.

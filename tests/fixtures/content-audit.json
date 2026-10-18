@@ -1,0 +1,882 @@
+[
+  {
+    "path": "content/docs/bao-mat-va-quan-sat/authentication-jwt-oauth2.mdx",
+    "kind": "diagram",
+    "title": "Authentication và authorization theo request",
+    "originalLanguage": "text",
+    "originalSha256": "d0679c6700684cb4842da60a2076141a10697710cc0af3b6722b0d38f93e527f",
+    "sha256": "a887b844dc2b852669396f256cb34e0120fcd46d873fb3498adadbdb15271559"
+  },
+  {
+    "path": "content/docs/bao-mat-va-quan-sat/authentication-jwt-oauth2.mdx",
+    "kind": "artifact",
+    "sha256": "aedbe4dad93741dfc0118e32357d27d6c540f72f86433665c0f645196b382ea0"
+  },
+  {
+    "path": "content/docs/bao-mat-va-quan-sat/authentication-jwt-oauth2.mdx",
+    "kind": "diagram",
+    "title": "Từ bearer token đến policy",
+    "originalLanguage": "text",
+    "originalSha256": "471446cd9b39a737b635feedb3441d0cc80e83b5a98b0a4d9cda11a9682b301d",
+    "sha256": "aa5830c2ef3bb156f67c5b224efd9d150f63d9b409d376e7783ae07495187198"
+  },
+  {
+    "path": "content/docs/bao-mat-va-quan-sat/authentication-jwt-oauth2.mdx",
+    "kind": "diagram",
+    "title": "Service token qua client credentials",
+    "originalLanguage": "text",
+    "originalSha256": "e6911f664520bb48a4e54259e256edb8b008709f782da541c654856e7c9855b9",
+    "sha256": "367fe8e00a7e34f0cae678a2a291c6d39ec633973935c1ebf05b04e702ad4a54"
+  },
+  {
+    "path": "content/docs/bao-mat-va-quan-sat/authentication-jwt-oauth2.mdx",
+    "kind": "diagram",
+    "title": "Refresh credential không gửi tới resource server",
+    "originalLanguage": "text",
+    "originalSha256": "1837cd648d03bd483862d7097e5a4f658f0e45c0d58fd2ee32b437efd9fdb6c8",
+    "sha256": "c7462ebb3a33ba502bd80c4b3d35a7cae95f1224b25c76eca5e355743cc1ee4f"
+  },
+  {
+    "path": "content/docs/bao-mat-va-quan-sat/authorization-field-resolver.mdx",
+    "kind": "diagram",
+    "title": "Authorization ở từng boundary",
+    "originalLanguage": "text",
+    "originalSha256": "3d8e44f31aaa2d895f4101ec0f3974703e5b77488ba51153799065e772956023",
+    "sha256": "09a870f24c274d222bea2fb3a95bca0744995f51321e9857a6c98294044afe05"
+  },
+  {
+    "path": "content/docs/bao-mat-va-quan-sat/authorization-field-resolver.mdx",
+    "kind": "diagram",
+    "title": "Không đưa plaintext secret vào parent DTO",
+    "originalLanguage": "text",
+    "originalSha256": "9ddcb92a2666d5d46d3a498f3b635244c6312ebf6ed8b8477880f3c57a3c1589",
+    "sha256": "be13ef9acd1c032d12b07022799440cac3ec14d1a3f7e71431d95673819ed046"
+  },
+  {
+    "path": "content/docs/bao-mat-va-quan-sat/authorization-field-resolver.mdx",
+    "kind": "artifact",
+    "sha256": "c99a206288e3698525743cd5477ad2017b807ed01ceb3fdf41a826489eb33d16"
+  },
+  {
+    "path": "content/docs/bao-mat-va-quan-sat/authorization-field-resolver.mdx",
+    "kind": "artifact",
+    "sha256": "ec691c8a664daa1c998afe341e86176287e6facef95b55ebab2638e4b1a7072e"
+  },
+  {
+    "path": "content/docs/bao-mat-va-quan-sat/authorization-field-resolver.mdx",
+    "kind": "artifact",
+    "sha256": "c4f3b660d7850b371a42c306851ac2eeaf9a75485d6d98af1e14d24e7c5324fd"
+  },
+  {
+    "path": "content/docs/bao-mat-va-quan-sat/depth-va-complexity-limit.mdx",
+    "kind": "diagram",
+    "title": "Cardinality lồng nhau",
+    "originalLanguage": "text",
+    "originalSha256": "a1e59d24b456a819cb9a4767ccd6d3fcf90d92912dd29665ca5153fd361420c6",
+    "sha256": "a255957e91c1124240d8064195f73c397dd65aa9b59bab1dc82afad42d817511"
+  },
+  {
+    "path": "content/docs/bao-mat-va-quan-sat/depth-va-complexity-limit.mdx",
+    "kind": "artifact",
+    "sha256": "4daad4597e3b05ea003c1630981e6bc4cc176fe298b591dc72253f6b95e40331"
+  },
+  {
+    "path": "content/docs/bao-mat-va-quan-sat/depth-va-complexity-limit.mdx",
+    "kind": "artifact",
+    "sha256": "7ec729e4fd43c47891c1a3903fb6233f905006ee2fe8590048a8fe5e1fcc02f4"
+  },
+  {
+    "path": "content/docs/bao-mat-va-quan-sat/depth-va-complexity-limit.mdx",
+    "kind": "artifact",
+    "sha256": "108cc0bcdb5a0f9979e05513fd0eb6ad9798221e986a4a5aefd64b7bbbd5c37f"
+  },
+  {
+    "path": "content/docs/bao-mat-va-quan-sat/depth-va-complexity-limit.mdx",
+    "kind": "diagram",
+    "title": "Guardrail trước resolver",
+    "originalLanguage": "text",
+    "originalSha256": "ea205f3334d67b9a689011e5d966df7ed8422cbb32b8b78df2513071977a260d",
+    "sha256": "8ac0e7bd3b6e63b64f38adc827f30d8750760d130135b3703b770d237a9ed179"
+  },
+  {
+    "path": "content/docs/bao-mat-va-quan-sat/depth-va-complexity-limit.mdx",
+    "kind": "diagram",
+    "title": "Lỗi policy có mã riêng",
+    "originalLanguage": "text",
+    "originalSha256": "94862e6843746d8a560c69f7aa2fa30ff0615b9ccd1a4af1a768471a5db4568d",
+    "sha256": "1f0d02dd8004515848daebd735cbb76c1f4ee86f829e199fa495339a90fc6328"
+  },
+  {
+    "path": "content/docs/bao-mat-va-quan-sat/depth-va-complexity-limit.mdx",
+    "kind": "diagram",
+    "title": "Context dùng chung, policy ở từng tầng",
+    "originalLanguage": "text",
+    "originalSha256": "378ff359a46e84185f2d8d40332122f6587c3ef73e9334df5f51818cc3961796",
+    "sha256": "4918918022226b53a591defb126bb2a27277f068c563a04c0e22d3df1fbd02d8"
+  },
+  {
+    "path": "content/docs/bao-mat-va-quan-sat/depth-va-complexity-limit.mdx",
+    "kind": "diagram",
+    "title": "Deadline phân bổ cho nhiều budget",
+    "originalLanguage": "text",
+    "originalSha256": "b7c0cb56b36e71e20c436893cf0baa96f433ba7832d403fdf927e74ae7747d0c",
+    "sha256": "0d24f600bb7bd57fde6b15fef2d98e59526a596cbad31204595beb8f327ff111"
+  },
+  {
+    "path": "content/docs/bao-mat-va-quan-sat/depth-va-complexity-limit.mdx",
+    "kind": "diagram",
+    "title": "Ba giới hạn bổ sung cho nhau",
+    "originalLanguage": "text",
+    "originalSha256": "270875463ca3d6ef8f5b9d50fbccf42f0a45becd25cbe682116c85c0bc4c6618",
+    "sha256": "8f2a0f686907d393097ccece6f61c596c3e05b9210b6261814600305e67a5e39"
+  },
+  {
+    "path": "content/docs/bao-mat-va-quan-sat/depth-va-complexity-limit.mdx",
+    "kind": "artifact",
+    "sha256": "5f02e1fd3d46ea58bf3b9965d50f9538aaf920c3cad89e5b7e576bc918f25d4f"
+  },
+  {
+    "path": "content/docs/bao-mat-va-quan-sat/depth-va-complexity-limit.mdx",
+    "kind": "diagram",
+    "title": "Cấu trúc trace và operation policy",
+    "originalLanguage": "text",
+    "originalSha256": "6661be98140911d0047f480ba769bddf295395e89ea6564489fedf2da8822038",
+    "sha256": "c9134670fa23e21671ca8eb3af50ec96352ea6c64c5ed96de9530b77e27add47"
+  },
+  {
+    "path": "content/docs/bao-mat-va-quan-sat/index.mdx",
+    "kind": "diagram",
+    "title": "Security và tín hiệu vận hành",
+    "originalLanguage": "text",
+    "originalSha256": "47a987186704c95d460d627954772a4e4f8a2f3957a7a8edfe458c0521e9991c",
+    "sha256": "99af715b0d6880ef2654109449178503ea368092b0719c751fb8d71d0ba99ca6"
+  },
+  {
+    "path": "content/docs/bao-mat-va-quan-sat/introspection-cors-csrf.mdx",
+    "kind": "diagram",
+    "title": "Browser policy trước GraphQL execution",
+    "originalLanguage": "text",
+    "originalSha256": "98c75f6e97f33e6bb3fcd852fc9d5a70a17533ca3c60c0b7e9d9932bbda15d13",
+    "sha256": "cf9f740764a15155f4ee0748b03d0c9409273ccdc549be473ead638f8b845684"
+  },
+  {
+    "path": "content/docs/bao-mat-va-quan-sat/introspection-cors-csrf.mdx",
+    "kind": "artifact",
+    "sha256": "b786a9b1cf010e6670121b3eae05363099f7dd786875c7aa99b205569cd43577"
+  },
+  {
+    "path": "content/docs/bat-dau/tao-schema-dau-tien.mdx",
+    "kind": "artifact",
+    "sha256": "e20b8eae37e5e2e901cc8df0bd5bb705ef694cd1cd22dc749e5e3b2bd43e75e2"
+  },
+  {
+    "path": "content/docs/bat-dau/them-dependency-va-cau-hinh.mdx",
+    "kind": "artifact",
+    "sha256": "57484317b144a87d13f320f2ab384eaa9fd91a6f2cda85d4128677ad8eb96273"
+  },
+  {
+    "path": "content/docs/bat-dau/viet-query-dau-tien.mdx",
+    "kind": "diagram",
+    "title": "Từ query đến JSON response",
+    "originalLanguage": "text",
+    "originalSha256": "7e2fd254ad9ac1dd0b3a42c791b3ef934c343d7a31a9a60137ec01e7704c24bc",
+    "sha256": "2f5590cfdeafd5ef026155bcb4323f44d1b393d7d64623f8f275955411c1bad0"
+  },
+  {
+    "path": "content/docs/bat-dau/viet-query-dau-tien.mdx",
+    "kind": "artifact",
+    "sha256": "f8620a2e007fd988397f73308c7f61f6ccfd7f726496c37fc87cf534908de902"
+  },
+  {
+    "path": "content/docs/nen-tang/graphql-la-gi.mdx",
+    "kind": "diagram",
+    "title": "Selection set quyết định execution result",
+    "originalLanguage": "text",
+    "originalSha256": "241cc24d605743ec73b0f3d1a4ff875058c4cf06cc673ee6bc2b24dfc2055446",
+    "sha256": "9e5cacbbe02403bd75a7fc635ce282df25759678963f1bcd8cbedca580490817"
+  },
+  {
+    "path": "content/docs/nen-tang/graphql-la-gi.mdx",
+    "kind": "diagram",
+    "title": "Field và resolver tương ứng",
+    "originalLanguage": "text",
+    "originalSha256": "5c5a28df8e53e71c0cd6d14977c37b7a5e2d6cea89ecbc62edce91329515209d",
+    "sha256": "3be890d6c2ad76047cb3ef69b3c1d6dd491a86754bd3935a6a5434c715645f42"
+  },
+  {
+    "path": "content/docs/nen-tang/graphql-va-rest.mdx",
+    "kind": "diagram",
+    "title": "BFF và REST public cùng tồn tại",
+    "originalLanguage": "text",
+    "originalSha256": "55dbe6840f30343222ec49914aec5bb0fc212750581f3f05c73754cc593e3f6f",
+    "sha256": "29846d7c0ede496be11c95c6774cad6b0ae4f1e94e0a644a03c0ffd40031681f"
+  },
+  {
+    "path": "content/docs/nen-tang/he-sinh-thai-cong-cu.mdx",
+    "kind": "diagram",
+    "title": "Từ SDL tới công cụ và production policy",
+    "originalLanguage": "text",
+    "originalSha256": "2adde73b8c663e8480c4a5290f194bf49af716a4b313bbe72aecbaf983ed9258",
+    "sha256": "9f1f6cf23308e2e7f266b90a495642146074ad34eadec6ef29ed179e55797b38"
+  },
+  {
+    "path": "content/docs/nen-tang/he-sinh-thai-cong-cu.mdx",
+    "kind": "artifact",
+    "sha256": "0efc4bf769d010db6af6483bff09bdd464a77e4e0ef40889a4726b9f993020b3"
+  },
+  {
+    "path": "content/docs/nen-tang/index.mdx",
+    "kind": "diagram",
+    "title": "Vòng request và response GraphQL",
+    "originalLanguage": "text",
+    "originalSha256": "a39a3ac923ed4007e15793fbd203a4dd508d7ff698a1ce845df58dc4aec946d6",
+    "sha256": "bf76409fa8169fa28c17d9d5c8cb86d4fe408b03dd79d71b42cc330f288dabcf"
+  },
+  {
+    "path": "content/docs/nen-tang/kien-truc-graphql.mdx",
+    "kind": "diagram",
+    "title": "GraphQL request và các đường trả kết quả",
+    "originalLanguage": "mermaid",
+    "originalSha256": "961bcd0173a008bdc679b3f7d0a2164ff94c3f368b910468819326fef78d73d9",
+    "sha256": "47ed74d30abcf8a7fa15a59d88a098b6166cfaa742ec5c6dff7ac0fbef2b5eb1"
+  },
+  {
+    "path": "content/docs/nen-tang/kien-truc-graphql.mdx",
+    "kind": "diagram",
+    "title": "Luồng Query.featuredBook",
+    "originalLanguage": "text",
+    "originalSha256": "7e7e60a46b51d60f47b6d2e1bb9af66e2aea5d02bda4558d24f6b2c0c1b74879",
+    "sha256": "3b60b0197889df4134d7f854eaf2286105b389ba47dc838277692e0f70a246fd"
+  },
+  {
+    "path": "content/docs/nen-tang/kien-truc-graphql.mdx",
+    "kind": "diagram",
+    "title": "BFF kết hợp nhiều service",
+    "originalLanguage": "text",
+    "originalSha256": "b2f7dc955aaa243714a3398f94c9477bef09e809639ec1a27fb3bbb17fb604b3",
+    "sha256": "c2c7de95c8f9b0ffa78fa03897b7e8f1dee7332e3de3747f5b5ee37d1794e799"
+  },
+  {
+    "path": "content/docs/nen-tang/kien-truc-graphql.mdx",
+    "kind": "artifact",
+    "sha256": "34db1d7d30c498367be417e48bcd28dc9e3daae4e13dd8b2e1989f4f5a6e69a4"
+  },
+  {
+    "path": "content/docs/nen-tang/kien-truc-graphql.mdx",
+    "kind": "diagram",
+    "title": "Phân chia trách nhiệm adapter và use case",
+    "originalLanguage": "text",
+    "originalSha256": "c7a76a7fc32f826f6fca4e29fa29d0444f3d9b3cc57ca9dc86ab0f8c8250fd10",
+    "sha256": "c1445583ec3578c761cfb6077182759ce243aa5b4ea1a7faedd5c88338268a36"
+  },
+  {
+    "path": "content/docs/nen-tang/kien-truc-graphql.mdx",
+    "kind": "diagram",
+    "title": "Transport khác truy cập data source",
+    "originalLanguage": "text",
+    "originalSha256": "0b38128adb363276b85ba11d9aa4473903094ddf185df34839235f171d2f4e85",
+    "sha256": "92387f67aca7488bfb28179cb384d3a326624ca9dabd59d95d0639a365b83ec3"
+  },
+  {
+    "path": "content/docs/query-mutation-subscription/filtering-va-sorting.mdx",
+    "kind": "artifact",
+    "sha256": "22623300855ce96ab603811ccd74e5c280561a2629d1a69182d1f5feda084d3a"
+  },
+  {
+    "path": "content/docs/query-mutation-subscription/filtering-va-sorting.mdx",
+    "kind": "diagram",
+    "title": "Từ filter có kiểu đến connection",
+    "originalLanguage": "text",
+    "originalSha256": "19c80f2b1f1c330aa794c6e041d3de746f6848f805194b5cb517b23812ea8269",
+    "sha256": "529bd0176e774f199f3edddf041e25c68ca43bab59df1d54db536be073c2a80b"
+  },
+  {
+    "path": "content/docs/query-mutation-subscription/filtering-va-sorting.mdx",
+    "kind": "artifact",
+    "sha256": "b75145e4251445d04ead6a3aa59fa1b8edbd2d9659180e53ae0b430152ade188"
+  },
+  {
+    "path": "content/docs/query-mutation-subscription/filtering-va-sorting.mdx",
+    "kind": "artifact",
+    "sha256": "df0ee2952c5ea0a892cb7de10d64ee21eb4a76980e1e87657a87855e0d729e86"
+  },
+  {
+    "path": "content/docs/query-mutation-subscription/filtering-va-sorting.mdx",
+    "kind": "artifact",
+    "sha256": "fe4dde95dc554d32220691d8a7cba1ce99bcc6ab5104b9a8471de3c4f038f957"
+  },
+  {
+    "path": "content/docs/query-mutation-subscription/filtering-va-sorting.mdx",
+    "kind": "artifact",
+    "sha256": "64bb737a90d54688f85c7137aeb8dd2bc8d0173303849cc8173d8c8d0a0a2b9b"
+  },
+  {
+    "path": "content/docs/query-mutation-subscription/filtering-va-sorting.mdx",
+    "kind": "artifact",
+    "sha256": "6ec8f8ef9cf2c8ba3df7fb21cabcdd9a8f04199149627d4e8ef03a5af9221766"
+  },
+  {
+    "path": "content/docs/query-mutation-subscription/filtering-va-sorting.mdx",
+    "kind": "artifact",
+    "sha256": "8ab665d39b4b365818f304bef71d565f0305431d7fbb4cd46155876ab162b36e"
+  },
+  {
+    "path": "content/docs/query-mutation-subscription/index.mdx",
+    "kind": "diagram",
+    "title": "Operation qua schema và Spring mapping",
+    "originalLanguage": "text",
+    "originalSha256": "4b1469a608ca2e995e143f10e8c5ec72d6b10a490db8087bc3b9959efd28c2ac",
+    "sha256": "5fce4d346ab2160ef466f860cb9235dea30d01e3725f5dc65203a32ec490ec39"
+  },
+  {
+    "path": "content/docs/query-mutation-subscription/index.mdx",
+    "kind": "diagram",
+    "title": "Contract, policy và data source",
+    "originalLanguage": "text",
+    "originalSha256": "4e3842a816095cc185be553b981523fc1c15dc1b4e0430eee2a400be0ecac24e",
+    "sha256": "18aa14a8ede943b9fe30f71f51ae1109ea9a36d0b6b2bade1da30277984a5b16"
+  },
+  {
+    "path": "content/docs/query-mutation-subscription/mutation-input-payload.mdx",
+    "kind": "diagram",
+    "title": "Luồng mutation và payload",
+    "originalLanguage": "text",
+    "originalSha256": "e599d444515b64d52a8298550afe3d235dd926f917ee4f49e373cb5c093ee641",
+    "sha256": "b7bad3c009746128f3ad5e42c6a5f7d452bbb68ef7ac19de6c13520eed28abd3"
+  },
+  {
+    "path": "content/docs/query-mutation-subscription/mutation-input-payload.mdx",
+    "kind": "diagram",
+    "title": "Hai vị trí báo lỗi mutation",
+    "originalLanguage": "text",
+    "originalSha256": "ba0f3d81981dc6cb563721e3c7a69419bbad7499dfc51481d3edfda11ff56b29",
+    "sha256": "5895974325935baafef7e83199890bac80be81ff3ba8b5d3a930dfc711614c10"
+  },
+  {
+    "path": "content/docs/query-mutation-subscription/pagination.mdx",
+    "kind": "diagram",
+    "title": "Page window sau authorization và sort",
+    "originalLanguage": "text",
+    "originalSha256": "4e8df6a82b8cc530f95859f9165c80c5c46b7ff55563b2e7c4829faea236713b",
+    "sha256": "3d41a0c569062aa2a3c560bee9bc925ac0fc6de67b177b655d36c2f9d040d14e"
+  },
+  {
+    "path": "content/docs/query-mutation-subscription/pagination.mdx",
+    "kind": "artifact",
+    "sha256": "6ddcf65d8c15f638bbd84ee71e6ac0fe80890f5e40dfbf9107aef13bfe2ecc1b"
+  },
+  {
+    "path": "content/docs/query-mutation-subscription/pagination.mdx",
+    "kind": "diagram",
+    "title": "Sort hiệu dụng và tie-breaker",
+    "originalLanguage": "text",
+    "originalSha256": "30f06661bdfb18aad0b94fcd264c14a773be19d0c239449db6cfc4fd4808e5f4",
+    "sha256": "86703c55015702bcba251ff341514b7d1cea277d0aff87e4405ac6d1303aae51"
+  },
+  {
+    "path": "content/docs/query-mutation-subscription/pagination.mdx",
+    "kind": "diagram",
+    "title": "Thứ tự áp dụng pagination",
+    "originalLanguage": "text",
+    "originalSha256": "bf9a743d891782564d1d070caac6f465d51226bc6d0c497e39de7d7d96044e8b",
+    "sha256": "93ee7f3856a5cfe223a396803c1fb26e801ca7cd1d1fe9d1ab3a9bdf7a160c17"
+  },
+  {
+    "path": "content/docs/query-mutation-subscription/pagination.mdx",
+    "kind": "artifact",
+    "sha256": "d9e5c4422c8b1435e0acd3b38b2480468c4d53f5bd5f5b5c5c510a28bc41d214"
+  },
+  {
+    "path": "content/docs/query-mutation-subscription/pagination.mdx",
+    "kind": "artifact",
+    "sha256": "1bd43bf1e7a446206c7e44e77e9cbdf449df4a8918f68c3f7e593c85453d5afc"
+  },
+  {
+    "path": "content/docs/query-mutation-subscription/query-selection-set-alias.mdx",
+    "kind": "artifact",
+    "sha256": "367586bd7be098dc4df34e029fd8b5a17c51e8f6f53aed199bf03423cc059a75"
+  },
+  {
+    "path": "content/docs/query-mutation-subscription/query-selection-set-alias.mdx",
+    "kind": "artifact",
+    "sha256": "7607122e01f3e663925e57ec8952ff591bec5850c75b0078094a51bbe546a7da"
+  },
+  {
+    "path": "content/docs/query-mutation-subscription/subscription-websocket.mdx",
+    "kind": "diagram",
+    "title": "Polling và subscription",
+    "originalLanguage": "text",
+    "originalSha256": "52d4d2ede60ed59796ab19af83c6723e5eb092cb73a10d2e3263c29013de0d22",
+    "sha256": "0c30ce32c6d902106e17ee72c2b89ee1ecd47d1b98326786d158ae60c16f814a"
+  },
+  {
+    "path": "content/docs/query-mutation-subscription/subscription-websocket.mdx",
+    "kind": "diagram",
+    "title": "State và cleanup của WebSocket subscription",
+    "originalLanguage": "text",
+    "originalSha256": "c5084ce412e6448ab94e0b94c679d5af62ebd410fdbddb4f856f04ef12b409f3",
+    "sha256": "058ade1929951981fca081ab9bc00e65a3bd8fcb6312d8ac75bce78caa9915bb"
+  },
+  {
+    "path": "content/docs/query-mutation-subscription/subscription-websocket.mdx",
+    "kind": "diagram",
+    "title": "Cancellation và cleanup subscription",
+    "originalLanguage": "text",
+    "originalSha256": "288110aec9f0ee933811facc24b2f61efce5792bd0b48a0ed8356e6496ffc1cd",
+    "sha256": "8bf9935321eeb4c283439633e3a714221485eb994b881d134ba1e3ea642ee0e6"
+  },
+  {
+    "path": "content/docs/query-mutation-subscription/variables-arguments-fragments.mdx",
+    "kind": "diagram",
+    "title": "Variables đi vào resolver, selection set nhận output",
+    "originalLanguage": "text",
+    "originalSha256": "4881bdcf9df6bd236dc74a47b685227cdc24d9ebe6dc8b1e3ef9f65fbc404e9d",
+    "sha256": "772391930ef451a9714058d1f08c136f9c6d3e15145c412836a708dde9ad9e73"
+  },
+  {
+    "path": "content/docs/query-mutation-subscription/xu-ly-loi-trong-mutation.mdx",
+    "kind": "diagram",
+    "title": "Null bubbling trong mutation payload",
+    "originalLanguage": "text",
+    "originalSha256": "089f94924e41edbf0c75605b8b9cab4dd246a502d3b4e731439eb49365e2d45f",
+    "sha256": "7562adddcf7f1d4ac2833a34bfde2ff876f3600b9e2d90460eecf26ec3dc2fa9"
+  },
+  {
+    "path": "content/docs/schema-va-type-system/enum-input-arguments.mdx",
+    "kind": "diagram",
+    "title": "Input từ client đến execution result",
+    "originalLanguage": "text",
+    "originalSha256": "abfdda5149a08a69365456bc813b73793a6703bd1246fa06a4a41b87551b5f9a",
+    "sha256": "89f9792026ea5a0b8ae730dadd20985abc874d71f9d73a7672e7c2304cfd9efa"
+  },
+  {
+    "path": "content/docs/schema-va-type-system/index.mdx",
+    "kind": "diagram",
+    "title": "SDL và executable schema",
+    "originalLanguage": "text",
+    "originalSha256": "37bee7971856b23f2b7f12ab3e148284b95d73d32acc00871b51586343c10f64",
+    "sha256": "d1cb51d4cbb28107aa5805b1f92b74bc2425b52ade3c9f287cb07496a2030470"
+  },
+  {
+    "path": "content/docs/schema-va-type-system/interface-va-union.mdx",
+    "kind": "diagram",
+    "title": "Interface và union có runtime type khác nhau",
+    "originalLanguage": "text",
+    "originalSha256": "bf6d0016a50458485119bbf87cfd12abd11842c5f50d339d82dc6586f334eb17",
+    "sha256": "fc57bce385b1207ce6283f57f87e249c4d38217345f3fbdb24ee548dd4c4854f"
+  },
+  {
+    "path": "content/docs/schema-va-type-system/interface-va-union.mdx",
+    "kind": "diagram",
+    "title": "Runtime type resolution trước JSON response",
+    "originalLanguage": "text",
+    "originalSha256": "dedcb2db23d3cc51742646f43044fded516a56b011dbd5fefcfc5796dcbc6243",
+    "sha256": "5850171b85ddbc97fe9471a134b789177c53b32eebe7ebea5c5534802711b442"
+  },
+  {
+    "path": "content/docs/schema-va-type-system/list-va-nullable.mdx",
+    "kind": "diagram",
+    "title": "Null bubbling dừng ở catalog nullable",
+    "originalLanguage": "text",
+    "originalSha256": "600c407a8f07d7a601a1a9d54f234ec298dd4ff2f1d8246bb352fcd4e972b60a",
+    "sha256": "5fd42c62db22fa87419b565ab3602cb2bbd3cd538e1592574d2f7bd7758049ef"
+  },
+  {
+    "path": "content/docs/schema-va-type-system/scalar-object-field.mdx",
+    "kind": "diagram",
+    "title": "Root, nested field và scalar leaf",
+    "originalLanguage": "text",
+    "originalSha256": "96c4f52bc34a2363f849843a0f2c41d2f0471b092ddc9f17c9210b614db5ca7b",
+    "sha256": "b936eac414449cd963e2a60cb00c258be1dd7de96f2ddd90d2722dcef93b4ec1"
+  },
+  {
+    "path": "content/docs/schema-va-type-system/sdl-va-thiet-ke-schema.mdx",
+    "kind": "artifact",
+    "sha256": "b9316da3eb602664d0ffe52115ea10cbc5981f345fe1d588ec27f102eff3dcf1"
+  },
+  {
+    "path": "content/docs/schema-va-type-system/sdl-va-thiet-ke-schema.mdx",
+    "kind": "diagram",
+    "title": "Schema boundary tách Catalog và Review",
+    "originalLanguage": "text",
+    "originalSha256": "6168c8958252e77109c1d61e7b6861713d3a6be3c607f1dc3989b4958833547a",
+    "sha256": "f611a7450306b348e1cee44dc3c61fe02efe183e51341f3f14df26deef6c3b3f"
+  },
+  {
+    "path": "content/docs/schema-va-type-system/tach-schema-theo-module.mdx",
+    "kind": "diagram",
+    "title": "Nhiều SDL tạo một schema hợp nhất",
+    "originalLanguage": "text",
+    "originalSha256": "dacfba9da503483cb0b7611989a3db507f16a1f8f89e47474d0fb2b80797a130",
+    "sha256": "b70ac6d4017de78c2dea38ae8f540dbbaa9307f05c806b0e0771db47fee674fa"
+  },
+  {
+    "path": "content/docs/schema-va-type-system/tach-schema-theo-module.mdx",
+    "kind": "artifact",
+    "sha256": "7b57ceae8a9924ecedb290891aae591aac9cd6207e0d907ea513e54ac99142ab"
+  },
+  {
+    "path": "content/docs/schema-va-type-system/tach-schema-theo-module.mdx",
+    "kind": "artifact",
+    "sha256": "ad045e964e58bd305067313c2ff83038a680adac5240f2c4549bf012836fe017"
+  },
+  {
+    "path": "content/docs/schema-va-type-system/tach-schema-theo-module.mdx",
+    "kind": "diagram",
+    "title": "Dependency contract giữa module",
+    "originalLanguage": "text",
+    "originalSha256": "c04f32095d241a5374bb963a2cadb268a810f43a868579931c859bdc59c8d67c",
+    "sha256": "8662a2cbe997a179054e270baeb5a9ae11e438f9fcd5859a81d01edf50c6b82c"
+  },
+  {
+    "path": "content/docs/schema-va-type-system/tach-schema-theo-module.mdx",
+    "kind": "diagram",
+    "title": "Schema hợp nhất và owner của field",
+    "originalLanguage": "text",
+    "originalSha256": "b052143ef79be8930ea42ac2bcf9e09f348aafb5ec11ccccc5faf5553592e120",
+    "sha256": "bf56121a8bbeb6391ce20f0c85196a010208e4bbacd1ff7de3f143ac0f5c1eca"
+  },
+  {
+    "path": "content/docs/tich-hop-spring-for-graphql/binding-arguments-input.mdx",
+    "kind": "diagram",
+    "title": "Coercion, binding và domain policy",
+    "originalLanguage": "text",
+    "originalSha256": "a1584efd669d1751d7e50e2424f7d534972b8946ebaaee60b6d0e187314dd5d7",
+    "sha256": "9bb217deafe2845ba183648f01d906c536be5d14326e4df55af57bcfd2449ce4"
+  },
+  {
+    "path": "content/docs/tich-hop-spring-for-graphql/datafetcher-va-graphql-context.mdx",
+    "kind": "diagram",
+    "title": "Request context dùng ở từng data fetcher",
+    "originalLanguage": "text",
+    "originalSha256": "0826d462e34fc18d64c5d15950861c2e53e7df1787b81586238b83d1ed3f8065",
+    "sha256": "6e4b95f42237ec8357f7c3e92869500028f667000af4c73dcb761182a67a249f"
+  },
+  {
+    "path": "content/docs/tich-hop-spring-for-graphql/datafetcher-va-graphql-context.mdx",
+    "kind": "diagram",
+    "title": "ExecutionInput, context và source của nested field",
+    "originalLanguage": "text",
+    "originalSha256": "a8c0bf0dd4bd020de4cc6885b87caab4b10693aed461427001c38203b1075c78",
+    "sha256": "1a6b2136ba9c6991162e9fccfba17067ad662c1f64e04468f75d4f444e3119bc"
+  },
+  {
+    "path": "content/docs/tich-hop-spring-for-graphql/datafetcher-va-graphql-context.mdx",
+    "kind": "artifact",
+    "sha256": "64ba1fd3182fd8e9674661bed9a03e5955eb0a50e38b5bd37eab0125d645cdd3"
+  },
+  {
+    "path": "content/docs/tich-hop-spring-for-graphql/datafetcher-va-graphql-context.mdx",
+    "kind": "artifact",
+    "sha256": "2b95b7c8a5d972d3675a3a80f2f23c4aee960bbc88518cbe3e4eaca0e6f2e740"
+  },
+  {
+    "path": "content/docs/tich-hop-spring-for-graphql/datafetcher-va-graphql-context.mdx",
+    "kind": "diagram",
+    "title": "Instrumentation không log source object",
+    "originalLanguage": "text",
+    "originalSha256": "3e78509937dc88cc8348f4c74148824d2a328385feeabd40360ba7c33fe3cfd3",
+    "sha256": "243145e8eb735f07283dfad949847161bf0baee0bd635f227b4f515f5488337f"
+  },
+  {
+    "path": "content/docs/tich-hop-spring-for-graphql/datafetcher-va-graphql-context.mdx",
+    "kind": "diagram",
+    "title": "Chọn đúng một owner cho type và field",
+    "originalLanguage": "text",
+    "originalSha256": "d5b1460676cd47870569c04a089fe86b07ece19ae87a45bf5769d3031c6528ec",
+    "sha256": "0a878fe68c55e51e5d29e378f99ed0f080b0b5a36acd499868427cda7158afec"
+  },
+  {
+    "path": "content/docs/tich-hop-spring-for-graphql/index.mdx",
+    "kind": "diagram",
+    "title": "Từ operation tới data fetching và execution result",
+    "originalLanguage": "text",
+    "originalSha256": "198ee4356ef9aaf6c13230fa12ed1f2ead4064835ff2741cf18b1ef64f6660df",
+    "sha256": "7148554785fbf2fa065a4c2693fb0c3588cdc693bcdca048fbc4ae17ea854800"
+  },
+  {
+    "path": "content/docs/tich-hop-spring-for-graphql/kien-truc-spring-for-graphql.mdx",
+    "kind": "diagram",
+    "title": "Spring Boot: transport, runtime và data boundary",
+    "originalLanguage": "text",
+    "originalSha256": "d65382cd2e97b3c6aa0183215a262c1eb5f681669bb04832637933eddceeb20f",
+    "sha256": "5e8866e08bbc42cc9751a3e27fd5faf5d977bd918b11bde8c822994f715289db"
+  },
+  {
+    "path": "content/docs/tich-hop-spring-for-graphql/kien-truc-spring-for-graphql.mdx",
+    "kind": "diagram",
+    "title": "Auto-configuration khởi tạo ứng dụng",
+    "originalLanguage": "text",
+    "originalSha256": "c25bbd3aeb1643857f1d33b3fa0018e7759d5fd7249dc4cdefe56032666b4f8c",
+    "sha256": "d886c6f74872e8cd73552a8e767b0a118df04cf083c59a086a20d8236461aa36"
+  },
+  {
+    "path": "content/docs/tich-hop-spring-for-graphql/kien-truc-spring-for-graphql.mdx",
+    "kind": "diagram",
+    "title": "Khởi tạo executable schema",
+    "originalLanguage": "text",
+    "originalSha256": "34cdee969fbb45c51c03867ccc42d75a8c01a2c87e431d90209cf19279ddfdba",
+    "sha256": "d34cdac6cf83918c239080a4877533882eb8f70158d4e82bebcc951c3f3a12e1"
+  },
+  {
+    "path": "content/docs/tich-hop-spring-for-graphql/kien-truc-spring-for-graphql.mdx",
+    "kind": "artifact",
+    "sha256": "5fe7f7d19697e2dbfe77b5351692f7bc9b25c1c207120e25dd466eb6b7a5a0d3"
+  },
+  {
+    "path": "content/docs/tich-hop-spring-for-graphql/kien-truc-spring-for-graphql.mdx",
+    "kind": "diagram",
+    "title": "Instrumentation quanh execution",
+    "originalLanguage": "text",
+    "originalSha256": "96c8e021ac9c4e18c4122d40ac0511f904860ed9984b75d91a05bfac1d4ed28b",
+    "sha256": "2aaec59c74c39deb78261310ab57620fbb9801dbca31a233ed78b61faf4769a4"
+  },
+  {
+    "path": "content/docs/tich-hop-spring-for-graphql/kien-truc-spring-for-graphql.mdx",
+    "kind": "diagram",
+    "title": "Các boundary xử lý request",
+    "originalLanguage": "text",
+    "originalSha256": "91604ecde793f8f2aa806203710941463f44d5e77a2c9728a96c5c47fc061921",
+    "sha256": "a31aabcdcba504f05ba250b5539f0faa3bd806f997a90001d4aa759b8c2530c3"
+  },
+  {
+    "path": "content/docs/tich-hop-spring-for-graphql/kien-truc-spring-for-graphql.mdx",
+    "kind": "diagram",
+    "title": "Runtime wiring nối SDL tới controller",
+    "originalLanguage": "text",
+    "originalSha256": "5c182a7aaef8271e160d9736654e4e1708e14c0821665e6bf41bc4b26e90bbb9",
+    "sha256": "dcf8b9dc60b3a6165d22e0f028c327d2c065f2091a4438434afc661fc8d63a44"
+  },
+  {
+    "path": "content/docs/tich-hop-spring-for-graphql/kien-truc-spring-for-graphql.mdx",
+    "kind": "diagram",
+    "title": "Pipeline HTTP và WebSocket",
+    "originalLanguage": "text",
+    "originalSha256": "e951c86539fd0a110fb4b97f56b6fd4de73296e1993bc2f315effdec9d135667",
+    "sha256": "810f7b4f1d92b7e123d4d89649d2e3f697365db38c07e0e548e3153d8493de02"
+  },
+  {
+    "path": "content/docs/tich-hop-spring-for-graphql/kien-truc-spring-for-graphql.mdx",
+    "kind": "diagram",
+    "title": "Runtime builder tạo các thành phần tích hợp",
+    "originalLanguage": "text",
+    "originalSha256": "4fea9889dd7aa626288bf930e1749b4743d233b6207447c52e21f31de5ccc866",
+    "sha256": "c9c0ce5408b8b133bbb302b96f9d62d313d39d045a931e9a5d4b725e5fe73dad"
+  },
+  {
+    "path": "content/docs/tich-hop-spring-for-graphql/kien-truc-spring-for-graphql.mdx",
+    "kind": "diagram",
+    "title": "Trusted context thay cho raw header",
+    "originalLanguage": "text",
+    "originalSha256": "3d82923b6a6fc982b3883093e9f5f2d8a1de52330cb52b2d66998284e1b72d5b",
+    "sha256": "0fd690986a8753631948f1c705e544d8d3a40b8a5c1dbf9b0eba7a7fc9e33aea"
+  },
+  {
+    "path": "content/docs/tich-hop-spring-for-graphql/kien-truc-spring-for-graphql.mdx",
+    "kind": "diagram",
+    "title": "Request error dừng trước use case",
+    "originalLanguage": "text",
+    "originalSha256": "026db9ee077c569f067c77a0059dd28e680e708040e2f0d838d26c85c4ddb46d",
+    "sha256": "d25b785482e7e69208984e0a5a7ebe55418b4f3ed110d9bea183f93a6d950645"
+  },
+  {
+    "path": "content/docs/tich-hop-spring-for-graphql/kien-truc-spring-for-graphql.mdx",
+    "kind": "diagram",
+    "title": "Liên kết timing theo request",
+    "originalLanguage": "text",
+    "originalSha256": "1ffec4f384b841401dfdac8e17402fdfe197aa08109d9a2b5e7e38736e2d12de",
+    "sha256": "762e372f48694bb80d80fdad0f7b203802046860fa9bca74367a948783c0dff7"
+  },
+  {
+    "path": "content/docs/tich-hop-spring-for-graphql/kien-truc-spring-for-graphql.mdx",
+    "kind": "diagram",
+    "title": "Query trả DTO, nested mapping lấy author",
+    "originalLanguage": "text",
+    "originalSha256": "efde3c3979337f2c2c73c176926e413c5cdec7114441f85a4271f4f4c96d8b50",
+    "sha256": "6c46f8e8fc6f55c00a3ba79b2e4c9f212fdc29700ad51e6f50f4f88d2761d5e2"
+  },
+  {
+    "path": "content/docs/tich-hop-spring-for-graphql/kien-truc-spring-for-graphql.mdx",
+    "kind": "diagram",
+    "title": "Query use case áp policy trước repository",
+    "originalLanguage": "text",
+    "originalSha256": "6648d0184f383d6b7a1a9c858f0b89ab5ba2fcdfdaf82808e3554a67721d6a48",
+    "sha256": "a4c326c9b76deb3fd53ed6fd677bcade6c5f743db9fdf7c801d522a598bed5a6"
+  },
+  {
+    "path": "content/docs/tich-hop-spring-for-graphql/kien-truc-spring-for-graphql.mdx",
+    "kind": "diagram",
+    "title": "Mutation use case sở hữu invariant và transaction",
+    "originalLanguage": "text",
+    "originalSha256": "ac77b44ccab676f3265e4644173443b6455dd4511121fbbc6c891c4fe537465e",
+    "sha256": "5395dae9ab5985ed3faf47c200c79ad21b902804daf3844dcee756107b0fb6b4"
+  },
+  {
+    "path": "content/docs/tich-hop-spring-for-graphql/kien-truc-spring-for-graphql.mdx",
+    "kind": "diagram",
+    "title": "Completion trước transport serialization",
+    "originalLanguage": "text",
+    "originalSha256": "41eaa4a1ee021695a05425df55922d64a205324ddbf35e04aed8500703f3c5d3",
+    "sha256": "a2b992440112fe6ccf24b075d0e8643f8e5ec24dd17b0d373fd605eab863cad3"
+  },
+  {
+    "path": "content/docs/tich-hop-spring-for-graphql/kien-truc-spring-for-graphql.mdx",
+    "kind": "diagram",
+    "title": "Subscription từ handshake tới cleanup",
+    "originalLanguage": "text",
+    "originalSha256": "3e792e1978d0e09feecd43a972df614fd894220512f8fce5cb68d62ae698e7f5",
+    "sha256": "ebd66a0e770dbed653fb604896cd843c2b8f3e5587cfe5bd5cf9ca7ff694ada0"
+  },
+  {
+    "path": "content/docs/tich-hop-spring-for-graphql/kien-truc-spring-for-graphql.mdx",
+    "kind": "diagram",
+    "title": "Tenant input phải đối chiếu principal",
+    "originalLanguage": "text",
+    "originalSha256": "c742e4f581ffa51bcbfd447121b9a9bbf9f71a0fb03f1a2fce3e6fa649a5feec",
+    "sha256": "7dda355251196ab1343d436f0701b10d55a3953886b8d7db0f127156f873dd59"
+  },
+  {
+    "path": "content/docs/tich-hop-spring-for-graphql/kien-truc-spring-for-graphql.mdx",
+    "kind": "diagram",
+    "title": "Telemetry gắn cùng request và operation",
+    "originalLanguage": "text",
+    "originalSha256": "76bced051e3bf1c8f51ade850ddcaac563a5ed5e959dbe9687c5789bb340df2e",
+    "sha256": "a57e7050ebea056ae9d43abdab6263ef9d69af647f7f6d987274be7da6f77b39"
+  },
+  {
+    "path": "content/docs/tich-hop-spring-for-graphql/kien-truc-spring-for-graphql.mdx",
+    "kind": "diagram",
+    "title": "Source BookView của nested author",
+    "originalLanguage": "text",
+    "originalSha256": "2b7bd6fc6c9f9a05a4253253ead0c1df3507f5dc5e2be84cde43be8ea63d2107",
+    "sha256": "7a4660e179c6e738e562cf16da68415b361020de939bd9253464df7b574511c7"
+  },
+  {
+    "path": "content/docs/tich-hop-spring-for-graphql/kien-truc-spring-for-graphql.mdx",
+    "kind": "diagram",
+    "title": "Các phần bắt buộc của subscription",
+    "originalLanguage": "text",
+    "originalSha256": "8250ae7a6b3d6b2e4797c003a889fcd88a7f3a0c96fba5740f71e1aa9895a47b",
+    "sha256": "fa37c612c3af9265622d73778bab55207da8c74c2286cd8bd6f3b263031c1792"
+  },
+  {
+    "path": "content/docs/tich-hop-spring-for-graphql/kien-truc-spring-for-graphql.mdx",
+    "kind": "diagram",
+    "title": "Adapter không sở hữu domain policy",
+    "originalLanguage": "text",
+    "originalSha256": "7523a3e762dd0569faa355e18dfcf5c59ad7e60356ae1d8ad2c9b028c72f290e",
+    "sha256": "b4ebe34d24c1dd029d5bd615ee7d055e3c3b1e18afd2a16d52ca39dfa31620cb"
+  },
+  {
+    "path": "content/docs/tich-hop-spring-for-graphql/kien-truc-spring-for-graphql.mdx",
+    "kind": "artifact",
+    "sha256": "a689da6ecf747883492f925e5317a7ba2b8206ce7a997c400b4465b66680008b"
+  },
+  {
+    "path": "content/docs/tich-hop-spring-for-graphql/kien-truc-spring-for-graphql.mdx",
+    "kind": "diagram",
+    "title": "Gom load theo execution rồi trả đúng key",
+    "originalLanguage": "text",
+    "originalSha256": "bf966dc6a3a52be7a068ee6810c06e66031e087d906f4dab371ad98fd0227027",
+    "sha256": "bfee10067c50f116bd6c1df2809f61a67b8ea37c45e974b5a767f0d236d64c1a"
+  },
+  {
+    "path": "content/docs/tich-hop-spring-for-graphql/kien-truc-spring-for-graphql.mdx",
+    "kind": "diagram",
+    "title": "Nullable và non-null có failure boundary khác nhau",
+    "originalLanguage": "text",
+    "originalSha256": "678543e3d06daacbf885069b3962b72d6285edcdc132a164b1ed62a06a6d24ad",
+    "sha256": "c8cfd6d559a7b621d497592249d88e57b877c37ca0847410c03cda8bcd818943"
+  },
+  {
+    "path": "content/docs/tich-hop-spring-for-graphql/query-mutation-subscription-mapping.mdx",
+    "kind": "diagram",
+    "title": "SDL, mapping và execution",
+    "originalLanguage": "text",
+    "originalSha256": "40ff7da5a7705c24a2e48ea02b80eef5545232f5d9ef0d664ca95a36e0ec3dda",
+    "sha256": "2c5972f5ff5512a88f7d16c9c8b7815feda466be40aab2e10e366047439803f6"
+  },
+  {
+    "path": "content/docs/tich-hop-spring-for-graphql/query-mutation-subscription-mapping.mdx",
+    "kind": "diagram",
+    "title": "Publisher signals và transport result",
+    "originalLanguage": "text",
+    "originalSha256": "03484e4754298be10ff6591483fab8dce7cc6fe19c1e7c2096fcf598a5c1caf3",
+    "sha256": "4bb2c0a62030fece51e9b5624303c3b73e034588a3e88d75a99bc5bf6ec7cb97"
+  },
+  {
+    "path": "content/docs/tich-hop-spring-for-graphql/query-mutation-subscription-mapping.mdx",
+    "kind": "diagram",
+    "title": "Mapping của root field và nested field",
+    "originalLanguage": "text",
+    "originalSha256": "55b48c8178782ee7e83fdbefd161a7512f41f10afd94cbf08215133d61e31d85",
+    "sha256": "e5bb5f8bf1f9be9825b943c593cafaa79a7420a140fdcbc8164a7402c6b3f83a"
+  },
+  {
+    "path": "content/docs/tich-hop-spring-for-graphql/query-mutation-subscription-mapping.mdx",
+    "kind": "diagram",
+    "title": "Lifecycle mapping và Publisher",
+    "originalLanguage": "text",
+    "originalSha256": "6e7bf83b12b5a92d65caf28e4f618d5255f0e480005c49d5c2df0f530ce9e65c",
+    "sha256": "07f683ba5cffeb42fe4455329ae79d73c9b52e2e93ae172fc8b79d5b89c85a79"
+  },
+  {
+    "path": "content/docs/tich-hop-spring-for-graphql/schema-mapping-va-nested-field.mdx",
+    "kind": "diagram",
+    "title": "Source của nested field",
+    "originalLanguage": "text",
+    "originalSha256": "66a43970d7f996a6d7c9c95da9828d6d083f2ddfda482b5611fa026715ac9aa4",
+    "sha256": "0775a5ac84a37c387d76c17d0708a8965b4dcc5409ac666cede73f17f56c039c"
+  },
+  {
+    "path": "content/docs/tich-hop-spring-for-graphql/schema-mapping-va-nested-field.mdx",
+    "kind": "diagram",
+    "title": "Projection, DTO và public schema",
+    "originalLanguage": "text",
+    "originalSha256": "6ac535f45e568eec36f0d814b2fc826c8d8544aab6962fa64fa403e46dc802bb",
+    "sha256": "6373abdbafed355a2ec945cc53dd057f9f7b1c207c8d402e803ea887ebf84717"
+  },
+  {
+    "path": "content/docs/tich-hop-spring-for-graphql/schema-mapping-va-nested-field.mdx",
+    "kind": "diagram",
+    "title": "Null bubbling qua list non-null",
+    "originalLanguage": "text",
+    "originalSha256": "85bf353e1c78f7cac601be4b3f1dbd31129ccce2d79ddf7ba05035d276510152",
+    "sha256": "5e4799a853327cda93344ec7893929bbe2df1a4c4450dc67333a9af9377c5ff9"
+  },
+  {
+    "path": "content/docs/tich-hop-spring-for-graphql/schema-mapping-va-nested-field.mdx",
+    "kind": "artifact",
+    "sha256": "8fbb5c4f9457f4dd6232336a75a22bfce4cb0a96d12a9aa6e8c10bd2325abff9"
+  },
+  {
+    "path": "content/docs/truy-cap-du-lieu-va-hieu-nang/cursor-offset-pagination-spring.mdx",
+    "kind": "diagram",
+    "title": "Policy trước pagination",
+    "originalLanguage": "text",
+    "originalSha256": "0eef950f86f12a5b541f4bc2e3711b38d7a660491463f3e90eed6546189fc9d4",
+    "sha256": "43bbdba0b81f9ef1d917f459d226e21ba8b8f6695aad18ea65edef9e86af05d3"
+  },
+  {
+    "path": "content/docs/truy-cap-du-lieu-va-hieu-nang/cursor-offset-pagination-spring.mdx",
+    "kind": "artifact",
+    "sha256": "9963d9efbb8fe4a991ac90d400d01b5ddae0b6b832037afae329fec06a18ec00"
+  },
+  {
+    "path": "content/docs/truy-cap-du-lieu-va-hieu-nang/cursor-offset-pagination-spring.mdx",
+    "kind": "artifact",
+    "sha256": "6a64285700499eb5866eb7da6d6b26fc6447cd3a59d09066fdd7e9704e0bbf18"
+  },
+  {
+    "path": "content/docs/truy-cap-du-lieu-va-hieu-nang/cursor-offset-pagination-spring.mdx",
+    "kind": "artifact",
+    "sha256": "5b630d862ae0408cb349f166675c83c19fcaa89e34c24bc6ec78641c0863266c"
+  },
+  {
+    "path": "content/docs/nen-tang/mo-hinh-request-response.mdx",
+    "kind": "diagram",
+    "title": "Từ HTTP envelope đến execution result",
+    "originalLanguage": "text (in-progress migration)",
+    "sha256": "2d6d88ce3e21e9ce4eb0d771ba3933a8cbaddb2412e868881266b811929d7597"
+  }
+]

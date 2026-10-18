@@ -67,27 +67,21 @@ Trang này tập trung vào input đi **vào** resolver. SDL, query, variables J
 
 Một input đi qua nhiều ranh giới. Hãy phân biệt những ranh giới này trước khi sửa chữ ký method:
 
-```text
-HTTP body và security policy
-          │ JSON envelope, authentication, rate limit
-          ▼
-GraphQL document
-          │ parse + validate field, argument, selection và variable usage
-          ▼
-GraphQL input coercion
-          │ scalar, enum, list, input object, default và non-null
-          ▼
-Spring argument binding
-          │ map giá trị đã coerce vào record/class/collection Java
-          ▼
-@QueryMapping hoặc @MutationMapping
-          │ controller gọi use case
-          ▼
-Service/domain
-          │ Bean Validation bổ sung, invariant, authorization, tenant, transaction
-          ▼
-GraphQL execution result
-          │ data, errors và nullability của response
+```d2 title="Coercion, binding và domain policy"
+direction: down
+n0: "HTTP body và security policy"
+n1: "GraphQL document"
+n2: "GraphQL input coercion"
+n3: "Spring argument binding"
+n4: "@QueryMapping hoặc @MutationMapping"
+n5: "Service/domain"
+n6: "GraphQL execution result\ndata, errors và nullability của response"
+n0 -> n1: "JSON envelope, authentication, rate limit"
+n1 -> n2: "parse + validate field, argument, selection và variable usage"
+n2 -> n3: "scalar, enum, list, input object, default và non-null"
+n3 -> n4: "map giá trị đã coerce vào record/class/collection Java"
+n4 -> n5: "controller gọi use case"
+n5 -> n6: "Bean Validation bổ sung, invariant, authorization, tenant, transaction"
 ```
 
 Controller chỉ nằm ở giữa pipeline. Nếu document gọi sai field hoặc variables không đúng kiểu, method controller thường chưa được gọi. Nếu input đúng contract nhưng title chỉ chứa khoảng trắng, GraphQL vẫn có thể chuyển request tới controller; service hoặc Bean Validation mới quyết định có chấp nhận hay không.

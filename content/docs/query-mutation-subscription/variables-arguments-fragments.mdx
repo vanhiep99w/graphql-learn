@@ -82,10 +82,19 @@ query BookDetail($bookId: ID!, $includeSummary: Boolean!) {
 
 Một cách hình dung khác là:
 
-```text
-JSON variables ──► variable definition ──► argument của field ──► resolver
-                                                               │
-Selection set ◄──────────── execution output ◄─────────────────┘
+```d2 title="Variables đi vào resolver, selection set nhận output"
+direction: down
+n0: "JSON variables"
+n1: "variable definition"
+n2: "argument của field"
+n3: "resolver"
+n4: "execution output"
+n5: "Selection set"
+n0 -> n1
+n1 -> n2
+n2 -> n3
+n3 -> n4
+n4 -> n5
 ```
 
 Variables không trở thành field của `Book`. Arguments cũng không xuất hiện trong response chỉ vì chúng được truyền vào. Ngược lại, `id`, `title` và `summary` là field output vì chúng nằm trong selection set.

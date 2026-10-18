@@ -76,16 +76,20 @@ Client vẫn phải dùng selection set cho từng payload. Nếu event chứa o
 
 **Polling** là việc client gửi lại cùng một query theo chu kỳ để tìm thay đổi. Mỗi lần polling tạo một request, chạy validation/resolver và có thể trả cùng một snapshot. Subscription giữ một đăng ký và để server đẩy execution result khi có event.
 
-```text
-Polling:
-Client ── query ──► Server       (chưa có thay đổi)
-Client ◄─ snapshot ─ Server
-Client ── query ──► Server       (lặp lại sau một khoảng thời gian)
-
-Subscription:
-Client ── subscribe một lần ──► Server ── đăng ký event source
-Client ◄──── next event 1 ───── Server
-Client ◄──── next event 2 ───── Server
+```d2 title="Polling và subscription"
+direction: right
+pc: "Client polling"
+ps: "Server polling"
+sc: "Client subscription"
+ss: "Server subscription"
+src: "event source"
+pc -> ps: "1. query: chưa có thay đổi"
+ps -> pc: "2. snapshot"
+pc -> ps: "3. query: lặp lại sau một khoảng thời gian"
+sc -> ss: "1. subscribe một lần"
+ss -> src: "2. đăng ký event source"
+ss -> sc: "3. next event 1"
+ss -> sc: "4. next event 2"
 ```
 
 Subscription giảm request lặp và độ trễ chờ chu kỳ, nhưng không tự bảo đảm event được lưu bền vững hoặc phát lại. Khi WebSocket mất kết nối, event phát trong khoảng gián đoạn có thể bị bỏ lỡ. Nếu sản phẩm không chấp nhận mất event, cần thêm event ID/sequence, replay hoặc một query catch-up sau reconnect. Đừng dùng keepalive để giả vờ rằng event đã được nhận.
@@ -323,22 +327,25 @@ Server phải truyền cancellation xuống Publisher và event source. Nếu ev
 
 ### Từ connect đến cleanup
 
-```text
-CONNECTING
-   │  HTTP Upgrade + TLS
-   ▼
-OPEN
-   │  connection_init / authentication
-   ├──────────────► CLOSED nếu timeout hoặc bị từ chối
-   ▼
-ACKED
-   │  subscribe operation
-   ▼
-STREAMING  ── next ──► STREAMING
-   │
-   ├── complete một operation ──► operation đã cleanup
-   ├── Publisher error ──────────► operation lỗi và cleanup
-   └── socket close/revoke ──────► mọi operation cleanup ──► CLOSED
+```d2 title="State và cleanup của WebSocket subscription"
+direction: down
+connecting: "CONNECTING"
+open: "OPEN"
+acked: "ACKED"
+stream: "STREAMING"
+closed: "CLOSED"
+complete: "operation đã cleanup"
+error: "operation lỗi và cleanup"
+all: "mọi operation cleanup"
+connecting -> open: "HTTP Upgrade + TLS"
+open -> acked: "connection_init / authentication"
+open -> closed: "timeout hoặc bị từ chối"
+acked -> stream: "subscribe operation"
+stream -> stream: "next"
+stream -> complete: "complete một operation"
+stream -> error: "Publisher error"
+stream -> all: "socket close/revoke"
+all -> closed
 ```
 
 Một connection có thể ở trạng thái `ACKED` nhưng chưa có subscription nào. Một `complete` chỉ kết thúc ID tương ứng. Khi socket mất, server phải coi mọi operation trên socket là bị hủy, kể cả client chưa kịp gửi `complete`.
@@ -583,16 +590,17 @@ Các metric nên có gồm active connections, active operations, event-to-send 
 
 Khi một subscription bị cancel, cancellation phải đi ngược qua các lớp:
 
-```text
-WebSocket complete/close
-        ▼
-GraphQL subscription Publisher
-        ▼
-Reactor subscription cancellation
-        ▼
-Broker consumer / listener / timer / queue
-        ▼
-Registry entry và context được giải phóng
+```d2 title="Cancellation và cleanup subscription"
+direction: down
+n0: "WebSocket complete/close"
+n1: "GraphQL subscription Publisher"
+n2: "Reactor subscription cancellation"
+n3: "Broker consumer / listener / timer / queue"
+n4: "Registry entry và context được giải phóng"
+n0 -> n1
+n1 -> n2
+n2 -> n3
+n3 -> n4
 ```
 
 Trong Reactor, `doFinally` là một điểm thường dùng để xử lý cả complete, error và cancel; `doOnCancel` chỉ bao phủ một nhánh. API dùng để đóng consumer hoặc listener phụ thuộc event source, nên đặt cleanup ở abstraction sở hữu resource thay vì hard-code trong controller. Nếu resource có vòng đời phức tạp, dùng cơ chế tương đương `using`/resource scope của thư viện đang dùng và kiểm tra cancellation thật.

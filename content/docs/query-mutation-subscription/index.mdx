@@ -70,20 +70,17 @@ Sau khi đọc nhóm này theo lộ trình, bạn có thể:
 
 Hãy xem operation là yêu cầu ở lớp GraphQL, không phải tên của URL. Client gửi operation, variables và selection set; schema kiểm tra contract; execution engine gọi resolver; implementation phía sau lấy dữ liệu hoặc phát event; kết quả quay lại dưới dạng `data`, `errors` và `extensions` nếu server có dùng.
 
-```text
-Client: operation + variables + selection set
-                         │
-                         ▼
-Schema và execution engine: parse, validate, coerce, execute
-                         │
-                         ▼
-Spring for GraphQL: root mapping và nested mapping
-                         │
-                         ▼
-Service / repository / data source / event source
-                         │
-                         ▼
-Execution result: data + errors + extensions
+```d2 title="Operation qua schema và Spring mapping"
+direction: down
+n0: "Client: operation + variables + selection set"
+n1: "Schema và execution engine: parse, validate, coerce, execute"
+n2: "Spring for GraphQL: root mapping và nested mapping"
+n3: "Service / repository / data source / event source"
+n4: "Execution result: data + errors + extensions"
+n0 -> n1
+n1 -> n2
+n2 -> n3
+n3 -> n4
 ```
 
 Sơ đồ trên là mental model, không phải bằng chứng về số lần gọi service, query database hoặc thứ tự resolver trong một backend cụ thể. Một HTTP request GraphQL vẫn có thể tạo nhiều lời gọi phía server. Một subscription có thể giữ một Publisher mở nhưng vẫn cần policy riêng cho event source và connection.
@@ -174,23 +171,19 @@ Có thể xem [Schema và type system](/docs/schema-va-type-system) như nền c
 
 Trong một ứng dụng Spring Boot, operation không gọi thẳng vào database. Một mental model triển khai thực dụng là:
 
-```text
-SDL và schema
-    │ contract
-    ▼
-Operation của client
-    │ parse, validate, coerce
-    ▼
-Root mapping / nested mapping
-    │ bind argument và context
-    ▼
-Service / use case
-    │ authorization, transaction, data policy
-    ▼
-Repository / event source
-    │ dữ liệu hoặc event
-    ▼
-GraphQL execution result
+```d2 title="Contract, policy và data source"
+direction: down
+n0: "SDL và schema"
+n1: "Operation của client"
+n2: "Root mapping / nested mapping"
+n3: "Service / use case"
+n4: "Repository / event source"
+n5: "GraphQL execution result"
+n0 -> n1: "contract"
+n1 -> n2: "parse, validate, coerce"
+n2 -> n3: "bind argument và context"
+n3 -> n4: "authorization, transaction, data policy"
+n4 -> n5: "dữ liệu hoặc event"
 ```
 
 Các annotation thường xuất hiện ở lớp mapping:

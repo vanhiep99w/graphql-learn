@@ -38,20 +38,17 @@ Một query GraphQL chỉ trả về dữ liệu khi ba phần khớp nhau: sche
 
 Khi client gửi query, GraphQL xử lý theo chuỗi sau:
 
-```text
-Client gửi query
-      │
-      ▼
-Schema kiểm tra field và kiểu dữ liệu
-      │
-      ▼
-Spring for GraphQL tìm handler của field
-      │
-      ▼
-Method resolver trả về giá trị Java
-      │
-      ▼
-GraphQL chọn field được yêu cầu và tạo JSON response
+```d2 title="Từ query đến JSON response"
+direction: down
+n0: "Client gửi query"
+n1: "Schema kiểm tra field và kiểu dữ liệu"
+n2: "Spring for GraphQL tìm handler của field"
+n3: "Method resolver trả về giá trị Java"
+n4: "GraphQL chọn field được yêu cầu và tạo JSON response"
+n0 -> n1
+n1 -> n2
+n2 -> n3
+n3 -> n4
 ```
 
 Với query root `hello`, có thể hình dung như sau:
@@ -103,20 +100,42 @@ Trong Spring for GraphQL, dùng `@Controller` cho controller GraphQL. Endpoint H
 
 Tạo file `src/main/java/com/example/graphql/GreetingController.java`:
 
-```java
-package com.example.graphql;
+```code-walkthrough
+title: Resolver hello nối Java với Query.hello
+language: java
+snapshots:
+  - id: controller
+    title: GreetingController.java
+    code: |
+      package com.example.graphql;
 
-import org.springframework.graphql.data.method.annotation.QueryMapping;
-import org.springframework.stereotype.Controller;
+      import org.springframework.graphql.data.method.annotation.QueryMapping;
+      import org.springframework.stereotype.Controller;
 
-@Controller
-public class GreetingController {
+      @Controller
+      public class GreetingController {
 
-    @QueryMapping
-    public String hello() {
-        return "Xin chào từ Spring for GraphQL!";
-    }
-}
+          @QueryMapping
+          public String hello() {
+              return "Xin chào từ Spring for GraphQL!";
+          }
+      }
+steps:
+  - id: bean
+    snapshot: controller
+    title: Đăng ký bean controller
+    description: Package nằm trong vùng component scan; @Controller đưa class vào ApplicationContext.
+    ranges: [[1, 7]]
+  - id: mapping
+    snapshot: controller
+    title: Nối method với root field
+    description: '@QueryMapping không chỉ tên field nên dùng tên method hello; SDL vẫn phải có Query.hello.'
+    ranges: [[9, 10]]
+  - id: value
+    snapshot: controller
+    title: Hoàn tất scalar non-null
+    description: Chuỗi Java cung cấp giá trị cho String!; engine đặt nó vào data.hello theo selection set.
+    ranges: [[11, 12]]
 ```
 
 `@QueryMapping` là shortcut cho mapping vào root type `Query`. Khi không chỉ rõ tên, Spring dùng tên method làm tên field. Vì vậy `hello()` khớp với `hello` trong schema và Java `String` được chuyển thành giá trị GraphQL kiểu `String`. Dấu `!` là cam kết resolver không trả về `null`, nên method phải giữ cam kết đó.
@@ -127,20 +146,42 @@ Giữ method này nhỏ giúp nhìn rõ trách nhiệm của resolver. Trong ứ
 
 Tên method không bắt buộc phải giống tên field nếu mapping được chỉ rõ. Ví dụ sau thay thế method `hello()` ở trên:
 
-```java
-package com.example.graphql;
+```code-diff
+title: Giữ Query.hello khi đổi tên method Java
+language: java
+view: split
+before:
+  label: QueryMapping theo tên method
+  code: |
+    package com.example.graphql;
 
-import org.springframework.graphql.data.method.annotation.SchemaMapping;
-import org.springframework.stereotype.Controller;
+    import org.springframework.graphql.data.method.annotation.QueryMapping;
+    import org.springframework.stereotype.Controller;
 
-@Controller
-public class GreetingController {
+    @Controller
+    public class GreetingController {
 
-    @SchemaMapping(typeName = "Query", field = "hello")
-    public String greeting() {
-        return "Xin chào từ Spring for GraphQL!";
+        @QueryMapping
+        public String hello() {
+            return "Xin chào từ Spring for GraphQL!";
+        }
     }
-}
+after:
+  label: SchemaMapping tường minh
+  code: |
+    package com.example.graphql;
+
+    import org.springframework.graphql.data.method.annotation.SchemaMapping;
+    import org.springframework.stereotype.Controller;
+
+    @Controller
+    public class GreetingController {
+
+        @SchemaMapping(typeName = "Query", field = "hello")
+        public String greeting() {
+            return "Xin chào từ Spring for GraphQL!";
+        }
+    }
 ```
 
 Ở đây method là `greeting()` nhưng field GraphQL vẫn là `hello`. Không cần đặt cả `@QueryMapping` và `@SchemaMapping` lên cùng một method. Với query root đơn giản, ưu tiên `@QueryMapping`; dùng mapping tường minh khi tên Java và tên schema cần tách biệt.

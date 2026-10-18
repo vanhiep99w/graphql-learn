@@ -84,20 +84,23 @@ Một field thường cần biết request đang chạy cho principal nào, tena
 
 Ví dụ xuyên suốt của bài này dùng một giá trị typed tên `RequestContext` nằm bên trong `GraphQLContext`:
 
-```text
-Client query + variables
-          │
-          ▼
-HTTP/WebSocket boundary xác thực credential
-          │ tạo RequestContext nhỏ, bất biến
-          ▼
-GraphQL execution
-  ├── Query.books DataFetcher
-  ├── Book.author DataFetcher
-  └── DataLoader batch loader
-          │ cùng đọc principal, tenant, correlation ID
-          ▼
-Service/repository áp dụng policy và lấy dữ liệu
+```d2 title="Request context dùng ở từng data fetcher"
+direction: down
+c: "Client query + variables"
+b: "HTTP/WebSocket boundary xác thực credential"
+e: "GraphQL execution"
+q: "Query.books DataFetcher"
+a: "Book.author DataFetcher"
+l: "DataLoader batch loader"
+s: "Service/repository áp dụng policy và lấy dữ liệu"
+c -> b
+b -> e: "tạo RequestContext nhỏ, bất biến"
+e -> q
+e -> a
+e -> l
+q -> s: "cùng đọc principal, tenant, correlation ID"
+a -> s: "cùng đọc principal, tenant, correlation ID"
+l -> s: "cùng đọc principal, tenant, correlation ID"
 ```
 
 Có ba nguyên tắc cần nhớ ngay từ đầu:
@@ -203,29 +206,27 @@ Response không hiển thị `tenantId`, correlation ID hoặc principal vì đ�
 
 Trong một request GraphQL, context được tạo trước hoặc trong lúc xây dựng `ExecutionInput`, rồi được gắn vào execution. Mỗi `DataFetchingEnvironment` của field hiện tại có thể truy cập cùng `GraphQLContext` của execution đó.
 
-```text
-Transport
-  │  headers, credential, operation document
-  ▼
-Spring GraphQL interceptor
-  │  xác thực + tạo RequestContext nhỏ
-  ▼
-ExecutionInput
-  ├── query, variables, operationName
-  ├── GraphQLContext
-  └── DataLoaderRegistry theo execution
-  ▼
-Parse → validate → coerce variables
-  ▼
-DataFetcher của Query.books
-  │  DataFetchingEnvironment hiện tại
-  ▼
-Giá trị Book[]
-  ▼
-DataFetcher của Book.author cho từng source Book
-  │  có source/parent riêng, cùng request context
-  ▼
-Execution result: data + errors + extensions
+```d2 title="ExecutionInput, context và source của nested field"
+direction: down
+n0: "Transport"
+n1: "Spring GraphQL interceptor"
+n2: "ExecutionInput\nquery, variables, operationName\nGraphQLContext\nDataLoaderRegistry theo execution"
+n3: "Parse"
+n4: "validate"
+n5: "coerce variables"
+n6: "DataFetcher của Query.books"
+n7: "Giá trị Book[]"
+n8: "DataFetcher của Book.author cho từng source Book"
+n9: "Execution result: data + errors + extensions"
+n0 -> n1: "headers, credential, operation document"
+n1 -> n2: "xác thực + tạo RequestContext nhỏ"
+n2 -> n3
+n3 -> n4
+n4 -> n5
+n5 -> n6: "DataFetchingEnvironment hiện tại"
+n6 -> n7
+n7 -> n8
+n8 -> n9: "có source/parent riêng, cùng request context"
 ```
 
 Có thể có nhiều field được resolve độc lập hoặc bất đồng bộ. Vì vậy, không giả định context chỉ được đọc một lần, cũng không giả định các fetcher luôn chạy trên cùng một thread. Context cần an toàn khi được đọc đồng thời; cách đơn giản nhất là xây một holder bất biến và không sửa nó trong resolver.
@@ -838,13 +839,19 @@ GraphQL Java `Instrumentation` nằm quanh execution engine. Nó phù hợp đ�
 
 Một instrumentation có thể đọc `DataFetchingEnvironment` hoặc `GraphQLContext` qua tham số instrumentation tương ứng của version GraphQL Java. Pseudo-flow:
 
-```text
-begin execution
-  ├── đọc operationName + queryHash + correlationId đã redact
-  ├── begin field Query.books
-  │     └── đo duration/outcome, không log source object
-  ├── begin field Book.author
-  └── complete execution với data/error summary
+```d2 title="Instrumentation không log source object"
+direction: down
+n0: "begin execution"
+n1: "đọc operationName + queryHash + correlationId đã redact"
+n2: "begin field Query.books"
+n3: "đo duration/outcome, không log source object"
+n4: "begin field Book.author"
+n5: "complete execution với data/error summary"
+n0 -> n1
+n1 -> n2
+n2 -> n3
+n3 -> n4
+n4 -> n5
 ```
 
 Instrumentation **không** nên là nơi duy nhất kiểm tra quyền đọc một `Book` cụ thể. Authorization resource/tenant vẫn thuộc interceptor, resolver policy và service. Instrumentation cũng không nên dùng một map global mutable để giữ “context hiện tại”; state quan sát nên gắn với execution hoặc telemetry backend.
@@ -1015,12 +1022,13 @@ Không chọn raw fetcher chỉ vì muốn lấy `GraphQLContext`; annotated met
 
 Một field root có thể được triển khai bởi một trong hai cách, nhưng không nên đăng ký cả hai:
 
-```text
-SDL: Query.books
-   ├── @QueryMapping CatalogQueryController.books(...)
-   └── hoặc RuntimeWiringConfigurer.dataFetcher("books", ...)
-
-Chọn một owner cho cặp type + field.
+```d2 title="Chọn đúng một owner cho type và field"
+direction: right
+s: "SDL: Query.books"
+a: "@QueryMapping CatalogQueryController.books(...)"
+b: "RuntimeWiringConfigurer.dataFetcher(\"books\", ...)"
+s -> a: "cách 1: annotated controller"
+s -> b: "hoặc cách 2: runtime wiring"
 ```
 
 ### Migration không đổi contract

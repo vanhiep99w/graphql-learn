@@ -90,31 +90,21 @@ Vì vậy, `@QueryMapping` không tạo thêm field chưa có trong SDL, `@Mutat
 
 Hãy dùng sơ đồ chữ dưới đây như bản đồ đọc các bài trong nhóm:
 
-```text
-Client
-  operation + variables + selection set
-                  │
-                  ▼
-GraphQL schema và execution
-  parse • validate • coerce • chọn field
-                  │
-                  ▼
-Spring for GraphQL controller
-  mapping • argument binding • context
-                  │
-                  ▼
-Data fetching
-  DataFetcher • nested resolver • Publisher
-                  │
-                  ▼
-Service / use case
-  validation • authorization • transaction policy
-                  │
-                  ▼
-Repository / external source / event source
-                  │
-                  ▼
-Execution result: data + errors (+ extensions)
+```d2 title="Từ operation tới data fetching và execution result"
+direction: down
+n0: "Client\noperation + variables + selection set"
+n1: "GraphQL schema và execution\nparse • validate • coerce • chọn field"
+n2: "Spring for GraphQL controller\nmapping • argument binding • context"
+n3: "Data fetching\nDataFetcher • nested resolver • Publisher"
+n4: "Service / use case\nvalidation • authorization • transaction policy"
+n5: "Repository / external source / event source"
+n6: "Execution result: data + errors (+ extensions)"
+n0 -> n1
+n1 -> n2
+n2 -> n3
+n3 -> n4
+n4 -> n5
+n5 -> n6
 ```
 
 Mỗi request không nhất thiết đi qua đúng một method hoặc đúng một lời gọi database. Selection set quyết định field nào cần hoàn tất; nested field có thể tạo thêm data fetching. Sơ đồ chỉ biểu diễn hướng trách nhiệm, không phải cam kết về số lần gọi, thứ tự tối ưu hoặc transaction thực tế.

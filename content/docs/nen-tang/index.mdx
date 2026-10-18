@@ -44,23 +44,19 @@ Khi chuyển sang nhóm Bắt đầu, hãy chuẩn bị JDK 17, một terminal, 
 
 Hãy xem một request GraphQL như một đường đi qua nhiều trách nhiệm, không phải một lời gọi thẳng vào database:
 
-```text
-Client
-  │ operation + variables
-  ▼
-GraphQL endpoint và execution engine
-  │ parse, validate và đối chiếu với schema
-  ▼
-Resolver của các field được chọn
-  │ gọi service, repository hoặc nguồn dữ liệu khác
-  ▼
-Data source
-  │ trả về dữ liệu
-  ▼
-Execution engine tạo response: data, errors, extensions
-  │
-  ▼
-Client
+```d2 title="Vòng request và response GraphQL"
+direction: down
+n0: "Client"
+n1: "GraphQL endpoint và execution engine"
+n2: "Resolver của các field được chọn"
+n3: "Data source"
+n4: "Execution engine tạo response: data, errors, extensions"
+n5: "Client"
+n0 -> n1: "operation + variables"
+n1 -> n2: "parse, validate và đối chiếu với schema"
+n2 -> n3: "gọi service, repository hoặc nguồn dữ liệu khác"
+n3 -> n4: "trả về dữ liệu"
+n4 -> n5
 ```
 
 - **Client** có thể là trình duyệt, ứng dụng mobile, frontend hoặc một service khác. Client gửi operation và có thể gửi thêm variables (giá trị đầu vào tách khỏi query document).

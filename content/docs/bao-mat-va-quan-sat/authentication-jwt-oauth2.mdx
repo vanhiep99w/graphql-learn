@@ -106,33 +106,31 @@ Một token hợp lệ không làm mọi operation trở nên hợp lệ. Ngư�
 
 Một GraphQL request production thường đi qua các boundary sau:
 
-```text
-Client
-  │ TLS + Authorization: Bearer <access-token>
-  ▼
-Reverse proxy / gateway
-  │ routing, size limit, rate limit, không tin header identity tùy ý
-  ▼
-Spring Security filter chain
-  │ trích bearer token → validate → tạo Authentication
-  │ lỗi credential thường dừng ở đây với 401
-  ▼
-GraphQL HTTP handler
-  │ parse envelope và tạo GraphQL execution
-  ▼
-WebGraphQlInterceptor / request context
-  │ copy principal đã xác minh, tenant đã bind, correlation ID
-  ▼
-GraphQLContext / request context
-  │ scope của một execution, không phải global state
-  ▼
-Resolver / DataFetcher
-  │ bind arguments; không tự parse token
-  ▼
-Authorization policy → application service → repository/downstream
-  │ kiểm tra quyền trên operation/resource/tenant
-  ▼
-GraphQL response: data + errors
+```d2 title="Authentication và authorization theo request"
+direction: down
+n0: "Client"
+n1: "Reverse proxy / gateway"
+n2: "Spring Security filter chain"
+n3: "GraphQL HTTP handler"
+n4: "WebGraphQlInterceptor / request context"
+n5: "GraphQLContext / request context"
+n6: "Resolver / DataFetcher"
+n7: "Authorization policy"
+n8: "application service"
+n9: "repository/downstream"
+n10: "GraphQL response: data + errors"
+n0 -> n1: "TLS + Authorization: Bearer <access-token>"
+n1 -> n2: "routing, size limit, rate limit, không tin header identity tùy ý"
+n2 -> n3: "trích bearer token; validate; tạo Authentication"
+unauthorized: "401: credential lỗi, dừng trước GraphQL handler"
+n2 -> unauthorized: "credential lỗi"
+n3 -> n4: "parse envelope và tạo GraphQL execution"
+n4 -> n5: "copy principal đã xác minh, tenant đã bind, correlation ID"
+n5 -> n6: "scope của một execution, không phải global state"
+n6 -> n7: "bind arguments; không tự parse token"
+n7 -> n8: "kiểm tra quyền trên operation/resource/tenant"
+n8 -> n9
+n9 -> n10
 ```
 
 Security filter là nơi phù hợp để xử lý bearer token ở HTTP. GraphQL interceptor là nơi phù hợp để chuyển metadata đã xác minh vào execution context. Resolver và service vẫn phải làm authorization; việc filter tạo `Authentication` không tự bảo vệ từng field.
@@ -342,17 +340,17 @@ Trong Spring Boot 3.x, resource server thường được cấu hình qua Spring
 
 Với JWT access token, resource server có thể verify chữ ký và claim tại chỗ sau khi đã có JWK. Luồng khái quát:
 
-```text
-Request bearer token
-      │
-      ▼
-JWT decoder + trusted JWK cache
-      │ signature, issuer, audience, exp, nbf
-      ▼
-Authentication + authorities
-      │
-      ▼
-GraphQL context → authorization policy
+```d2 title="Từ bearer token đến policy"
+direction: down
+n0: "Request bearer token"
+n1: "JWT decoder + trusted JWK cache"
+n2: "Authentication + authorities"
+n3: "GraphQL context"
+n4: "authorization policy"
+n0 -> n1
+n1 -> n2: "signature, issuer, audience, exp, nbf"
+n2 -> n3
+n3 -> n4
 ```
 
 Ưu điểm là không cần gọi IdP cho mỗi request. Đổi lại, revocation ở IdP không tự lan ngay vào mọi resource server. Token đã phát hành có thể tiếp tục được chấp nhận đến `exp`, trừ khi API có denylist/introspection hoặc cơ chế revoke riêng.
@@ -1095,17 +1093,13 @@ Bearer token trong `connection_init` không làm Origin đáng tin. Origin chỉ
 
 Một service gọi GraphQL nên dùng OAuth2 client credentials hoặc cơ chế workload identity đã được tổ chức chọn. Token có `sub` là service identity, `aud` là GraphQL API và scope hẹp:
 
-```text
-orders-service
-  └── client credentials → access token
-                              iss = https://idp.example.com/issuer
-                              sub = orders-service
-                              aud = graphql-api
-                              scope = orders.read
-                                  │
-                                  ▼
-                         POST /graphql
-                         Authorization: Bearer <service-token>
+```d2 title="Service token qua client credentials"
+direction: down
+svc: "orders-service"
+token: "Access token\niss = https://idp.example.com/issuer\nsub = orders-service\naud = graphql-api\nscope = orders.read"
+http: "POST /graphql\nAuthorization: Bearer <service-token>"
+svc -> token: "client credentials"
+token -> http: "Bearer service token"
 ```
 
 GraphQL vẫn validate token như request user. Service identity không tự có quyền admin. Mỗi mutation/service scope cần được allowlist và policy riêng.
@@ -1148,10 +1142,14 @@ Access token dùng gọi GraphQL. Refresh token dùng với authorization server
 
 Một vòng đời khái quát:
 
-```text
-Client ── refresh credential ──► Authorization Server
-Client ◄─ access token ngắn hạn ──
-Client ── Bearer access token ───► GraphQL Resource Server
+```d2 title="Refresh credential không gửi tới resource server"
+direction: right
+c: "Client"
+a: "Authorization Server"
+g: "GraphQL Resource Server"
+c -> a: "refresh credential"
+a -> c: "access token ngắn hạn"
+c -> g: "Bearer access token"
 ```
 
 Refresh token có giá trị cao hơn và cần bảo vệ chặt hơn access token. Khi dùng refresh token rotation, authorization server nên phát hiện reuse theo contract của provider. Client cần xử lý refresh failure bằng logout/re-auth, không gửi refresh token vào `Authorization: Bearer` đến GraphQL.

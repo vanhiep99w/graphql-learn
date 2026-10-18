@@ -631,13 +631,19 @@ Boundary domain phân chia trách nhiệm nghiệp vụ. Boundary persistence ph
 
 Một field `Book.reviews` có thể nối Catalog với Review service. GraphQL server có thể composition dữ liệu từ hai nguồn, nhưng không nên công khai `review_table`, tên database hoặc transaction nội bộ để mô tả quan hệ đó. Resolver/service chịu trách nhiệm điều phối; schema chỉ công khai quan hệ mà client cần.
 
-```text
-Client
-  │ chọn Book.title và Book.reviews
-  ▼
-GraphQL schema và resolver boundary
-  ├── Catalog service ──► Catalog data source
-  └── Review service  ──► Review data source
+```d2 title="Schema boundary tách Catalog và Review"
+direction: down
+c: "Client"
+g: "GraphQL schema và resolver boundary"
+cat: "Catalog service"
+rev: "Review service"
+cd: "Catalog data source"
+rd: "Review data source"
+c -> g: "chọn Book.title và Book.reviews"
+g -> cat
+g -> rev
+cat -> cd
+rev -> rd
 ```
 
 Một domain boundary tốt trả lời được ba câu hỏi: ai sở hữu ngữ nghĩa, ai chịu chi phí và ai xử lý authorization. Nếu field cần nhiều nguồn, hãy ghi rõ owner điều phối và owner của từng nguồn phía sau. Đừng để client phải biết một field đang được ghép từ bao nhiêu bảng hoặc service.

@@ -290,20 +290,17 @@ Một execution result minh họa có thể là:
 
 Trong query `CatalogBooks`, có thể lần theo chuỗi sau:
 
-```text
-Book.title: String!
-        │  title lỗi hoặc trả null
-        ▼
-Book đầu tiên trong Catalog.books: Book!
-        │  element không được null
-        ▼
-Catalog.books: [Book!]!
-        │  list không được null
-        ▼
-Query.catalog: Catalog
-        │  catalog nullable, dừng bubbling tại đây
-        ▼
-health vẫn có thể xuất hiện trong data
+```d2 title="Null bubbling dừng ở catalog nullable"
+direction: down
+n0: "Book.title: String!"
+n1: "Book đầu tiên trong Catalog.books: Book!"
+n2: "Catalog.books: [Book!]!"
+n3: "Query.catalog: Catalog"
+n4: "health vẫn có thể xuất hiện trong data"
+n0 -> n1: "title lỗi hoặc trả null"
+n1 -> n2: "element không được null"
+n2 -> n3: "list không được null"
+n3 -> n4: "catalog nullable, dừng bubbling tại đây"
 ```
 
 Nếu cùng lỗi xảy ra ở root field `Query.books: [Book!]!`, không có field nullable nào ở phía trên field đó trong ví dụ. Khi ấy, `data` ở cấp root có thể trở thành `null` thay vì chỉ mất một element. Đây là lý do chọn `[T!]!` vừa giúp client có contract gọn hơn, vừa làm blast radius (phạm vi ảnh hưởng) của lỗi lớn hơn.

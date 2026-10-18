@@ -65,20 +65,19 @@ Sau khi hoàn thành lộ trình của nhóm, bạn có thể:
 
 Hãy xem schema như một hợp đồng có kiểu giữa client và server. Hợp đồng này trả lời bốn câu hỏi: client được bắt đầu ở đâu, có thể chọn field nào, phải gửi đầu vào gì và nhận kết quả có hình dạng nào. Resolver và data source chỉ là implementation phía sau hợp đồng đó.
 
-```text
-Client: operation + variables
-              │
-              ▼
-SDL: output graph, input, scalar, nullability, polymorphism
-              │  parse và validate
-              ▼
-Executable schema
-              │  map field vào resolver
-              ▼
-Spring for GraphQL → service/repository/data source
-              │
-              ▼
-Execution result theo selection set của client
+```d2 title="SDL và executable schema"
+direction: down
+n0: "Client: operation + variables"
+n1: "SDL: output graph, input, scalar, nullability, polymorphism"
+n2: "Executable schema"
+n3: "Spring for GraphQL"
+n4: "service/repository/data source"
+n5: "Execution result theo selection set của client"
+n0 -> n1
+n1 -> n2: "parse và validate"
+n2 -> n3: "map field vào resolver"
+n3 -> n4
+n4 -> n5
 ```
 
 Mỗi lớp có một trách nhiệm riêng. SDL không phải database schema. Annotation của Spring không tự bổ sung field vào SDL. Client không thể yêu cầu một field chỉ vì object Java hoặc bảng database có cột tương ứng.

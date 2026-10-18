@@ -58,16 +58,18 @@ Có hai cách diễn tả ý định:
 - Nếu mọi kết quả đều có một contract có ý nghĩa, chẳng hạn `id` và `title`, hãy dùng interface. Client chọn field chung trực tiếp rồi mở rộng bằng fragment cho phần riêng.
 - Nếu các biến thể không có field chung đủ ổn định, hãy dùng union. Client chỉ dựa vào danh sách type được phép và chọn field bên trong từng biến thể.
 
-```text
-Query.search: [SearchHit!]!
-        │
-        ├── Book   → id, title, author
-        └── Course → id, title, instructor
-
-Query.discover: [DiscoveryItem!]!
-        │
-        ├── ProductCard   → sku, name, price
-        └── EditorialCard → slug, headline, readingTimeMinutes
+```d2 title="Interface và union có runtime type khác nhau"
+direction: right
+search: "Query.search: [SearchHit!]!"
+book: "Book\nid, title, author"
+course: "Course\nid, title, instructor"
+discover: "Query.discover: [DiscoveryItem!]!"
+product: "ProductCard\nsku, name, price"
+edit: "EditorialCard\nslug, headline, readingTimeMinutes"
+search -> book
+search -> course
+discover -> product
+discover -> edit
 ```
 
 Hai field trong sơ đồ là hai quyết định contract khác nhau. Không nên thêm một field `author`, `instructor` hoặc `price` giả vào một object chung chỉ để tránh chọn abstract type. [Scalar, object và field](/docs/schema-va-type-system/scalar-object-field) giải thích thêm cách output object tạo thành graph; [SDL và nguyên tắc thiết kế schema](/docs/schema-va-type-system/sdl-va-thiet-ke-schema) giúp review ngữ nghĩa và ownership của type mới.
@@ -426,25 +428,22 @@ SDL chỉ nói `search` trả về `SearchHit` hoặc `discover` trả về `Dis
 
 Có thể hình dung flow như sau:
 
-```text
-Resolver Query.search / Query.discover
-                │
-                ▼
-       Giá trị object runtime
-                │
-                ▼
-          Type resolution
-                │
-       ┌────────┴────────┐
-       ▼                 ▼
-   Book/Course      ProductCard/EditorialCard
-       │                 │
-       └───────┬─────────┘
-               ▼
-  __typename + field chung + inline fragments
-               │
-               ▼
-          JSON response
+```d2 title="Runtime type resolution trước JSON response"
+direction: down
+r: "Resolver Query.search / Query.discover"
+v: "Giá trị object runtime"
+t: "Type resolution"
+b: "Book/Course"
+p: "ProductCard/EditorialCard"
+fields: "__typename + field chung + inline fragments"
+json: "JSON response"
+r -> v
+v -> t
+t -> b
+t -> p
+b -> fields
+p -> fields
+fields -> json
 ```
 
 Type resolution không phải là validation query. Validation kiểm tra document có thể yêu cầu gì trước execution. Type resolution xử lý giá trị thật sau khi resolver được gọi. Hai bước có thể cùng đúng hoặc một bước đúng, bước kia thất bại.

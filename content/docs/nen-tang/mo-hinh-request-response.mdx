@@ -45,20 +45,21 @@ Các ví dụ dùng schema sách minh họa, trong đó có `book(id: ID!): Book
 
 Client không gửi trực tiếp một field vào resolver. Client gửi một **query document** (tài liệu GraphQL chứa một hoặc nhiều operation), có thể kèm variables, qua transport. GraphQL engine sau đó tạo response theo selection set mà client đã viết.
 
-```text
-Client
-  │  HTTP request: method, headers, JSON envelope
-  ▼
-Spring Boot HTTP endpoint
-  │  lấy query, variables, operationName và extensions
-  ▼
-GraphQL execution engine
-  │  parse → validate → gọi resolver → ghép kết quả
-  ▼
-Execution result
-  │  data, errors và extensions nếu implementation thêm
-  ▼
-Client
+```d2 title="Từ HTTP envelope đến execution result"
+direction: down
+client: Client
+http: Spring Boot HTTP endpoint
+engine: GraphQL execution engine
+resolver: Resolver Java {
+  icon: ../../assets/d2/java.svg
+}
+result: Execution result
+client -> http: Method, headers, JSON envelope
+http -> engine: query, variables, operationName, extensions
+engine -> resolver: Sau parse, validation và variable coercion
+resolver -> result: Giá trị field hoặc execution error
+engine -> result: Ghép kết quả theo selection set
+result -> client: data, errors và extensions nếu có
 ```
 
 Sơ đồ này tách hai câu hỏi thường bị trộn lẫn:
@@ -306,6 +307,63 @@ Mã `BOOK_LOOKUP_FAILED`, `requestId` và toàn bộ cấu trúc trong `extensio
 | `extensions` | Metadata thêm ở cấp response, do server hoặc middleware định nghĩa. | Hoàn toàn tùy implementation; không được coi là luôn tồn tại. |
 
 `errors` có thể xuất hiện cùng `data`. Đây là điểm khác với cách đọc đơn giản “có `data` là thành công, không có `data` là thất bại”. Với mỗi lỗi, hãy xem `path`, nullability của field và phần `data` còn sử dụng được.
+
+Hai transcript sau là **minh họa tĩnh** cho `book(id: ID!): Book`, không phải response đã đo từ backend. Cùng request HTTP có thể trả đủ field hoặc `data` một phần kèm `errors` khi `Book.author` nullable. Status `200` trong các ví dụ này không phải quy tắc cho mọi lỗi: lỗi transport, parse/validation và media type cần policy riêng của server.
+
+```protocol-exchange
+title: Đọc HTTP status cùng data và errors
+variants:
+  - id: success
+    title: Thành công
+    request:
+      method: POST
+      url: /graphql
+      headers:
+        - id: content
+          name: Content-Type
+          value: application/json
+        - id: accept
+          name: Accept
+          value: application/json
+      body:
+        kind: json
+        json: '{"query":"query BookScreen($bookId: ID!) { book(id: $bookId) { id title author } }","operationName":"BookScreen","variables":{"bookId":"book-1"}}'
+    response:
+      status: 200
+      headers:
+        - id: content
+          name: Content-Type
+          value: application/json
+      body:
+        kind: json
+        json: '{"data":{"book":{"id":"book-1","title":"GraphQL in Action","author":"Samer Buna"}}}'
+  - id: partial
+    title: Author nullable lỗi
+    request:
+      method: POST
+      url: /graphql
+      headers:
+        - id: content
+          name: Content-Type
+          value: application/json
+        - id: accept
+          name: Accept
+          value: application/json
+      body:
+        kind: json
+        json: '{"query":"query BookScreen($bookId: ID!) { book(id: $bookId) { id title author } }","operationName":"BookScreen","variables":{"bookId":"book-1"}}'
+    response:
+      status: 200
+      headers:
+        - id: content
+          name: Content-Type
+          value: application/json
+      body:
+        kind: json
+        json: '{"data":{"book":{"id":"book-1","title":"GraphQL in Action","author":null}},"errors":[{"message":"Author unavailable","path":["book","author"]}]}'
+```
+
+`errors.path` xác định field lỗi; đừng loại bỏ các field `id`, `title` vẫn có giá trị. Nếu schema đổi `author` thành non-null, failure boundary sẽ thay đổi như phần null propagation ngay sau đây.
 
 ## Nullability và null propagation
 

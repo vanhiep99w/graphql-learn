@@ -83,20 +83,17 @@ Client không bắt đầu trực tiếp từ `Book`. Client bắt đầu từ `
 
 Một request đi qua các boundary khái quát như sau:
 
-```text
-SDL đã nạp
-    │  khai báo root field, argument, output và nullability
-    ▼
-Controller method được Spring đăng ký thành DataFetcher
-    │  bind @Argument và context
-    ▼
-Service/use case
-    │  authorization, validation, transaction hoặc event source
-    ▼
-GraphQL execution
-    │  hoàn tất selection set và xử lý lỗi
-    ▼
-data/errors của transport
+```d2 title="SDL, mapping và execution"
+direction: down
+n0: "SDL đã nạp"
+n1: "Controller method được Spring đăng ký thành DataFetcher"
+n2: "Service/use case"
+n3: "GraphQL execution"
+n4: "data/errors của transport"
+n0 -> n1: "khai báo root field, argument, output và nullability"
+n1 -> n2: "bind @Argument và context"
+n2 -> n3: "authorization, validation, transaction hoặc event source"
+n3 -> n4: "hoàn tất selection set và xử lý lỗi"
 ```
 
 Annotation chỉ giải quyết đoạn nối **root field → DataFetcher → method**. Nó không tạo type, không tự đọc database và không tự mở endpoint HTTP hay WebSocket.
@@ -778,18 +775,29 @@ Argument `tenantId` không cấp quyền. Nó chỉ là input do client gửi. A
 
 **`Publisher<T>`** là abstraction Reactive Streams phát ra zero, một hoặc nhiều item rồi kết thúc bằng `complete` hoặc `error`. Trong Reactor, `Flux<T>` là implementation thường dùng cho nhiều item. Một stream subscription có vòng đời khái quát:
 
-```text
-subscribe request
-      │ parse/validate/coerce + authorization
-      ▼
-@SubscriptionMapping tạo Publisher
-      │ subscriber đăng ký vào event source
-      ▼
-onNext(Book) ──► GraphQL hoàn tất selection set ──► transport gửi kết quả
-      │
-      ├── complete ──► kết thúc operation bình thường
-      ├── error ─────► error policy của subscription
-      └── cancel ────► hủy source và giải phóng tài nguyên
+```d2 title="Publisher signals và transport result"
+direction: down
+s: "subscribe request"
+p: "@SubscriptionMapping tạo Publisher"
+n: "onNext(Book)"
+g: "GraphQL hoàn tất selection set"
+t: "transport gửi kết quả"
+complete: "complete"
+done: "kết thúc operation bình thường"
+error: "error"
+errPolicy: "error policy của subscription"
+cancel: "cancel"
+cleanup: "hủy source và giải phóng tài nguyên"
+s -> p: "parse/validate/coerce + authorization"
+p -> n: "subscriber đăng ký vào event source"
+n -> g
+g -> t
+p -> complete
+complete -> done
+p -> error
+error -> errPolicy
+p -> cancel
+cancel -> cleanup
 ```
 
 Một `Publisher` có thể là **cold** (mỗi subscriber tạo nguồn riêng) hoặc **hot** (nguồn phát độc lập với subscriber). Chọn semantics theo event source:
@@ -1005,15 +1013,27 @@ query BookDetails {
 
 Flow khái quát:
 
-```text
-Query.book                         → @QueryMapping
-      │ trả Book
-      ▼
-Book.id, Book.title                → property/default fetcher hoặc mapping riêng
-Book.author                        → @SchemaMapping(typeName = "Book", field = "author")
-      │ trả Author
-      ▼
-Author.id, Author.name             → property/default fetcher hoặc mapping riêng
+```d2 title="Mapping của root field và nested field"
+direction: down
+q: "Query.book"
+qm: "@QueryMapping"
+b: "Book"
+base: "Book.id, Book.title"
+def: "property/default fetcher hoặc mapping riêng"
+a: "Book.author"
+sm: "@SchemaMapping(typeName = \"Book\", field = \"author\")"
+author: "Author"
+af: "Author.id, Author.name"
+ad: "property/default fetcher hoặc mapping riêng"
+q -> qm
+qm -> b: "trả Book"
+b -> base
+base -> def
+b -> a
+a -> sm
+sm -> author: "trả Author"
+author -> af
+af -> ad
 ```
 
 ### Khi dùng `@SchemaMapping`
@@ -1132,16 +1152,17 @@ Return type và argument binder có thể mở rộng theo version, nhưng schem
 
 Một resolver mapping tốt giúp đặt lỗi ở đúng lớp:
 
-```text
-transport/route/auth biên
-        ▼
-parse + validation + input coercion
-        ▼
-@QueryMapping/@MutationMapping/@SubscriptionMapping
-        ▼
-argument binding + service
-        ▼
-execution/serialization hoặc Publisher signal
+```d2 title="Lifecycle mapping và Publisher"
+direction: down
+n0: "transport/route/auth biên"
+n1: "parse + validation + input coercion"
+n2: "@QueryMapping/@MutationMapping/@SubscriptionMapping"
+n3: "argument binding + service"
+n4: "execution/serialization hoặc Publisher signal"
+n0 -> n1
+n1 -> n2
+n2 -> n3
+n3 -> n4
 ```
 
 | Tín hiệu | Resolver đã chạy chưa? | Cách xử lý |

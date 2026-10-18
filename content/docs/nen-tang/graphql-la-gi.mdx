@@ -57,20 +57,17 @@ Hãy hình dung schema như menu có kiểu của một API. Client chỉ đư�
 
 Luồng khái quát có thể viết ngắn như sau:
 
-```text
-Client viết operation và chọn field
-                │
-                ▼
-Schema kiểm tra tên field, argument và kiểu dữ liệu
-                │
-                ▼
-GraphQL runtime gọi resolver cho các field đã chọn
-                │
-                ▼
-Resolver lấy dữ liệu từ service, database hoặc nguồn khác
-                │
-                ▼
-Execution result phản ánh selection set của client
+```d2 title="Selection set quyết định execution result"
+direction: down
+n0: "Client viết operation và chọn field"
+n1: "Schema kiểm tra tên field, argument và kiểu dữ liệu"
+n2: "GraphQL runtime gọi resolver cho các field đã chọn"
+n3: "Resolver lấy dữ liệu từ service, database hoặc nguồn khác"
+n4: "Execution result phản ánh selection set của client"
+n0 -> n1
+n1 -> n2
+n2 -> n3
+n3 -> n4
 ```
 
 ### Một request đi qua những đâu?
@@ -451,12 +448,23 @@ Subscription cần cơ chế truyền dữ liệu dài hạn mà server và clie
 
 Có thể hình dung wiring của schema catalog như sau:
 
-```text
-Query.books(id?)       → catalogService.findAll()
-Query.book(id)         → catalogService.findById(id)
-Mutation.addBook(input)→ catalogService.add(input)
-Book.title             → đọc title từ Book cha
-Subscription.bookAdded → nhận sự kiện sách mới
+```d2 title="Field và resolver tương ứng"
+direction: right
+a0: "Query.books(id?)"
+b0: "catalogService.findAll()"
+a1: "Query.book(id)"
+b1: "catalogService.findById(id)"
+a2: "Mutation.addBook(input)"
+b2: "catalogService.add(input)"
+a3: "Book.title"
+b3: "đọc title từ Book cha"
+a4: "Subscription.bookAdded"
+b4: "nhận sự kiện sách mới"
+a0 -> b0
+a1 -> b1
+a2 -> b2
+a3 -> b3
+a4 -> b4
 ```
 
 Đây là sơ đồ khái niệm, không phải code chạy độc lập. `Query.books` và `Query.book` là resolver ở root. Khi một resolver root trả về `Book`, runtime tiếp tục xử lý selection set bên trong `Book`. Một field đơn giản như `title` thường có thể được đọc từ property của object cha; field phức tạp hơn có thể cần resolver riêng.

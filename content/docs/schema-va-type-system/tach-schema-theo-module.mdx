@@ -104,10 +104,21 @@ Các thư mục và tên file chỉ giúp con người tổ chức code. GraphQL
 
 Hãy hình dung ba file SDL được đưa vào cùng một GraphQL server:
 
-```text
-catalog.graphqls ─┐
-review.graphqls  ─┼─ parse và kiểm tra ─► schema GraphQL hợp nhất ─► resolver ─► client
-identity.graphqls ┘
+```d2 title="Nhiều SDL tạo một schema hợp nhất"
+direction: right
+cat: "catalog.graphqls"
+rev: "review.graphqls"
+id: "identity.graphqls"
+parse: "parse và kiểm tra"
+s: "schema GraphQL hợp nhất"
+r: "resolver"
+c: "client"
+cat -> parse
+rev -> parse
+id -> parse
+parse -> s
+s -> r
+r -> c
 ```
 
 Client không gửi request đến `catalog.graphqls` hoặc `review.graphqls`. Client chỉ thấy một `Query`, một `Book`, một `Author` và toàn bộ field hợp lệ sau khi schema được xây dựng.
@@ -467,11 +478,16 @@ Một shared type tốt có các đặc điểm:
 
 **Dependency direction** nên đi từ module cần dùng tới contract ổn định hơn. Với ví dụ trên, có thể mô tả hướng logic như sau:
 
-```text
-Catalog ─────► Identity (Author contract)
-Catalog ─────► Shared (PageInfo, SortDirection)
-Review ──────► Catalog (Book contract)
-Identity ────► Shared (nếu cần)
+```d2 title="Dependency contract giữa module"
+direction: right
+c: "Catalog"
+i: "Identity"
+s: "Shared"
+r: "Review"
+c -> i: "Author contract"
+c -> s: "PageInfo, SortDirection"
+r -> c: "Book contract"
+i -> s: "nếu cần"
 ```
 
 Mũi tên này là quan hệ ownership/contract, không nhất thiết là import Java trực tiếp. Điều cần tránh là `Catalog` phải hiểu implementation nội bộ của `Review`, rồi `Review` lại phải import mọi chi tiết nội bộ của `Catalog`. Nếu hai module cần nhau theo cả hai chiều, hãy xem xét:
@@ -790,17 +806,18 @@ Tách SDL không thay đổi flow execution của GraphQL. Client vẫn gửi op
 
 Trong Spring for GraphQL, có thể hình dung trách nhiệm như sau:
 
-```text
-Nhiều resource SDL trên classpath
-              │
-              ▼
-GraphQL schema hợp nhất: Query, Book, Review, Author...
-              │
-              ├── @QueryMapping → Query.book / Query.books / Query.author
-              └── @SchemaMapping → Book.reviews
-                              │
-                              ▼
-                     service / repository / downstream
+```d2 title="Schema hợp nhất và owner của field"
+direction: down
+res: "Nhiều resource SDL trên classpath"
+schema: "GraphQL schema hợp nhất: Query, Book, Review, Author..."
+q: "@QueryMapping\nQuery.book / Query.books / Query.author"
+s: "@SchemaMapping\nBook.reviews"
+svc: "service / repository / downstream"
+res -> schema
+schema -> q
+schema -> s
+q -> svc
+s -> svc
 ```
 
 `@QueryMapping` cần map tới root field đã có trong schema sau merge. `@SchemaMapping` có thể xử lý field nested như `Book.reviews`. Việc file nằm trong `review/` không tự đăng ký controller; component scan, annotation, tên field và resolver implementation vẫn phải đúng.

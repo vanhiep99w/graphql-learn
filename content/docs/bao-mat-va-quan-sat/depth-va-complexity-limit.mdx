@@ -237,8 +237,15 @@ Field weight nên là **metadata server-owned**. Client không được gửi m�
 
 Nếu một field trả list, cost của các field con có thể phải nhân theo số phần tử tiềm năng. Với path:
 
-```text
-books(first: A) → nodes → reviews(first: B) → nodes
+```d2 title="Cardinality lồng nhau"
+direction: down
+n0: "books(first: A)"
+n1: "nodes của books"
+n2: "reviews(first: B)"
+n3: "nodes của reviews"
+n0 -> n1
+n1 -> n2
+n2 -> n3
 ```
 
 cardinality upper bound của `Review` có thể xấp xỉ `A × B` trước khi tính filter, authorization và page thực tế. Đây là **upper bound bảo thủ**, không phải lời hứa server luôn trả đủ số đó.
@@ -493,23 +500,23 @@ Không nhất thiết trả các trường này cho client. Chúng hữu ích ch
 
 Một pipeline khái niệm an toàn có thứ tự như sau:
 
-```text
-HTTP/WebSocket security và body limit
-             │
-             ▼
-chọn operation + parse document
-             │
-             ▼
-GraphQL schema validation
-             │  field, argument, selection, fragment, directive
-             ▼
-coerce variables và default
-             │
-             ▼
-principal policy + depth/complexity/cardinality/cost guard
-             │
-             ▼
-root resolver → nested resolver → data source
+```d2 title="Guardrail trước resolver"
+direction: down
+n0: "HTTP/WebSocket security và body limit"
+n1: "chọn operation + parse document"
+n2: "GraphQL schema validation"
+n3: "coerce variables và default"
+n4: "principal policy + depth/complexity/cardinality/cost guard"
+n5: "root resolver"
+n6: "nested resolver"
+n7: "data source"
+n0 -> n1
+n1 -> n2
+n2 -> n3: "field, argument, selection, fragment, directive"
+n3 -> n4
+n4 -> n5
+n5 -> n6
+n6 -> n7
 ```
 
 Cụm “validation trước execution” ở đây bao gồm cả query guardrail. Validation schema kiểm tra query có hợp lệ theo contract; cost policy kiểm tra query hợp lệ đó có được phép theo capacity và principal hay không. Một query `books(first: 100000)` có thể đúng kiểu `Int` nhưng vẫn phải bị từ chối trước repository.
@@ -688,11 +695,20 @@ GraphQL `Int` chỉ kiểm tra kiểu số nguyên. Schema default cũng không 
 
 Nên reject out-of-range thay vì âm thầm clamp:
 
-```text
-first không hợp lệ → PAGE_SIZE_OUT_OF_RANGE
-filter quá nhiều nhánh → FILTER_TOO_COMPLEX
-cursor sai scope → INVALID_CURSOR
-field aggregate không có scope → FIELD_NOT_ALLOWED
+```d2 title="Lỗi policy có mã riêng"
+direction: right
+a0: "first không hợp lệ"
+b0: "PAGE_SIZE_OUT_OF_RANGE"
+a1: "filter quá nhiều nhánh"
+b1: "FILTER_TOO_COMPLEX"
+a2: "cursor sai scope"
+b2: "INVALID_CURSOR"
+a3: "field aggregate không có scope"
+b3: "FIELD_NOT_ALLOWED"
+a0 -> b0
+a1 -> b1
+a2 -> b2
+a3 -> b3
 ```
 
 Các mã trên là mã ứng dụng minh họa. Nếu sản phẩm chọn clamp, response phải mô tả giới hạn hiệu dụng hoặc có contract rõ; nếu không, client có thể tưởng rằng đã nhận đủ dữ liệu trong khi server âm thầm cắt.
@@ -765,18 +781,19 @@ GraphQL Java có khái niệm validation và instrumentation; Spring for GraphQL
 
 Cost policy cần principal, nhưng không nên lấy principal hoặc tenant từ variables. Context được tạo từ credential đã xác minh và truyền xuống service bằng holder nhỏ, immutable. Một flow khái niệm:
 
-```text
-HTTP/WebSocket credential
-          │
-          ▼
-Spring Security/interceptor
-          │ principal + tenant + deadline + request ID
-          ▼
-GraphQL execution context
-          │
-          ├─ cost policy chọn budget theo principal
-          ├─ resolver bind argument đã coerce
-          └─ service/repository kiểm tra resource authorization
+```d2 title="Context dùng chung, policy ở từng tầng"
+direction: down
+cred: "HTTP/WebSocket credential"
+sec: "Spring Security/interceptor"
+ctx: "GraphQL execution context"
+cost: "cost policy chọn budget theo principal"
+resolver: "resolver bind argument đã coerce"
+svc: "service/repository kiểm tra resource authorization"
+cred -> sec
+sec -> ctx: "principal + tenant + deadline + request ID"
+ctx -> cost
+ctx -> resolver
+ctx -> svc
 ```
 
 Resolver có thể làm nhiệm vụ adapter:
@@ -838,14 +855,19 @@ spring:
 
 Pre-execution cost guard là lớp đầu tiên; runtime cần một deadline truyền từ context xuống service và downstream. Deadline nên được tính từ server-side policy, không cho client nới vô hạn bằng một header hoặc variable.
 
-```text
-request deadline
-      │
-      ├─ GraphQL execution budget
-      ├─ database statement timeout
-      ├─ downstream HTTP/gRPC timeout
-      ├─ executor queue/task budget
-      └─ WebSocket subscription/event budget
+```d2 title="Deadline phân bổ cho nhiều budget"
+direction: down
+d: "request deadline"
+g: "GraphQL execution budget"
+db: "database statement timeout"
+http: "downstream HTTP/gRPC timeout"
+q: "executor queue/task budget"
+ws: "WebSocket subscription/event budget"
+d -> g
+d -> db
+d -> http
+d -> q
+d -> ws
 ```
 
 Các nguyên tắc:
@@ -893,10 +915,17 @@ Cost policy nên tính:
 
 Pagination root và DataLoader giải quyết hai vấn đề khác nhau:
 
-```text
-root pagination  → giới hạn số node đi vào execution
-DataLoader       → gom lookup nested của các node đó
-cost/depth       → giới hạn shape và công việc tổng thể
+```d2 title="Ba giới hạn bổ sung cho nhau"
+direction: right
+a0: "root pagination"
+b0: "giới hạn số node đi vào execution"
+a1: "DataLoader"
+b1: "gom lookup nested của các node đó"
+a2: "cost/depth"
+b2: "giới hạn shape và công việc tổng thể"
+a0 -> b0
+a1 -> b1
+a2 -> b2
 ```
 
 Đọc [Batch loading và DataLoader](/docs/truy-cap-du-lieu-va-hieu-nang/batch-loading-va-dataloader) và [N+1 query](/docs/truy-cap-du-lieu-va-hieu-nang/n-plus-1-query) khi triển khai data layer; đọc [Cursor/offset pagination trong Spring](/docs/truy-cap-du-lieu-va-hieu-nang/cursor-offset-pagination-spring) để nối page limit với repository/query plan.
@@ -968,14 +997,21 @@ Label an toàn hơn thường là `operationId` đã allowlist, operation kind, 
 
 Tracing nên nối:
 
-```text
-request/trace ID
-      └─ operation policy
-           └─ GraphQL execution
-                ├─ Query.books
-                ├─ Book.author/DataLoader batch
-                ├─ database query
-                └─ downstream call
+```d2 title="Cấu trúc trace và operation policy"
+direction: down
+t: "request/trace ID"
+p: "operation policy"
+e: "GraphQL execution"
+q: "Query.books"
+b: "Book.author/DataLoader batch"
+db: "database query"
+h: "downstream call"
+t -> p
+p -> e
+e -> q
+e -> b
+e -> db
+e -> h
 ```
 
 Trace attribute nên là query hash/operation ID, policy version, estimated cost bucket và outcome đã redact. [Logging và tracing](/docs/bao-mat-va-quan-sat/logging-va-tracing), [Metrics và health check](/docs/bao-mat-va-quan-sat/metrics-va-health-check) và [Monitoring và SLO](/docs/production/monitoring-va-slo) nối tiếp phần quan sát này.

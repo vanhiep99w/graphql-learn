@@ -80,25 +80,34 @@ Tách contract khỏi implementation giúp hai phía thay đổi độc lập h�
 
 Sơ đồ sau là flow khái niệm. Mũi tên đi sang phải thể hiện request và việc resolve; mũi tên quay lại thể hiện dữ liệu về để engine hoàn tất response. `Guardrails` (các cơ chế bảo vệ) có thể được áp dụng ở nhiều điểm, không phải một lớp bắt buộc tách riêng trong mọi hệ thống.
 
-```mermaid
-flowchart LR
-  C["Client<br/>operation + variables"] --> T["Transport<br/>HTTP / WebSocket"]
-  T --> S["GraphQL server<br/>endpoint + request context"]
-  S --> G["Guardrails<br/>auth, validation, complexity"]
-  G --> E["Schema + execution engine<br/>parse, validate, execute"]
-  E --> R["Resolver / DataFetcher<br/>field logic"]
-  R --> A["Service / repository<br/>use case và truy cập dữ liệu"]
-  A --> D[("Data source<br/>DB / API / cache")]
-  D --> A
-  A --> R
-  R --> E
-  E --> O["Execution result<br/>data + errors + extensions"]
-  O --> T
-  T --> C
+```d2 title="GraphQL request và các đường trả kết quả" interactive
+direction: right
+c: "Client\noperation + variables"
+t: "Transport\nHTTP / WebSocket"
+s: "GraphQL server\nendpoint + request context"
+g: "Guardrails\nauth, validation, complexity"
+e: "Schema + execution engine\nparse, validate, execute"
+r: "Resolver / DataFetcher\nfield logic"
+a: "Service / repository\nuse case và truy cập dữ liệu"
+d: "Data source\nDB / API / cache"
+o: "Execution result\ndata + errors + extensions"
+c -> t
+t -> s
+s -> g
+g -> e
+e -> r
+r -> a
+a -> d
+d -> a
+a -> r
+r -> e
+e -> o
+o -> t
+t -> c
 ```
 
-<Callout type="info" title="Ghi chú về Mermaid">
-Repo hiện chưa cấu hình renderer Mermaid cho Fumadocs. Vì vậy, block trên có thể được hiển thị như code block thay vì sơ đồ trực quan. Nội dung Mermaid vẫn được giữ dưới dạng text để dễ version-control; muốn render cần bổ sung cấu hình renderer ở phạm vi riêng, không thuộc bài docs này.
+<Callout type="info" title="Sơ đồ tĩnh ở build-time">
+D2 được biên dịch thành SVG khi build. Các mũi tên mô tả trách nhiệm và đường dữ liệu, không phải trace đã đo hoặc thứ tự scheduling cố định.
 </Callout>
 
 Sơ đồ không ngụ ý GraphQL server phải là một process riêng. Trong một ứng dụng Spring Boot, endpoint HTTP, Spring for GraphQL, GraphQL Java và code resolver thường cùng chạy trong một process. Điều quan trọng là boundary (ranh giới trách nhiệm), không phải số lượng process.
@@ -280,20 +289,17 @@ Resolver thường chuyển yêu cầu xuống application service. Service có 
 
 Với `featuredBook`, một flow có thể là:
 
-```text
-Query.featuredBook
-        │
-        ▼
-Catalog resolver
-        │
-        ▼
-Catalog service: chọn sách được phép hiển thị
-        │
-        ▼
-Repository hoặc API catalog
-        │
-        ▼
-Database / REST service / cache
+```d2 title="Luồng Query.featuredBook"
+direction: down
+n0: "Query.featuredBook"
+n1: "Catalog resolver"
+n2: "Catalog service: chọn sách được phép hiển thị"
+n3: "Repository hoặc API catalog"
+n4: "Database / REST service / cache"
+n0 -> n1
+n1 -> n2
+n2 -> n3
+n3 -> n4
 ```
 
 Đây là flow minh họa, không phải cấu trúc bắt buộc. Một field có thể đọc thẳng một cache. Một service có thể phối hợp nhiều nguồn. Một resolver nhỏ có thể trả dữ liệu tĩnh. Điều cần kiểm soát là ai sở hữu quy tắc và ai chịu trách nhiệm khi nguồn dữ liệu lỗi.
@@ -489,17 +495,19 @@ Ownership cũng phải bao phủ lỗi. Nếu `Book.reviews` chậm vì Review s
 
 GraphQL server có thể làm lớp composition cho nhiều nguồn:
 
-```text
-Web / mobile client
-          │
-          ▼
-GraphQL server hoặc BFF
-       ┌──┴──────────────┐
-       ▼                 ▼
-Catalog service     Review service
-       │                 │
-       ▼                 ▼
-  Catalog DB       Review DB
+```d2 title="BFF kết hợp nhiều service"
+direction: down
+c: "Web / mobile client"
+g: "GraphQL server hoặc BFF"
+cat: "Catalog service"
+rev: "Review service"
+cdb: "Catalog DB" {shape: cylinder}
+rdb: "Review DB" {shape: cylinder}
+c -> g
+g -> cat
+g -> rev
+cat -> cdb
+rev -> rdb
 ```
 
 Composition giảm việc client tự ghép nhiều response, nhưng không làm các nguồn phía sau biến thành một transaction hoặc một request duy nhất. GraphQL server cần quy định timeout, retry, partial data, cache và error mapping giữa các downstream.
@@ -624,17 +632,15 @@ Cho resolver truy cập data source trực tiếp có thể hợp lý với mộ
 
 Một cấu trúc thường dễ mở rộng là:
 
-```text
-GraphQL resolver / data fetcher
-              │ bind input + context
-              ▼
-Application service / use case
-              │ business rule + auth + transaction
-              ▼
-Repository / gateway
-              │ protocol-specific access
-              ▼
-Data source
+```d2 title="Phân chia trách nhiệm adapter và use case"
+direction: down
+n0: "GraphQL resolver / data fetcher"
+n1: "Application service / use case"
+n2: "Repository / gateway"
+n3: "Data source"
+n0 -> n1: "bind input + context"
+n1 -> n2: "business rule + auth + transaction"
+n2 -> n3: "protocol-specific access"
 ```
 
 Đây là một điểm bắt đầu, không phải số lớp bắt buộc. Có thể gộp resolver và service cho một field rất nhỏ. Có thể bỏ repository khi data source là một API client đã đủ abstraction. Điều cần giữ là:
@@ -672,11 +678,15 @@ Bảng định vị nhanh:
 
 Có ba vòng cần phân biệt:
 
-```text
-Client ──(transport)──► GraphQL server
-GraphQL server ──(resolver/service)──► data source
-Data source ──(result/error)──► GraphQL server
-GraphQL server ──(execution result)──► Client
+```d2 title="Transport khác truy cập data source"
+direction: right
+c: "Client"
+g: "GraphQL server"
+d: "data source"
+c -> g: "transport"
+g -> d: "resolver/service"
+d -> g: "result/error"
+g -> c: "execution result"
 ```
 
 Một GraphQL operation có thể gom nhiều field trong một transport request nhưng tạo nhiều lời gọi service. Một resolver cũng có thể gom nhiều field thành một projection hoặc batch call. Vì vậy, đánh giá hiệu năng phải đo cả payload client, latency transport, số resolver, số backend call và chi phí data source.

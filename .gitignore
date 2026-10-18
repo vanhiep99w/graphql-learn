@@ -4,3 +4,9 @@ node_modules
 out
 dist
 .env*.local
+
+# docs-kit render cache and local validation artifacts
+.cache/
+playwright-report/
+test-results/
+*.tsbuildinfo

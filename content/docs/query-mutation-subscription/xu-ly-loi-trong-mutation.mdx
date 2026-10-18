@@ -606,17 +606,15 @@ Nullability của `Book.title: String!` cũng quan trọng. Nếu field này l�
 
 Có thể theo dõi đường lan truyền trong ví dụ:
 
-```text
-Book.title: String!
-        │ lỗi hoặc trả null
-        ▼
-book: Book
-        │ nullable, dừng bubbling
-        ▼
-createBook: CreateBookPayload!
-        │ payload còn được giữ
-        ▼
-response data vẫn có thể chứa userErrors
+```d2 title="Null bubbling trong mutation payload"
+direction: down
+n0: "Book.title: String!"
+n1: "book: Book"
+n2: "createBook: CreateBookPayload!"
+n3: "response data vẫn có thể chứa userErrors"
+n0 -> n1: "lỗi hoặc trả null"
+n1 -> n2: "nullable, dừng bubbling"
+n2 -> n3: "payload còn được giữ"
 ```
 
 Nếu lỗi xảy ra ở `userErrors: [UserError!]!`, không có vị trí nullable giữa field đó và root `createBook` trong SDL minh họa. Lỗi có thể làm `createBook` thành `null`, rồi vì root field là non-null làm `data` ở cấp root thành `null`.

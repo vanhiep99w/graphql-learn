@@ -53,8 +53,17 @@ Trang này tập trung vào contract và quyết định thiết kế chung cho 
 
 Một trang là một **cửa sổ** trong tập kết quả. Server trước hết xác định những record người dùng được phép thấy, áp dụng filter, sắp xếp theo một thứ tự xác định, rồi mới lấy cửa sổ offset hoặc cursor. Có thể hình dung pipeline như sau:
 
-```text
-authorization scope → filter → deterministic sort → page window → page metadata
+```d2 title="Page window sau authorization và sort"
+direction: down
+n0: "authorization scope"
+n1: "filter"
+n2: "deterministic sort"
+n3: "page window"
+n4: "page metadata"
+n0 -> n1
+n1 -> n2
+n2 -> n3
+n3 -> n4
 ```
 
 GraphQL không có một kiểu pagination bắt buộc. `BookOffsetPage`, `BookConnection`, `items`, `nodes` và `pageInfo` chỉ là tên trong contract mà team chọn. Điều quan trọng là mỗi tên phải được khai báo trong SDL và có semantics mà client có thể dựa vào.
@@ -622,10 +631,17 @@ Một thứ tự **deterministic** luôn đặt hai record khác nhau vào một
 
 Contract minh họa dùng các thứ tự sau:
 
-```text
-sort field TITLE, direction ASC       → title ASC, id ASC
-sort field PUBLISHED_YEAR, DESC       → publishedYear DESC, id ASC
-sort field ID, direction DESC         → id DESC
+```d2 title="Sort hiệu dụng và tie-breaker"
+direction: right
+a0: "sort field TITLE, direction ASC"
+b0: "title ASC, id ASC"
+a1: "sort field PUBLISHED_YEAR, DESC"
+b1: "publishedYear DESC, id ASC"
+a2: "sort field ID, direction DESC"
+b2: "id DESC"
+a0 -> b0
+a1 -> b1
+a2 -> b2
 ```
 
 `id` phải unique và bất biến trong phạm vi pagination. Nếu ID công khai có thể đổi, chọn một khóa ổn định khác ở phía server. Cursor phải biểu diễn toàn bộ thứ tự này, không chỉ field chính.
@@ -666,8 +682,17 @@ Ví dụ, một page có `20` node nhưng mỗi node còn chọn nhiều field o
 
 Authorization phải được áp dụng trước khi cắt trang. Thứ tự logic cần giữ là:
 
-```text
-authorized records → filter → stable sort → offset hoặc keyset window → metadata
+```d2 title="Thứ tự áp dụng pagination"
+direction: down
+n0: "authorized records"
+n1: "filter"
+n2: "stable sort"
+n3: "offset hoặc keyset window"
+n4: "metadata"
+n0 -> n1
+n1 -> n2
+n2 -> n3
+n3 -> n4
 ```
 
 Không lấy 100 record toàn cục, lọc các record user không được thấy rồi trả phần còn lại. Cách đó làm page ngắn bất ngờ, làm `hasNextPage` sai và có thể làm lộ count hoặc timing của dữ liệu không được phép thấy.

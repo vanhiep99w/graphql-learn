@@ -221,23 +221,41 @@ Nếu project có context path hoặc dùng port khác, đặt lại `GRAPHQL_UR
 
 ### Request scalar đầu tiên
 
-```bash
-curl --silent --show-error --include \
-  --request POST "$GRAPHQL_URL" \
-  --header 'Content-Type: application/json' \
-  --header 'Accept: application/json' \
-  --data-raw '{"query":"query FirstHello { hello }","operationName":"FirstHello"}'
+Phiên dưới đây **minh họa**, chưa chạy với backend trong repository này. Bước đầu đặt lại URL để lệnh copy độc lập vẫn có đích hợp lệ; đổi URL theo ứng dụng của bạn. Viewer không chạy lệnh và không xác nhận exit code.
+
+```terminal-session
+title: Gửi FirstHello từ shell local
+context:
+  kind: local
+  label: Bash hoặc Zsh, ứng dụng Spring Boot ở cổng 8080
+steps:
+  - id: endpoint
+    title: Chọn endpoint thực tế
+    command: GRAPHQL_URL="${GRAPHQL_URL:-http://localhost:8080/graphql}"
+    expected: Biến GRAPHQL_URL trỏ tới HTTP endpoint, không phải trang GraphiQL.
+  - id: hello
+    title: Gửi operation và đọc cả HTTP lẫn GraphQL
+    command: |-
+      curl --silent --show-error --include \
+        --request POST "$GRAPHQL_URL" \
+        --header 'Content-Type: application/json' \
+        --header 'Accept: application/json' \
+        --data-raw '{"query":"query FirstHello { hello }","operationName":"FirstHello"}'
+    expected: Khi ứng dụng có resolver hello, kiểm tra status/headers rồi data.hello và errors trong body.
+    outputs:
+      - stream: stdout
+        text: |-
+          HTTP/1.1 200 OK
+          Content-Type: application/json
+
+          {
+            "data": {
+              "hello": "Xin chào từ Spring for GraphQL!"
+            }
+          }
 ```
 
-Body này có cùng operation với phần GraphQL ở trên. `variables` có thể bỏ qua vì operation không khai báo biến. Một response thành công minh họa có thể có dạng sau; giá trị chuỗi phụ thuộc resolver của ứng dụng:
-
-```json
-{
-  "data": {
-    "hello": "Xin chào từ Spring for GraphQL!"
-  }
-}
-```
+Body này có cùng operation với phần GraphQL ở trên. `variables` có thể bỏ qua vì operation không khai báo biến. Chuỗi trong response minh họa phụ thuộc resolver của ứng dụng.
 
 Lệnh trên có thể in thêm status line và response headers vì dùng `--include`. Khi lưu output để xử lý tự động, tách headers khỏi body theo cách phù hợp với script của bạn và luôn kiểm tra cả body GraphQL.
 

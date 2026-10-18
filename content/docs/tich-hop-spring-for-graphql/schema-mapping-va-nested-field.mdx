@@ -65,17 +65,15 @@ Một object trong response GraphQL có thể được tạo từ nhiều nguồ
 
 Giả sử query bắt đầu ở `Query.books` và chọn `Book.author { displayName }`. Execution có thể được hình dung như sau:
 
-```text
-Query.books
-    │  @QueryMapping trả về List<BookView>
-    ▼
-Book.author
-    │  @SchemaMapping nhận từng BookView làm source/parent
-    ▼
-Author.displayName
-    │  property data fetcher đọc getter của AuthorView
-    ▼
-String ở lá response
+```d2 title="Source của nested field"
+direction: down
+n0: "Query.books"
+n1: "Book.author"
+n2: "Author.displayName"
+n3: "String ở lá response"
+n0 -> n1: "@QueryMapping trả về List<BookView>"
+n1 -> n2: "@SchemaMapping nhận từng BookView làm source/parent"
+n2 -> n3: "property data fetcher đọc getter của AuthorView"
 ```
 
 Các bước quan trọng là:
@@ -616,17 +614,15 @@ Một mapping riêng đăng ký data fetcher cho cặp `Book.author`. Không nê
 
 GraphQL type `Book` không bắt buộc phải là JPA entity `BookEntity`. DTO projection giúp giữ field GraphQL ở ranh giới API và tránh làm lộ khóa ngoại, audit field hoặc quan hệ lazy.
 
-```text
-Database projection
-        │  id, tenant_id, title, author_id
-        ▼
-BookView DTO
-        │  @SchemaMapping dùng authorId để lấy AuthorView
-        ▼
-GraphQL Book
-        │  chỉ công khai id, title, author, reviews
-        ▼
-Client response
+```d2 title="Projection, DTO và public schema"
+direction: down
+n0: "Database projection"
+n1: "BookView DTO"
+n2: "GraphQL Book"
+n3: "Client response"
+n0 -> n1: "id, tenant_id, title, author_id"
+n1 -> n2: "@SchemaMapping dùng authorId để lấy AuthorView"
+n2 -> n3: "chỉ công khai id, title, author, reviews"
 ```
 
 Trong ví dụ, `BookView` giữ `authorId` để resolver dùng nhưng SDL không công khai `authorId`. `AuthorView` và `ReviewView` chỉ trả các field mà schema cần. Đây là một projection server-side, không phải lời hứa rằng GraphQL selection set đã được dịch trực tiếp thành SQL.
@@ -652,17 +648,15 @@ type Book {
 
 Nếu `Book.author` ném lỗi hoặc trả `null`, field `author` không thể giữ cam kết `Author!`. GraphQL ghi một execution error, biến object `Book` tương ứng thành `null`, rồi tiếp tục bubble qua phần tử `Book!`, list `[Book!]!` và có thể đến root `data`:
 
-```text
-Book.author: Author!
-        │ lỗi
-        ▼
-Book trong books: Book!
-        │ phần tử không được null
-        ▼
-Query.books: [Book!]!
-        │ list không được null
-        ▼
-data có thể trở thành null
+```d2 title="Null bubbling qua list non-null"
+direction: down
+n0: "Book.author: Author!"
+n1: "Book trong books: Book!"
+n2: "Query.books: [Book!]!"
+n3: "data có thể trở thành null"
+n0 -> n1: "lỗi"
+n1 -> n2: "phần tử không được null"
+n2 -> n3: "list không được null"
 ```
 
 Một response minh họa có thể là:

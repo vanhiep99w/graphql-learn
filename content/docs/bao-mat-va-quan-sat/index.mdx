@@ -34,26 +34,25 @@ Các SDL, query, JSON, YAML, Java fragment và sơ đồ chữ trong nhóm này 
 
 Một request GraphQL cần được nhìn qua nhiều boundary. Header hoặc cookie đi qua transport; GraphQL parse và validate document; resolver gọi service; service truy cập data source hoặc event source. Mỗi boundary có trách nhiệm bảo vệ và tín hiệu riêng.
 
-```text
-Credential và transport policy
-            │
-            ▼
-Authentication → principal và context server-side
-            │
-            ▼
-Authorization → operation, field, resource và tenant
-            │
-            ▼
-Query guardrail → depth, complexity, page size và timeout
-            │
-            ▼
-Introspection, CORS và CSRF → schema/browser exposure
-            │
-            ▼
-Resolver → service → repository hoặc event source
-            │
-            ▼
-Logs, traces, metrics và health → tín hiệu vận hành
+```d2 title="Security và tín hiệu vận hành"
+direction: down
+n0: "Credential và transport policy"
+n1: "Authentication: principal và context server-side"
+n2: "Authorization: operation, field, resource và tenant"
+n3: "Query guardrail: depth, complexity, page size và timeout"
+n4: "Introspection, CORS và CSRF: schema/browser exposure"
+n5: "Resolver"
+n6: "service"
+n7: "repository hoặc event source"
+n8: "Logs, traces, metrics và health: tín hiệu vận hành"
+n0 -> n1
+n1 -> n2
+n2 -> n3
+n3 -> n4
+n4 -> n5
+n5 -> n6
+n6 -> n7
+n7 -> n8
 ```
 
 Đây là mental model, không phải kiến trúc đã được bật trong repository. Một query hợp lệ về schema vẫn có thể quá đắt. Một request đã authenticated vẫn có thể không được phép đọc một field. Một dashboard xanh cũng không chứng minh authorization đang đúng. Nhóm này giúp đặt từng câu hỏi vào đúng lớp thay vì dùng một cơ chế để thay thế tất cả cơ chế còn lại.
