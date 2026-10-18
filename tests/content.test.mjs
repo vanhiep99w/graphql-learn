@@ -75,9 +75,9 @@ test('87 D2 diagrams accounted for; 37 deliberately retained text artifacts unch
   }
 });
 
-test('all D2 and learning fences compile with installed 0.9.6 plugins and registered components', { timeout: 240_000 }, async (t) => {
+test('all D2 and learning fences compile with installed 0.9.8 plugins and registered components', { timeout: 240_000 }, async (t) => {
   const pkg = JSON.parse(await read('node_modules/@vanhiep99w/docs-kit/package.json'));
-  assert.equal(pkg.version, '0.9.6');
+  assert.equal(pkg.version, '0.9.8');
   const registry = await read('mdx-components.tsx');
   const css = await read('app/global.css');
   const config = await read('source.config.ts');
