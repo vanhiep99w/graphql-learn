@@ -44,7 +44,7 @@ Dùng skill chung tại collection root: `../.agents/skills/fumadocs-technical-w
 
 ## D2 và learning components
 
-Pin package registry **`@vanhiep99w/docs-kit@0.9.0`**, không dùng dependency local vào repo bên cạnh. Giữ nguyên Next.js, React và Fumadocs hiện tại.
+Pin package registry **`@vanhiep99w/docs-kit@0.12.0`**, không dùng dependency local vào repo bên cạnh. Giữ nguyên Next.js, React và Fumadocs hiện tại.
 
 Ba lớp tích hợp nằm ở `source.config.ts` (remark plugins), `mdx-components.tsx` (component map) và `app/global.css` (stylesheets):
 
