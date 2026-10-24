@@ -80,7 +80,41 @@ Tách contract khỏi implementation giúp hai phía thay đổi độc lập h�
 
 Sơ đồ sau là flow khái niệm. Mũi tên đi sang phải thể hiện request và việc resolve; mũi tên quay lại thể hiện dữ liệu về để engine hoàn tất response. `Guardrails` (các cơ chế bảo vệ) có thể được áp dụng ở nhiều điểm, không phải một lớp bắt buộc tách riêng trong mọi hệ thống.
 
-```d2 title="GraphQL request và các đường trả kết quả" interactive
+> Playback dưới đây minh họa thứ tự các bước do tác giả chọn; không gửi request thật, không mô phỏng concurrency và tốc độ phát không phải latency. Bạn có thể chạy hoặc xem từng bước.
+
+```d2 title="GraphQL request và các đường trả kết quả" mode=flow interactive=true
+# @flow
+# scenarios:
+#   - id: main
+#     label: "Kịch bản minh họa"
+#     steps:
+#       - edge: "(c -> t)[0]"
+#         description: "Tiếp tục tại Transport HTTP / WebSocket."
+#       - edge: "(t -> s)[0]"
+#         description: "Tiếp tục tại GraphQL server endpoint + request context."
+#       - edge: "(s -> g)[0]"
+#         description: "Tiếp tục tại Guardrails auth, validation, complexity."
+#       - edge: "(g -> e)[0]"
+#         description: "Tiếp tục tại Schema + execution engine parse, validate, execute."
+#       - edge: "(e -> r)[0]"
+#         description: "Tiếp tục tại Resolver / DataFetcher field logic."
+#       - edge: "(r -> a)[0]"
+#         description: "Tiếp tục tại Service / repository use case và truy cập dữ liệu."
+#       - edge: "(a -> d)[0]"
+#         description: "Tiếp tục tại Data source DB / API / cache."
+#       - edge: "(d -> a)[0]"
+#         description: "Tiếp tục tại Service / repository use case và truy cập dữ liệu."
+#       - edge: "(a -> r)[0]"
+#         description: "Tiếp tục tại Resolver / DataFetcher field logic."
+#       - edge: "(r -> e)[0]"
+#         description: "Tiếp tục tại Schema + execution engine parse, validate, execute."
+#       - edge: "(e -> o)[0]"
+#         description: "Tiếp tục tại Execution result data + errors + extensions."
+#       - edge: "(o -> t)[0]"
+#         description: "Tiếp tục tại Transport HTTP / WebSocket."
+#       - edge: "(t -> c)[0]"
+#         description: "Tiếp tục tại Client operation + variables."
+# @endflow
 direction: right
 c: "Client\noperation + variables"
 t: "Transport\nHTTP / WebSocket"
@@ -289,7 +323,21 @@ Resolver thường chuyển yêu cầu xuống application service. Service có 
 
 Với `featuredBook`, một flow có thể là:
 
-```d2 title="Luồng Query.featuredBook"
+```d2 title="Luồng Query.featuredBook" mode=flow interactive=true
+# @flow
+# scenarios:
+#   - id: main
+#     label: "Kịch bản minh họa"
+#     steps:
+#       - edge: "(n0 -> n1)[0]"
+#         description: "Tiếp tục tại Catalog resolver."
+#       - edge: "(n1 -> n2)[0]"
+#         description: "Tiếp tục tại Catalog service: chọn sách được phép hiển thị."
+#       - edge: "(n2 -> n3)[0]"
+#         description: "Tiếp tục tại Repository hoặc API catalog."
+#       - edge: "(n3 -> n4)[0]"
+#         description: "Tiếp tục tại Database / REST service / cache."
+# @endflow
 direction: down
 n0: "Query.featuredBook"
 n1: "Catalog resolver"
@@ -678,7 +726,21 @@ Bảng định vị nhanh:
 
 Có ba vòng cần phân biệt:
 
-```d2 title="Transport khác truy cập data source"
+```d2 title="Transport khác truy cập data source" mode=flow interactive=true
+# @flow
+# scenarios:
+#   - id: main
+#     label: "Kịch bản minh họa"
+#     steps:
+#       - edge: "(c -> g)[0]"
+#         description: "Client → GraphQL server: transport"
+#       - edge: "(g -> d)[0]"
+#         description: "GraphQL server → data source: resolver/service"
+#       - edge: "(d -> g)[0]"
+#         description: "data source → GraphQL server: result/error"
+#       - edge: "(g -> c)[0]"
+#         description: "GraphQL server → Client: execution result"
+# @endflow
 direction: right
 c: "Client"
 g: "GraphQL server"

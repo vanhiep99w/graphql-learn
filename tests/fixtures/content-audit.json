@@ -5,7 +5,7 @@
     "title": "Authentication và authorization theo request",
     "originalLanguage": "text",
     "originalSha256": "d0679c6700684cb4842da60a2076141a10697710cc0af3b6722b0d38f93e527f",
-    "sha256": "a887b844dc2b852669396f256cb34e0120fcd46d873fb3498adadbdb15271559"
+    "sha256": "db134c6a544d473d3e9d4ca2f106715b80cc6f9794ecf725cf016fcf52e59b1f"
   },
   {
     "path": "content/docs/bao-mat-va-quan-sat/authentication-jwt-oauth2.mdx",
@@ -180,7 +180,7 @@
     "title": "Từ query đến JSON response",
     "originalLanguage": "text",
     "originalSha256": "7e2fd254ad9ac1dd0b3a42c791b3ef934c343d7a31a9a60137ec01e7704c24bc",
-    "sha256": "2f5590cfdeafd5ef026155bcb4323f44d1b393d7d64623f8f275955411c1bad0"
+    "sha256": "82524302e48d4c00201704c0175e4fd4671f4db8fe0d1771f3d7a9379dfdf915"
   },
   {
     "path": "content/docs/bat-dau/viet-query-dau-tien.mdx",
@@ -193,7 +193,7 @@
     "title": "Selection set quyết định execution result",
     "originalLanguage": "text",
     "originalSha256": "241cc24d605743ec73b0f3d1a4ff875058c4cf06cc673ee6bc2b24dfc2055446",
-    "sha256": "9e5cacbbe02403bd75a7fc635ce282df25759678963f1bcd8cbedca580490817"
+    "sha256": "68212cefcea9a4a559895d82a550cbcc054e504da64c6ce50a13790e83dec581"
   },
   {
     "path": "content/docs/nen-tang/graphql-la-gi.mdx",
@@ -230,7 +230,7 @@
     "title": "Vòng request và response GraphQL",
     "originalLanguage": "text",
     "originalSha256": "a39a3ac923ed4007e15793fbd203a4dd508d7ff698a1ce845df58dc4aec946d6",
-    "sha256": "bf76409fa8169fa28c17d9d5c8cb86d4fe408b03dd79d71b42cc330f288dabcf"
+    "sha256": "bd48606e2fa70e44d409bb8b932dc24bc40f5460a3455c43d95893b6c5b5390a"
   },
   {
     "path": "content/docs/nen-tang/kien-truc-graphql.mdx",
@@ -238,7 +238,7 @@
     "title": "GraphQL request và các đường trả kết quả",
     "originalLanguage": "mermaid",
     "originalSha256": "961bcd0173a008bdc679b3f7d0a2164ff94c3f368b910468819326fef78d73d9",
-    "sha256": "47ed74d30abcf8a7fa15a59d88a098b6166cfaa742ec5c6dff7ac0fbef2b5eb1"
+    "sha256": "12e49810480d6d277cf7c07b4f3c79e8cbb940febd083c55f4b5b3f78f320b85"
   },
   {
     "path": "content/docs/nen-tang/kien-truc-graphql.mdx",
@@ -246,7 +246,7 @@
     "title": "Luồng Query.featuredBook",
     "originalLanguage": "text",
     "originalSha256": "7e7e60a46b51d60f47b6d2e1bb9af66e2aea5d02bda4558d24f6b2c0c1b74879",
-    "sha256": "3b60b0197889df4134d7f854eaf2286105b389ba47dc838277692e0f70a246fd"
+    "sha256": "12bb667d5cabdfaa386a0342d301f0a380dc9b748ee13bb591005879f2ae2022"
   },
   {
     "path": "content/docs/nen-tang/kien-truc-graphql.mdx",
@@ -275,7 +275,7 @@
     "title": "Transport khác truy cập data source",
     "originalLanguage": "text",
     "originalSha256": "0b38128adb363276b85ba11d9aa4473903094ddf185df34839235f171d2f4e85",
-    "sha256": "92387f67aca7488bfb28179cb384d3a326624ca9dabd59d95d0639a365b83ec3"
+    "sha256": "98524323d4d2444b707513d36dcb2105f5c39adcabba63578847537aad67c51e"
   },
   {
     "path": "content/docs/query-mutation-subscription/filtering-va-sorting.mdx",
@@ -288,7 +288,7 @@
     "title": "Từ filter có kiểu đến connection",
     "originalLanguage": "text",
     "originalSha256": "19c80f2b1f1c330aa794c6e041d3de746f6848f805194b5cb517b23812ea8269",
-    "sha256": "529bd0176e774f199f3edddf041e25c68ca43bab59df1d54db536be073c2a80b"
+    "sha256": "71a091457e87c75e210d6dcaf16bbbb9f15ff2032644ff7c40d89e48146014ed"
   },
   {
     "path": "content/docs/query-mutation-subscription/filtering-va-sorting.mdx",
@@ -342,7 +342,7 @@
     "title": "Luồng mutation và payload",
     "originalLanguage": "text",
     "originalSha256": "e599d444515b64d52a8298550afe3d235dd926f917ee4f49e373cb5c093ee641",
-    "sha256": "b7bad3c009746128f3ad5e42c6a5f7d452bbb68ef7ac19de6c13520eed28abd3"
+    "sha256": "633d36baa7a6d4a0607d843dfcfba243a6db569322b75ee827e3a97635d7fe08"
   },
   {
     "path": "content/docs/query-mutation-subscription/mutation-input-payload.mdx",
@@ -358,7 +358,7 @@
     "title": "Page window sau authorization và sort",
     "originalLanguage": "text",
     "originalSha256": "4e8df6a82b8cc530f95859f9165c80c5c46b7ff55563b2e7c4829faea236713b",
-    "sha256": "3d41a0c569062aa2a3c560bee9bc925ac0fc6de67b177b655d36c2f9d040d14e"
+    "sha256": "0febedf0c3dc01d56e31185c08218a4b192a0a176ff5d9462c8991d97d255aee"
   },
   {
     "path": "content/docs/query-mutation-subscription/pagination.mdx",
@@ -447,7 +447,7 @@
     "title": "Input từ client đến execution result",
     "originalLanguage": "text",
     "originalSha256": "abfdda5149a08a69365456bc813b73793a6703bd1246fa06a4a41b87551b5f9a",
-    "sha256": "89f9792026ea5a0b8ae730dadd20985abc874d71f9d73a7672e7c2304cfd9efa"
+    "sha256": "89e183b1e7b59a5451ffd9852b40fbf052f66167df0c4e1dbbc489ee44355860"
   },
   {
     "path": "content/docs/schema-va-type-system/index.mdx",
@@ -542,7 +542,7 @@
     "title": "Coercion, binding và domain policy",
     "originalLanguage": "text",
     "originalSha256": "a1584efd669d1751d7e50e2424f7d534972b8946ebaaee60b6d0e187314dd5d7",
-    "sha256": "9bb217deafe2845ba183648f01d906c536be5d14326e4df55af57bcfd2449ce4"
+    "sha256": "5aa722720e0f8b1db0fc63770229bdc835cb701167807e614555b55400a9bc98"
   },
   {
     "path": "content/docs/tich-hop-spring-for-graphql/datafetcher-va-graphql-context.mdx",
@@ -558,7 +558,7 @@
     "title": "ExecutionInput, context và source của nested field",
     "originalLanguage": "text",
     "originalSha256": "a8c0bf0dd4bd020de4cc6885b87caab4b10693aed461427001c38203b1075c78",
-    "sha256": "1a6b2136ba9c6991162e9fccfba17067ad662c1f64e04468f75d4f444e3119bc"
+    "sha256": "5ddf9808eb4c7414d9bbe22a08c84795da6646579abd7ce54a7aa664766893f2"
   },
   {
     "path": "content/docs/tich-hop-spring-for-graphql/datafetcher-va-graphql-context.mdx",
@@ -592,7 +592,7 @@
     "title": "Từ operation tới data fetching và execution result",
     "originalLanguage": "text",
     "originalSha256": "198ee4356ef9aaf6c13230fa12ed1f2ead4064835ff2741cf18b1ef64f6660df",
-    "sha256": "7148554785fbf2fa065a4c2693fb0c3588cdc693bcdca048fbc4ae17ea854800"
+    "sha256": "32ba1c40a847dcb38203d04e176d82945b04803a077ca15ab81bc16c4f1c6db1"
   },
   {
     "path": "content/docs/tich-hop-spring-for-graphql/kien-truc-spring-for-graphql.mdx",
@@ -637,7 +637,7 @@
     "title": "Các boundary xử lý request",
     "originalLanguage": "text",
     "originalSha256": "91604ecde793f8f2aa806203710941463f44d5e77a2c9728a96c5c47fc061921",
-    "sha256": "a31aabcdcba504f05ba250b5539f0faa3bd806f997a90001d4aa759b8c2530c3"
+    "sha256": "2386931e67e2e795a5c45cb04687d6b72c57c8d2210ab5c33c1ea7db1c090bb3"
   },
   {
     "path": "content/docs/tich-hop-spring-for-graphql/kien-truc-spring-for-graphql.mdx",
@@ -653,7 +653,7 @@
     "title": "Pipeline HTTP và WebSocket",
     "originalLanguage": "text",
     "originalSha256": "e951c86539fd0a110fb4b97f56b6fd4de73296e1993bc2f315effdec9d135667",
-    "sha256": "810f7b4f1d92b7e123d4d89649d2e3f697365db38c07e0e548e3153d8493de02"
+    "sha256": "247cb73546b437a2ef15cfcce15b7b2467b3a3d08c70dc886270339f463b6ddb"
   },
   {
     "path": "content/docs/tich-hop-spring-for-graphql/kien-truc-spring-for-graphql.mdx",
@@ -677,7 +677,7 @@
     "title": "Request error dừng trước use case",
     "originalLanguage": "text",
     "originalSha256": "026db9ee077c569f067c77a0059dd28e680e708040e2f0d838d26c85c4ddb46d",
-    "sha256": "d25b785482e7e69208984e0a5a7ebe55418b4f3ed110d9bea183f93a6d950645"
+    "sha256": "1c0affa1ce35bdb8a9d6347dd1a23692509712717dbc6b238fd7e6363ef6a2d0"
   },
   {
     "path": "content/docs/tich-hop-spring-for-graphql/kien-truc-spring-for-graphql.mdx",
@@ -818,7 +818,7 @@
     "title": "Lifecycle mapping và Publisher",
     "originalLanguage": "text",
     "originalSha256": "6e7bf83b12b5a92d65caf28e4f618d5255f0e480005c49d5c2df0f530ce9e65c",
-    "sha256": "07f683ba5cffeb42fe4455329ae79d73c9b52e2e93ae172fc8b79d5b89c85a79"
+    "sha256": "3e0d32ac018ebe2e267735b10bc0288e5d7d4633d6cbe7f4c22ea3ccfc1e08ba"
   },
   {
     "path": "content/docs/tich-hop-spring-for-graphql/schema-mapping-va-nested-field.mdx",
@@ -855,7 +855,7 @@
     "title": "Policy trước pagination",
     "originalLanguage": "text",
     "originalSha256": "0eef950f86f12a5b541f4bc2e3711b38d7a660491463f3e90eed6546189fc9d4",
-    "sha256": "43bbdba0b81f9ef1d917f459d226e21ba8b8f6695aad18ea65edef9e86af05d3"
+    "sha256": "fe04b3fe9d1af85f736e29f44bd5e03aeac4050bd1b9b09d77d353a16211a300"
   },
   {
     "path": "content/docs/truy-cap-du-lieu-va-hieu-nang/cursor-offset-pagination-spring.mdx",

@@ -1152,7 +1152,23 @@ Return type và argument binder có thể mở rộng theo version, nhưng schem
 
 Một resolver mapping tốt giúp đặt lỗi ở đúng lớp:
 
-```d2 title="Lifecycle mapping và Publisher"
+> Playback dưới đây minh họa thứ tự các bước do tác giả chọn; không gửi request thật, không mô phỏng concurrency và tốc độ phát không phải latency. Bạn có thể chạy hoặc xem từng bước.
+
+```d2 title="Lifecycle mapping và Publisher" mode=flow interactive=true
+# @flow
+# scenarios:
+#   - id: main
+#     label: "Kịch bản minh họa"
+#     steps:
+#       - edge: "(n0 -> n1)[0]"
+#         description: "Tiếp tục tại parse + validation + input coercion."
+#       - edge: "(n1 -> n2)[0]"
+#         description: "Tiếp tục tại @QueryMapping/@MutationMapping/@SubscriptionMapping."
+#       - edge: "(n2 -> n3)[0]"
+#         description: "Tiếp tục tại argument binding + service."
+#       - edge: "(n3 -> n4)[0]"
+#         description: "Tiếp tục tại execution/serialization hoặc Publisher signal."
+# @endflow
 direction: down
 n0: "transport/route/auth biên"
 n1: "parse + validation + input coercion"

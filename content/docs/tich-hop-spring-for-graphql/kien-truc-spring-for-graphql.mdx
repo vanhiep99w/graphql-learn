@@ -344,7 +344,23 @@ Annotation mapping chỉ trả lời “field này gọi handler nào”. Nó kh
 
 Một phân lớp thực dụng là:
 
-```d2 title="Các boundary xử lý request"
+> Playback dưới đây minh họa thứ tự các bước do tác giả chọn; không gửi request thật, không mô phỏng concurrency và tốc độ phát không phải latency. Bạn có thể chạy hoặc xem từng bước.
+
+```d2 title="Các boundary xử lý request" mode=flow interactive=true
+# @flow
+# scenarios:
+#   - id: main
+#     label: "Kịch bản minh họa"
+#     steps:
+#       - edge: "(n0 -> n1)[0]"
+#         description: "GraphQL transport adapter → GraphQL resolver / DataFetcher: envelope, auth boundary, context"
+#       - edge: "(n1 -> n2)[0]"
+#         description: "GraphQL resolver / DataFetcher → Application service / use case: bind input, map field, gọi use case"
+#       - edge: "(n2 -> n3)[0]"
+#         description: "Application service / use case → Repository / gateway port: invariant, authorization, transaction, composition"
+#       - edge: "(n3 -> n4)[0]"
+#         description: "Repository / gateway port → Database / REST / gRPC / cache / broker: abstraction cho persistence hoặc downstream"
+# @endflow
 direction: down
 n0: "GraphQL transport adapter"
 n1: "GraphQL resolver / DataFetcher"
@@ -634,7 +650,37 @@ Các tên `BookView`, `RequestActor`, `AuthorService`, `Publisher`, `CreateBookI
 
 Luồng sau dùng query HTTP làm trục chính. WebSocket có thêm connection/protocol lifecycle nhưng mỗi `subscribe` vẫn đi qua parse, validation, execution và serialization tương tự.
 
-```d2 title="Pipeline HTTP và WebSocket"
+```d2 title="Pipeline HTTP và WebSocket" mode=flow interactive=true
+# @flow
+# scenarios:
+#   - id: main
+#     label: "Kịch bản minh họa"
+#     steps:
+#       - edge: "(n0 -> n1)[0]"
+#         description: "Tiếp tục tại request envelope + trusted metadata."
+#       - edge: "(n1 -> n2)[0]"
+#         description: "Tiếp tục tại parse."
+#       - edge: "(n2 -> n3)[0]"
+#         description: "Tiếp tục tại validate."
+#       - edge: "(n3 -> n4)[0]"
+#         description: "Tiếp tục tại coerce variables."
+#       - edge: "(n4 -> n5)[0]"
+#         description: "Tiếp tục tại instrumentation / guardrails."
+#       - edge: "(n5 -> n6)[0]"
+#         description: "Tiếp tục tại root DataFetcher."
+#       - edge: "(n6 -> n7)[0]"
+#         description: "Tiếp tục tại nested DataFetcher."
+#       - edge: "(n7 -> n8)[0]"
+#         description: "Tiếp tục tại service/use case."
+#       - edge: "(n8 -> n9)[0]"
+#         description: "Tiếp tục tại repository/gateway."
+#       - edge: "(n9 -> n10)[0]"
+#         description: "Tiếp tục tại data source."
+#       - edge: "(n10 -> n11)[0]"
+#         description: "Tiếp tục tại complete type + nullability + errors."
+#       - edge: "(n11 -> n12)[0]"
+#         description: "Tiếp tục tại serialize JSON hoặc protocol message."
+# @endflow
 direction: down
 n0: "HTTP/WebSocket boundary"
 n1: "request envelope + trusted metadata"
@@ -760,7 +806,40 @@ GraphQL Java parse document rồi validate với executable schema. Các kiểm 
 
 Sau đó, GraphQL coerce giá trị variables/literal theo kiểu SDL. `"20"` không tự trở thành `Int` chỉ vì Java method nhận `Integer`; `tenantId` đúng kiểu cũng không chứng minh caller có quyền với tenant đó.
 
-```d2 title="Request error dừng trước use case"
+```d2 title="Request error dừng trước use case" mode=flow interactive=true
+# @flow
+# scenarios:
+#   - id: valid
+#     label: "Bắt đầu execution"
+#     steps:
+#       - edge: "(p -> v)[0]"
+#         description: "parse document → validate schema: cú pháp hợp lệ"
+#       - edge: "(v -> c)[0]"
+#         description: "validate schema → coerce variables: field/selection/argument hợp lệ"
+#       - edge: "(c -> ok)[0]"
+#         description: "coerce variables → operation hợp lệ: bắt đầu execution: kiểu/nullability hợp lệ"
+#   - id: parse
+#     label: "Lỗi cú pháp"
+#     steps:
+#       - edge: "(p -> pe)[0]"
+#         description: "parse document → errors, chưa vào resolver: lỗi cú pháp"
+#   - id: validation
+#     label: "Lỗi schema"
+#     steps:
+#       - edge: "(p -> v)[0]"
+#         description: "parse document → validate schema: cú pháp hợp lệ"
+#       - edge: "(v -> ve)[0]"
+#         description: "validate schema → errors, chưa vào resolver: field/selection/argument sai"
+#   - id: coercion
+#     label: "Lỗi variable coercion"
+#     steps:
+#       - edge: "(p -> v)[0]"
+#         description: "parse document → validate schema: cú pháp hợp lệ"
+#       - edge: "(v -> c)[0]"
+#         description: "validate schema → coerce variables: field/selection/argument hợp lệ"
+#       - edge: "(c -> ce)[0]"
+#         description: "coerce variables → errors, chưa thực hiện use case: kiểu/nullability sai"
+# @endflow
 direction: down
 p: "parse document"
 v: "validate schema"

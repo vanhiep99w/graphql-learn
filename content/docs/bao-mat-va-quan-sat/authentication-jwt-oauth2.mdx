@@ -106,7 +106,44 @@ Một token hợp lệ không làm mọi operation trở nên hợp lệ. Ngư�
 
 Một GraphQL request production thường đi qua các boundary sau:
 
-```d2 title="Authentication và authorization theo request"
+> Playback dưới đây minh họa thứ tự các bước do tác giả chọn; không gửi request thật, không mô phỏng concurrency và tốc độ phát không phải latency. Bạn có thể chạy hoặc xem từng bước.
+
+```d2 title="Authentication và authorization theo request" mode=flow interactive=true
+# @flow
+# scenarios:
+#   - id: authenticated
+#     label: "Token hợp lệ"
+#     steps:
+#       - edge: "(n0 -> n1)[0]"
+#         description: "Client → Reverse proxy / gateway: TLS + Authorization: Bearer <access-token>"
+#       - edge: "(n1 -> n2)[0]"
+#         description: "Reverse proxy / gateway → Spring Security filter chain: routing, size limit, rate limit, không tin header identity tùy ý"
+#       - edge: "(n2 -> n3)[0]"
+#         description: "Spring Security filter chain → GraphQL HTTP handler: trích bearer token; validate; tạo Authentication"
+#       - edge: "(n3 -> n4)[0]"
+#         description: "GraphQL HTTP handler → WebGraphQlInterceptor / request context: parse envelope và tạo GraphQL execution"
+#       - edge: "(n4 -> n5)[0]"
+#         description: "WebGraphQlInterceptor / request context → GraphQLContext / request context: copy principal đã xác minh, tenant đã bind, correlation ID"
+#       - edge: "(n5 -> n6)[0]"
+#         description: "GraphQLContext / request context → Resolver / DataFetcher: scope của một execution, không phải global state"
+#       - edge: "(n6 -> n7)[0]"
+#         description: "Resolver / DataFetcher → Authorization policy: bind arguments; không tự parse token"
+#       - edge: "(n7 -> n8)[0]"
+#         description: "Authorization policy → application service: kiểm tra quyền trên operation/resource/tenant"
+#       - edge: "(n8 -> n9)[0]"
+#         description: "Tiếp tục tại repository/downstream."
+#       - edge: "(n9 -> n10)[0]"
+#         description: "Tiếp tục tại GraphQL response: data + errors."
+#   - id: unauthorized
+#     label: "Credential lỗi: 401"
+#     steps:
+#       - edge: "(n0 -> n1)[0]"
+#         description: "Client → Reverse proxy / gateway: TLS + Authorization: Bearer <access-token>"
+#       - edge: "(n1 -> n2)[0]"
+#         description: "Reverse proxy / gateway → Spring Security filter chain: routing, size limit, rate limit, không tin header identity tùy ý"
+#       - edge: "(n2 -> unauthorized)[0]"
+#         description: "Spring Security filter chain → 401: credential lỗi, dừng trước GraphQL handler: credential lỗi"
+# @endflow
 direction: down
 n0: "Client"
 n1: "Reverse proxy / gateway"

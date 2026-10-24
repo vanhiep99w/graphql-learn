@@ -53,7 +53,23 @@ Trang này tập trung vào contract và quyết định thiết kế chung cho 
 
 Một trang là một **cửa sổ** trong tập kết quả. Server trước hết xác định những record người dùng được phép thấy, áp dụng filter, sắp xếp theo một thứ tự xác định, rồi mới lấy cửa sổ offset hoặc cursor. Có thể hình dung pipeline như sau:
 
-```d2 title="Page window sau authorization và sort"
+> Playback dưới đây minh họa thứ tự các bước do tác giả chọn; không gửi request thật, không mô phỏng concurrency và tốc độ phát không phải latency. Bạn có thể chạy hoặc xem từng bước.
+
+```d2 title="Page window sau authorization và sort" mode=flow interactive=true
+# @flow
+# scenarios:
+#   - id: main
+#     label: "Kịch bản minh họa"
+#     steps:
+#       - edge: "(n0 -> n1)[0]"
+#         description: "Tiếp tục tại filter."
+#       - edge: "(n1 -> n2)[0]"
+#         description: "Tiếp tục tại deterministic sort."
+#       - edge: "(n2 -> n3)[0]"
+#         description: "Tiếp tục tại page window."
+#       - edge: "(n3 -> n4)[0]"
+#         description: "Tiếp tục tại page metadata."
+# @endflow
 direction: down
 n0: "authorization scope"
 n1: "filter"
