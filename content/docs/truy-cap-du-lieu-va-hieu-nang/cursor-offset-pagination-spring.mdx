@@ -70,29 +70,7 @@ Pagination ở lớp GraphQL không chỉ là đổi một tham số `page` thà
 
 Một request pagination nên đi qua các boundary rõ ràng. Resolver không nên tự ghép SQL, và repository không nên quyết định authorization hoặc shape GraphQL.
 
-> Playback dưới đây minh họa thứ tự các bước do tác giả chọn; không gửi request thật, không mô phỏng concurrency và tốc độ phát không phải latency. Bạn có thể chạy hoặc xem từng bước.
-
-```d2 title="Policy trước pagination" mode=flow interactive=true
-# @flow
-# scenarios:
-#   - id: main
-#     label: "Kịch bản minh họa"
-#     steps:
-#       - edge: "(n0 -> n1)[0]"
-#         description: "GraphQL input → Resolver Spring: parse, coerce, bind"
-#       - edge: "(n1 -> n2)[0]"
-#         description: "Resolver Spring → Application service: lấy principal/tenant, gọi use case"
-#       - edge: "(n2 -> n3)[0]"
-#         description: "Application service → Repository/query builder: validate limit, filter, sort, cursor; áp policy"
-#       - edge: "(n3 -> n4)[0]"
-#         description: "Repository/query builder → Database: WHERE tenant/filter; seek hoặc offset; ORDER BY; LIMIT"
-#       - edge: "(n4 -> n5)[0]"
-#         description: "Tiếp tục tại DTO mapper."
-#       - edge: "(n5 -> n6)[0]"
-#         description: "Tiếp tục tại edge/connection hoặc offset page."
-#       - edge: "(n6 -> n7)[0]"
-#         description: "Tiếp tục tại GraphQL response."
-# @endflow
+```d2 title="Policy trước pagination"
 direction: down
 n0: "GraphQL input"
 n1: "Resolver Spring"

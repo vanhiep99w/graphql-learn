@@ -67,27 +67,7 @@ Trang này tập trung vào input đi **vào** resolver. SDL, query, variables J
 
 Một input đi qua nhiều ranh giới. Hãy phân biệt những ranh giới này trước khi sửa chữ ký method:
 
-> Playback dưới đây minh họa thứ tự các bước do tác giả chọn; không gửi request thật, không mô phỏng concurrency và tốc độ phát không phải latency. Bạn có thể chạy hoặc xem từng bước.
-
-```d2 title="Coercion, binding và domain policy" mode=flow interactive=true
-# @flow
-# scenarios:
-#   - id: main
-#     label: "Kịch bản minh họa"
-#     steps:
-#       - edge: "(n0 -> n1)[0]"
-#         description: "HTTP body và security policy → GraphQL document: JSON envelope, authentication, rate limit"
-#       - edge: "(n1 -> n2)[0]"
-#         description: "GraphQL document → GraphQL input coercion: parse + validate field, argument, selection và variable usage"
-#       - edge: "(n2 -> n3)[0]"
-#         description: "GraphQL input coercion → Spring argument binding: scalar, enum, list, input object, default và non-null"
-#       - edge: "(n3 -> n4)[0]"
-#         description: "Spring argument binding → @QueryMapping hoặc @MutationMapping: map giá trị đã coerce vào record/class/collection Java"
-#       - edge: "(n4 -> n5)[0]"
-#         description: "@QueryMapping hoặc @MutationMapping → Service/domain: controller gọi use case"
-#       - edge: "(n5 -> n6)[0]"
-#         description: "Service/domain → GraphQL execution result data, errors và nullability của response: Bean Validation bổ sung, invariant, authorization, tenant, transaction"
-# @endflow
+```d2 title="Coercion, binding và domain policy"
 direction: down
 n0: "HTTP body và security policy"
 n1: "GraphQL document"

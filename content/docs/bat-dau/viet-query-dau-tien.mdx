@@ -38,23 +38,7 @@ Một query GraphQL chỉ trả về dữ liệu khi ba phần khớp nhau: sche
 
 Khi client gửi query, GraphQL xử lý theo chuỗi sau:
 
-> Playback dưới đây minh họa thứ tự các bước do tác giả chọn; không gửi request thật, không mô phỏng concurrency và tốc độ phát không phải latency. Bạn có thể chạy hoặc xem từng bước.
-
-```d2 title="Từ query đến JSON response" mode=flow interactive=true
-# @flow
-# scenarios:
-#   - id: main
-#     label: "Kịch bản minh họa"
-#     steps:
-#       - edge: "(n0 -> n1)[0]"
-#         description: "Tiếp tục tại Schema kiểm tra field và kiểu dữ liệu."
-#       - edge: "(n1 -> n2)[0]"
-#         description: "Tiếp tục tại Spring for GraphQL tìm handler của field."
-#       - edge: "(n2 -> n3)[0]"
-#         description: "Tiếp tục tại Method resolver trả về giá trị Java."
-#       - edge: "(n3 -> n4)[0]"
-#         description: "Tiếp tục tại GraphQL chọn field được yêu cầu và tạo JSON response."
-# @endflow
+```d2 title="Từ query đến JSON response"
 direction: down
 n0: "Client gửi query"
 n1: "Schema kiểm tra field và kiểu dữ liệu"

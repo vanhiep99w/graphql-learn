@@ -90,27 +90,7 @@ Vì vậy, `@QueryMapping` không tạo thêm field chưa có trong SDL, `@Mutat
 
 Hãy dùng sơ đồ chữ dưới đây như bản đồ đọc các bài trong nhóm:
 
-> Playback dưới đây minh họa thứ tự các bước do tác giả chọn; không gửi request thật, không mô phỏng concurrency và tốc độ phát không phải latency. Bạn có thể chạy hoặc xem từng bước.
-
-```d2 title="Từ operation tới data fetching và execution result" mode=flow interactive=true
-# @flow
-# scenarios:
-#   - id: main
-#     label: "Kịch bản minh họa"
-#     steps:
-#       - edge: "(n0 -> n1)[0]"
-#         description: "Tiếp tục tại GraphQL schema và execution parse • validate • coerce • chọn field."
-#       - edge: "(n1 -> n2)[0]"
-#         description: "Tiếp tục tại Spring for GraphQL controller mapping • argument binding • context."
-#       - edge: "(n2 -> n3)[0]"
-#         description: "Tiếp tục tại Data fetching DataFetcher • nested resolver • Publisher."
-#       - edge: "(n3 -> n4)[0]"
-#         description: "Tiếp tục tại Service / use case validation • authorization • transaction policy."
-#       - edge: "(n4 -> n5)[0]"
-#         description: "Tiếp tục tại Repository / external source / event source."
-#       - edge: "(n5 -> n6)[0]"
-#         description: "Tiếp tục tại Execution result: data + errors (+ extensions)."
-# @endflow
+```d2 title="Từ operation tới data fetching và execution result"
 direction: down
 n0: "Client\noperation + variables + selection set"
 n1: "GraphQL schema và execution\nparse • validate • coerce • chọn field"

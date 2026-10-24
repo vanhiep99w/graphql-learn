@@ -85,27 +85,7 @@ Sort:   publishedYear DESC, title ASC, id ASC
 
 Một request search nên đi qua các ranh giới sau:
 
-> Playback dưới đây minh họa thứ tự các bước do tác giả chọn; không gửi request thật, không mô phỏng concurrency và tốc độ phát không phải latency. Bạn có thể chạy hoặc xem từng bước.
-
-```d2 title="Từ filter có kiểu đến connection" mode=flow interactive=true
-# @flow
-# scenarios:
-#   - id: main
-#     label: "Kịch bản minh họa"
-#     steps:
-#       - edge: "(n0 -> n1)[0]"
-#         description: "Client → GraphQL validation/coercion: query + variables có kiểu"
-#       - edge: "(n1 -> n2)[0]"
-#         description: "GraphQL validation/coercion → Spring binding: field, enum, input shape, nullability"
-#       - edge: "(n2 -> n3)[0]"
-#         description: "Spring binding → Service normalizer + policy validator: record/enum/list Java"
-#       - edge: "(n3 -> n4)[0]"
-#         description: "Service normalizer + policy validator → Typed criteria compiler: default, max, AND/OR, authorization, tenant"
-#       - edge: "(n4 -> n5)[0]"
-#         description: "Typed criteria compiler → Repository/database: allowlist field/operator + parameter binding"
-#       - edge: "(n5 -> n6)[0]"
-#         description: "Repository/database → Connection response: filter; sort; cursor/limit"
-# @endflow
+```d2 title="Từ filter có kiểu đến connection"
 direction: down
 n0: "Client"
 n1: "GraphQL validation/coercion"

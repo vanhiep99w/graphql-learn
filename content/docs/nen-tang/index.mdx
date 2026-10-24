@@ -44,25 +44,7 @@ Khi chuyển sang nhóm Bắt đầu, hãy chuẩn bị JDK 17, một terminal, 
 
 Hãy xem một request GraphQL như một đường đi qua nhiều trách nhiệm, không phải một lời gọi thẳng vào database:
 
-> Playback dưới đây minh họa thứ tự các bước do tác giả chọn; không gửi request thật, không mô phỏng concurrency và tốc độ phát không phải latency. Bạn có thể chạy hoặc xem từng bước.
-
-```d2 title="Vòng request và response GraphQL" mode=flow interactive=true
-# @flow
-# scenarios:
-#   - id: main
-#     label: "Kịch bản minh họa"
-#     steps:
-#       - edge: "(n0 -> n1)[0]"
-#         description: "Client → GraphQL endpoint và execution engine: operation + variables"
-#       - edge: "(n1 -> n2)[0]"
-#         description: "GraphQL endpoint và execution engine → Resolver của các field được chọn: parse, validate và đối chiếu với schema"
-#       - edge: "(n2 -> n3)[0]"
-#         description: "Resolver của các field được chọn → Data source: gọi service, repository hoặc nguồn dữ liệu khác"
-#       - edge: "(n3 -> n4)[0]"
-#         description: "Data source → Execution engine tạo response: data, errors, extensions: trả về dữ liệu"
-#       - edge: "(n4 -> n5)[0]"
-#         description: "Tiếp tục tại Client."
-# @endflow
+```d2 title="Vòng request và response GraphQL"
 direction: down
 n0: "Client"
 n1: "GraphQL endpoint và execution engine"

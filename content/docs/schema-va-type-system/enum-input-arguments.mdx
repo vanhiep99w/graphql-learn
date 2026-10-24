@@ -61,23 +61,7 @@ Một field GraphQL có thể nhận một giá trị đơn, nhiều arguments h
 
 Với `books(search: BookSearchInput)`, client gửi một operation và có thể gửi variables kèm theo. GraphQL xử lý khái quát như sau:
 
-> Playback dưới đây minh họa thứ tự các bước do tác giả chọn; không gửi request thật, không mô phỏng concurrency và tốc độ phát không phải latency. Bạn có thể chạy hoặc xem từng bước.
-
-```d2 title="Input từ client đến execution result" mode=flow interactive=true
-# @flow
-# scenarios:
-#   - id: main
-#     label: "Kịch bản minh họa"
-#     steps:
-#       - edge: "(n0 -> n1)[0]"
-#         description: "Tiếp tục tại Schema: argument + input object + enum + nullability."
-#       - edge: "(n1 -> n2)[0]"
-#         description: "Schema: argument + input object + enum + nullability → Resolver: nhận giá trị đã được bind theo kiểu: parse, validate, coerce"
-#       - edge: "(n2 -> n3)[0]"
-#         description: "Tiếp tục tại Service: áp dụng filter, quyền và quy tắc nghiệp vụ."
-#       - edge: "(n3 -> n4)[0]"
-#         description: "Tiếp tục tại Execution result: data và errors theo selection set."
-# @endflow
+```d2 title="Input từ client đến execution result"
 direction: down
 n0: "Client: operation + variables"
 n1: "Schema: argument + input object + enum + nullability"

@@ -57,23 +57,7 @@ Hãy hình dung schema như menu có kiểu của một API. Client chỉ đư�
 
 Luồng khái quát có thể viết ngắn như sau:
 
-> Playback dưới đây minh họa thứ tự các bước do tác giả chọn; không gửi request thật, không mô phỏng concurrency và tốc độ phát không phải latency. Bạn có thể chạy hoặc xem từng bước.
-
-```d2 title="Selection set quyết định execution result" mode=flow interactive=true
-# @flow
-# scenarios:
-#   - id: main
-#     label: "Kịch bản minh họa"
-#     steps:
-#       - edge: "(n0 -> n1)[0]"
-#         description: "Tiếp tục tại Schema kiểm tra tên field, argument và kiểu dữ liệu."
-#       - edge: "(n1 -> n2)[0]"
-#         description: "Tiếp tục tại GraphQL runtime gọi resolver cho các field đã chọn."
-#       - edge: "(n2 -> n3)[0]"
-#         description: "Tiếp tục tại Resolver lấy dữ liệu từ service, database hoặc nguồn khác."
-#       - edge: "(n3 -> n4)[0]"
-#         description: "Tiếp tục tại Execution result phản ánh selection set của client."
-# @endflow
+```d2 title="Selection set quyết định execution result"
 direction: down
 n0: "Client viết operation và chọn field"
 n1: "Schema kiểm tra tên field, argument và kiểu dữ liệu"

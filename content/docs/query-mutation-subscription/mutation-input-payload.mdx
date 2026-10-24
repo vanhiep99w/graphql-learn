@@ -56,23 +56,7 @@ Trang này đi từ một contract `createBook` hoàn chỉnh đến request, re
 
 Một mutation có thể được đọc qua bốn lớp: client gửi input, GraphQL kiểm tra contract, resolver chuyển yêu cầu vào use case, rồi payload đưa kết quả trở lại client.
 
-> Playback dưới đây minh họa thứ tự các bước do tác giả chọn; không gửi request thật, không mô phỏng concurrency và tốc độ phát không phải latency. Bạn có thể chạy hoặc xem từng bước.
-
-```d2 title="Luồng mutation và payload" mode=flow interactive=true
-# @flow
-# scenarios:
-#   - id: main
-#     label: "Kịch bản minh họa"
-#     steps:
-#       - edge: "(n0 -> n1)[0]"
-#         description: "Tiếp tục tại GraphQL: parse, validate và coerce input theo SDL."
-#       - edge: "(n1 -> n2)[0]"
-#         description: "Tiếp tục tại @MutationMapping: bind argument và gọi service/use case."
-#       - edge: "(n2 -> n3)[0]"
-#         description: "Tiếp tục tại Service: validation nghiệp vụ, authorization, transaction hoặc downstream."
-#       - edge: "(n3 -> n4)[0]"
-#         description: "Tiếp tục tại CreateBookPayload: book + errors + warnings theo selection set."
-# @endflow
+```d2 title="Luồng mutation và payload"
 direction: down
 n0: "Client: mutation + variables + selection set"
 n1: "GraphQL: parse, validate và coerce input theo SDL"

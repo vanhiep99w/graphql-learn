@@ -206,33 +206,7 @@ Response không hiển thị `tenantId`, correlation ID hoặc principal vì đ�
 
 Trong một request GraphQL, context được tạo trước hoặc trong lúc xây dựng `ExecutionInput`, rồi được gắn vào execution. Mỗi `DataFetchingEnvironment` của field hiện tại có thể truy cập cùng `GraphQLContext` của execution đó.
 
-> Playback dưới đây minh họa thứ tự các bước do tác giả chọn; không gửi request thật, không mô phỏng concurrency và tốc độ phát không phải latency. Bạn có thể chạy hoặc xem từng bước.
-
-```d2 title="ExecutionInput, context và source của nested field" mode=flow interactive=true
-# @flow
-# scenarios:
-#   - id: main
-#     label: "Kịch bản minh họa"
-#     steps:
-#       - edge: "(n0 -> n1)[0]"
-#         description: "Transport → Spring GraphQL interceptor: headers, credential, operation document"
-#       - edge: "(n1 -> n2)[0]"
-#         description: "Spring GraphQL interceptor → ExecutionInput query, variables, operationName GraphQLContext DataLoaderRegistry theo execution: xác thực + tạo RequestContext nhỏ"
-#       - edge: "(n2 -> n3)[0]"
-#         description: "Tiếp tục tại Parse."
-#       - edge: "(n3 -> n4)[0]"
-#         description: "Tiếp tục tại validate."
-#       - edge: "(n4 -> n5)[0]"
-#         description: "Tiếp tục tại coerce variables."
-#       - edge: "(n5 -> n6)[0]"
-#         description: "coerce variables → DataFetcher của Query.books: DataFetchingEnvironment hiện tại"
-#       - edge: "(n6 -> n7)[0]"
-#         description: "Tiếp tục tại Giá trị Book[]."
-#       - edge: "(n7 -> n8)[0]"
-#         description: "Tiếp tục tại DataFetcher của Book.author cho từng source Book."
-#       - edge: "(n8 -> n9)[0]"
-#         description: "DataFetcher của Book.author cho từng source Book → Execution result: data + errors + extensions: có source/parent riêng, cùng request context"
-# @endflow
+```d2 title="ExecutionInput, context và source của nested field"
 direction: down
 n0: "Transport"
 n1: "Spring GraphQL interceptor"
